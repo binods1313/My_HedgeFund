@@ -306,7 +306,12 @@ class TestGitConfigScanning:
         ss.main(["--repo", str(repo)])
         out = capsys.readouterr().out
 
-        assert ".git/config" in out, "git/config hits not surfaced by main()"
+        # The '.git/config' label is always printed, so assert on the count and
+        # the section body instead: both must reflect a non-empty hit list.
+        assert ".git/config hits  : 1" in out, (
+            "main() reported 0 git/config hits despite a planted token"
+        )
+        assert "GIT_CONFIG" in out
         assert "remove the credential from .git/config" in out.lower(), (
             "main() did not raise the git/config action"
         )
@@ -325,6 +330,7 @@ class TestGitConfigScanning:
         ss.main(["--repo", str(repo)])
         out = capsys.readouterr().out
 
+        assert ".git/config hits  : 0" in out
         assert "No secrets found" in out
         assert "ACTION REQUIRED" not in out
 
