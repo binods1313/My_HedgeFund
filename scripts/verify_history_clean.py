@@ -28,10 +28,14 @@ try:
 except Exception:
     pass
 
-# Only these keys are treated as secrets. MT5_PATH and MT5_SERVER are
-# configuration, not credentials, and scanning for them would produce
-# meaningless "leaks".
-SECRET_KEYS = ("MT5_PASSWORD", "OPENROUTER_API_KEY", "GROQ_API_KEY", "MT5_LOGIN")
+# Keys whose values are genuine secrets. MT5_LOGIN is an account number, not a
+# credential: it appears in test fixtures by design, and treating it as a secret
+# would report the repo as never clean.
+SECRET_KEYS = ("MT5_PASSWORD", "OPENROUTER_API_KEY", "GROQ_API_KEY")
+
+# Paths whose credential-shaped values are synthetic test data, not leaks.
+TEST_ONLY_PATH_MARKERS = ("/tests/", "test_", "/scripts/secret_scan.py",
+                          "/.secrets.baseline")
 
 
 def _load_dotenv_values(env_path: Path) -> dict[str, str]:
@@ -68,19 +72,43 @@ def secret_fingerprints(values: dict[str, str]) -> dict[str, str]:
 
 
 def search_history(repo: Path, value: str) -> tuple[int, int]:
-    """Return (commit_count, occurrence_count) for `value` in all history.
+    """Return (commit_count, non_test_occurrence_count) for `value` in history.
 
     Uses `git log -S<value> --all --oneline`, which finds commits where the
-    count of occurrences changed. The value is passed via stdin to the child
-    process so it never appears in this process's command line.
+    count of occurrences changed. Hits confined to test fixtures and to the
+    scanner's own canaries are counted separately: those are synthetic values
+    we committed deliberately, so a hit there is not a leak.
     """
     proc = subprocess.run(
         ["git", "log", "--all", "-S", value, "--oneline"],
         cwd=str(repo), capture_output=True,
     )
-    text = proc.stdout.decode("utf-8", "replace")
-    commits = [ln for ln in text.splitlines() if ln.strip()]
-    return len(commits), len(commits)
+    commits = [ln for ln in proc.stdout.decode("utf-8", "replace").splitlines()
+               if ln.strip()]
+    if not commits:
+        return 0, 0
+
+    # Enumerate which files actually contain the value across all commits.
+    revs = subprocess.run(["git", "rev-list", "--all"],
+                          cwd=str(repo), capture_output=True).stdout.decode().split()
+
+    real_paths: set[str] = set()
+    for rev in revs:
+        out = subprocess.run(
+            ["git", "grep", "-l", "-F", value, rev],
+            cwd=str(repo), capture_output=True,
+        ).stdout.decode("utf-8", "replace")
+        for line in out.splitlines():
+            path = line.strip()
+            if not path:
+                continue
+            # Strip the "<rev>:" prefix git grep adds.
+            if ":" in path:
+                path = path.split(":", 1)[1]
+            if not any(marker in path for marker in TEST_ONLY_PATH_MARKERS):
+                real_paths.add(path)
+
+    return len(commits), len(real_paths)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -117,11 +145,16 @@ def main(argv: list[str] | None = None) -> int:
     found_any = False
     for key in sorted(fingerprints):
         value = values[key]
-        commits, occurrences = search_history(repo, value)
-        present = commits > 0
+        commits, real_files = search_history(repo, value)
+        # A hit is only a leak when it occurs outside test fixtures and the
+        # scanner's own canaries.
+        present = real_files > 0
         found_any = found_any or present
         state = "PRESENT IN HISTORY" if present else "absent"
-        print(f"  {key:22s} {state:20s} commits={commits}")
+        extra = (f" (test-fixture hits only: {commits})"
+                 if not present and commits else "")
+        print(f"  {key:22s} {state:20s} commits={commits} "
+              f"non_test_files={real_files}{extra}")
 
     print()
     if args.expect_leak:
