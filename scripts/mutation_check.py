@@ -416,6 +416,45 @@ MUTATIONS: list[Mutation] = [
             "tests/test_secret_scan.py::TestGitConfigScanning::test_main_reports_git_config_hits",
         ],
     ),
+    Mutation(
+        name="M29: real credentials excused again (synthetic check disabled)",
+        target="scripts/verify_history_clean.py",
+        old="""    if is_synthetic(value):
+        return 0, 0""",
+        new="""    if False:
+        return 0, 0""",
+        expect_fail=[
+            "tests/test_secret_scan.py::TestSyntheticValueAllowlist::test_synthetic_value_in_a_test_file_is_not_a_leak",
+        ],
+    ),
+    Mutation(
+        name="M30: every value treated as synthetic (fails open)",
+        target="scripts/verify_history_clean.py",
+        old="""    stripped = value.strip().strip('"').strip("'")
+    if stripped in SYNTHETIC_TEST_VALUES:
+        return True""",
+        new="""    stripped = value.strip().strip('"').strip("'")
+    if True:
+        return True""",
+        expect_fail=[
+            "tests/test_secret_scan.py::TestSyntheticValueAllowlist::test_real_values_are_not_synthetic",
+            "tests/test_secret_scan.py::TestSyntheticValueAllowlist::test_real_secret_in_a_test_file_is_still_a_leak",
+        ],
+    ),
+    Mutation(
+        name="M31: synthetic allowlist widened to excuse everything",
+        target="scripts/verify_history_clean.py",
+        old="""def is_synthetic(value: str) -> bool:""",
+        new="""def is_synthetic(value: str) -> bool:
+    return True
+
+
+def _unused_is_synthetic(value: str) -> bool:""",
+        expect_fail=[
+            "tests/test_secret_scan.py::TestSyntheticValueAllowlist::test_real_values_are_not_synthetic",
+            "tests/test_secret_scan.py::TestSyntheticValueAllowlist::test_synthetic_check_short_circuits_search",
+        ],
+    ),
 ]
 
 

@@ -33,9 +33,36 @@ except Exception:
 # would report the repo as never clean.
 SECRET_KEYS = ("MT5_PASSWORD", "OPENROUTER_API_KEY", "GROQ_API_KEY")
 
-# Paths whose credential-shaped values are synthetic test data, not leaks.
-TEST_ONLY_PATH_MARKERS = ("/tests/", "test_", "/scripts/secret_scan.py",
-                          "/.secrets.baseline")
+# Synthetic values that are safe to commit, because they were authored as test
+# data rather than taken from a live credential.
+#
+# This replaces an earlier PATH-based exemption that treated any
+# credential-shaped string under tests/ or scripts/secret_scan.py as harmless.
+# That was wrong: a real password pasted into a test file was excused purely
+# because of where it lived. Exemption is now granted per VALUE, so a live
+# secret in a test is still a leak.
+#
+# Add a value here only after confirming it is not a real credential.
+SYNTHETIC_TEST_VALUES = frozenset({
+    # Documented placeholders.
+    "YOUR_MT5_PASSWORD",
+    "your_password",
+    "YOUR_OPENROUTER_KEY",
+    "changeme",
+    # Scrub markers left by a secret-removal rewrite.
+    "***REMOVED-MT5_PASSWORD***",
+    "***REMOVED-OPENROUTER_API_KEY***",
+    "[REDACTED]",
+    # Fixed-width dummy used in scanner self-tests and fixtures.
+    "999999999",
+    "000000000",
+    "123456789",
+})
+
+# Synthetic values that must never be treated as safe regardless of where they
+# appear. This is the escape hatch, not the rule: a real credential is a leak
+# wherever it sits.
+NEVER_SYNTHETIC = frozenset()
 
 
 def _load_dotenv_values(env_path: Path) -> dict[str, str]:
@@ -71,14 +98,41 @@ def secret_fingerprints(values: dict[str, str]) -> dict[str, str]:
     return out
 
 
+def is_synthetic(value: str) -> bool:
+    """True when `value` is authored test data rather than a live credential.
+
+    Deliberately value-based: the earlier path-based exemption let a real
+    password sit in a test file unnoticed, because "it's under tests/" said
+    nothing about whether the string was a live credential.
+    """
+    if value in NEVER_SYNTHETIC:
+        return False
+    stripped = value.strip().strip('"').strip("'")
+    if stripped in SYNTHETIC_TEST_VALUES:
+        return True
+    # Scrub markers from a history rewrite, with or without a key suffix.
+    if stripped.startswith("***REMOVED-") and stripped.endswith("***"):
+        return True
+    if stripped in ("[REDACTED]", "REDACTED"):
+        return True
+    # Documented placeholder style.
+    upper = stripped.upper()
+    if upper.startswith("YOUR_") or upper == "CHANGEME":
+        return True
+    return False
+
+
 def search_history(repo: Path, value: str) -> tuple[int, int]:
-    """Return (commit_count, non_test_occurrence_count) for `value` in history.
+    """Return (commit_count, leak_file_count) for `value` in history.
 
     Uses `git log -S<value> --all --oneline`, which finds commits where the
-    count of occurrences changed. Hits confined to test fixtures and to the
-    scanner's own canaries are counted separately: those are synthetic values
-    we committed deliberately, so a hit there is not a leak.
+    count of occurrences changed. If the value itself is a known synthetic
+    test value the whole thing short-circuits: a synthetic value is never a
+    leak, wherever it appears.
     """
+    if is_synthetic(value):
+        return 0, 0
+
     proc = subprocess.run(
         ["git", "log", "--all", "-S", value, "--oneline"],
         cwd=str(repo), capture_output=True,
@@ -89,10 +143,11 @@ def search_history(repo: Path, value: str) -> tuple[int, int]:
         return 0, 0
 
     # Enumerate which files actually contain the value across all commits.
+    # Any file counts: location no longer grants an exemption.
     revs = subprocess.run(["git", "rev-list", "--all"],
                           cwd=str(repo), capture_output=True).stdout.decode().split()
 
-    real_paths: set[str] = set()
+    leak_paths: set[str] = set()
     for rev in revs:
         out = subprocess.run(
             ["git", "grep", "-l", "-F", value, rev],
@@ -105,10 +160,9 @@ def search_history(repo: Path, value: str) -> tuple[int, int]:
             # Strip the "<rev>:" prefix git grep adds.
             if ":" in path:
                 path = path.split(":", 1)[1]
-            if not any(marker in path for marker in TEST_ONLY_PATH_MARKERS):
-                real_paths.add(path)
+            leak_paths.add(path)
 
-    return len(commits), len(real_paths)
+    return len(commits), len(leak_paths)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -145,16 +199,14 @@ def main(argv: list[str] | None = None) -> int:
     found_any = False
     for key in sorted(fingerprints):
         value = values[key]
-        commits, real_files = search_history(repo, value)
-        # A hit is only a leak when it occurs outside test fixtures and the
-        # scanner's own canaries.
-        present = real_files > 0
+        commits, leak_files = search_history(repo, value)
+        # A synthetic value is never a leak, wherever it appears. A non-
+        # synthetic value is a leak in ANY file, test or not.
+        present = leak_files > 0
         found_any = found_any or present
         state = "PRESENT IN HISTORY" if present else "absent"
-        extra = (f" (test-fixture hits only: {commits})"
-                 if not present and commits else "")
         print(f"  {key:22s} {state:20s} commits={commits} "
-              f"non_test_files={real_files}{extra}")
+              f"leak_files={leak_files}")
 
     print()
     if args.expect_leak:
