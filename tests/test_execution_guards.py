@@ -81,14 +81,20 @@ class FakeMT5(types.ModuleType):
     TRADE_RETCODE_DONE = 10009
     TIMEFRAME_M15 = 15
     TIMEFRAME_H4 = 16388
+    ACCOUNT_TRADE_MODE_DEMO = 0
+    ACCOUNT_TRADE_MODE_CONTEST = 1
+    ACCOUNT_TRADE_MODE_REAL = 2
 
     def __init__(self, symbols=None, ticks=None, check_retcode=0,
-                 send_retcode=10009):
+                 send_retcode=10009, trade_mode=None):
         super().__init__("MetaTrader5")
         self._symbols = symbols or {}
         self._ticks = ticks or {}
         self.check_retcode = check_retcode
         self.send_retcode = send_retcode
+        # None means DEMO, so mode-guard tests can override explicitly.
+        self.trade_mode = (self.ACCOUNT_TRADE_MODE_DEMO
+                           if trade_mode is None else trade_mode)
         self.calls = []          # ordered log of (name, args)
         self.sent_requests = []
         self.connected = True
@@ -150,7 +156,14 @@ class FakeMT5(types.ModuleType):
 
     def account_info(self):
         self._log("account_info")
-        return None
+        # DEMO by default: these tests exercise order mechanics, and the
+        # account-mode guard must not mask what they are checking.
+        return types.SimpleNamespace(
+            trade_mode=self.ACCOUNT_TRADE_MODE_DEMO,
+            login=113363533, server="MetaQuotes-Demo", currency="EUR",
+            balance=10000.0, equity=10000.0, profit=0.0,
+            margin=0.0, margin_free=10000.0, margin_level=0.0,
+        )
 
     def copy_rates_from_pos(self, *a, **kw):
         self._log("copy_rates_from_pos", *a, **kw)

@@ -1,6 +1,57 @@
 import MetaTrader5 as mt5
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Account-mode guard
+# ─────────────────────────────────────────────────────────────────────────────
+# Every order-sending path in this module goes through require_demo_account().
+# A verification or maintenance script must never be able to place a live order
+# by accident, so the guard is a hard refusal on a real account rather than a
+# warning. Live trading is not reachable from this module at all; it arrives
+# with the engine's own executor, which has its own explicit mode gate.
+
+DEMO_MODE_LABEL = "DEMO"
+
+
+def is_demo_account() -> tuple[bool, str]:
+    """Is the connected MT5 account a demo account?
+
+    Returns (is_demo, reason). An unreadable account is NOT treated as demo:
+    if we cannot prove it is a demo account we must refuse to trade.
+    """
+    acc = mt5.account_info()
+    if acc is None:
+        return False, "account_info() returned None; cannot confirm demo mode"
+
+    trade_mode = getattr(acc, "trade_mode", None)
+    demo_mode = getattr(mt5, "ACCOUNT_TRADE_MODE_DEMO", 0)
+
+    if trade_mode is None:
+        return False, "account_info() has no trade_mode; cannot confirm demo mode"
+
+    if trade_mode == demo_mode:
+        return True, ""
+
+    contest_mode = getattr(mt5, "ACCOUNT_TRADE_MODE_CONTEST", 1)
+    real_mode = getattr(mt5, "ACCOUNT_TRADE_MODE_REAL", 2)
+    if trade_mode == real_mode:
+        return False, (
+            f"account trade_mode={trade_mode} is REAL/live; refusing to send "
+            f"orders from a verification path"
+        )
+    if trade_mode == contest_mode:
+        return False, (
+            f"account trade_mode={trade_mode} is CONTEST; refusing to send "
+            f"orders from a verification path"
+        )
+    return False, f"unrecognised account trade_mode={trade_mode}; refusing to send orders"
+
+
+def require_demo_account() -> tuple[bool, str]:
+    """Gate for order-sending code. Returns (allowed, reason_if_not)."""
+    return is_demo_account()
+
+
 def get_open_positions() -> list:
     """Retrieves all active open trading positions from MT5."""
     positions = mt5.positions_get()
@@ -27,6 +78,16 @@ def get_open_positions() -> list:
 
 def close_position(ticket: int) -> dict:
     """Closes a specific open position by ticket."""
+    # Closing is still an order. On a live account this module does not act.
+    demo_ok, demo_reason = require_demo_account()
+    if not demo_ok:
+        return {
+            "success": False,
+            "status": "REFUSED",
+            "message": f"Refusing to close: {demo_reason}",
+            "ticket": None,
+        }
+
     positions = mt5.positions_get(ticket=ticket)
     if not positions or len(positions) == 0:
         return {"success": False, "message": f"Position #{ticket} not found."}
@@ -188,6 +249,17 @@ def execute_trade(symbol: str, decision: str, lot_size: float = 0.01, sl_pips: f
             f"Refusing to place {decision} {symbol} without a stop loss "
             "(sl_pips must be > 0). Every order requires a broker-side SL."
         )
+
+    # Account-mode gate comes FIRST, before any broker query about the symbol.
+    # On a live account this module must refuse without touching symbol data.
+    demo_ok, demo_reason = require_demo_account()
+    if not demo_ok:
+        return {
+            "success": False,
+            "status": "REFUSED",
+            "message": f"Refusing to place order: {demo_reason}",
+            "ticket": None,
+        }
 
     # Whitelist gate runs before any MT5 order call.
     allowed, reason = _check_symbol_allowed(symbol)

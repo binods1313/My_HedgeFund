@@ -257,6 +257,119 @@ MUTATIONS: list[Mutation] = [
             "tests/test_secret_scan.py::TestMasking::test_report_never_contains_raw_secret",
         ],
     ),
+    Mutation(
+        name="M19: margin level always displayed (threshold ignored)",
+        target="formatting.py",
+        old="""    if used < threshold:
+        return False""",
+        new="""    if False:
+        return False""",
+        expect_fail=[
+            "tests/test_formatting_and_mode.py::TestFormatMarginLevel::test_margin_0_2_is_na",
+            "tests/test_formatting_and_mode.py::TestFormatMarginLevel::test_margin_0_99_is_na",
+        ],
+    ),
+    Mutation(
+        name="M20: margin threshold hardcoded to 0 instead of config",
+        target="formatting.py",
+        old="""    if threshold is None:
+        threshold = _margin_threshold()""",
+        new="""    if threshold is None:
+        threshold = 0.0""",
+        expect_fail=[
+            "tests/test_formatting_and_mode.py::TestFormatMarginLevel::test_threshold_comes_from_config",
+            "tests/test_formatting_and_mode.py::TestFormatMarginLevel::test_config_threshold_drives_behaviour",
+        ],
+    ),
+    Mutation(
+        name="M21: currency symbol hardcoded to $ again",
+        target="formatting.py",
+        old="""    return CURRENCY_SYMBOLS.get(str(currency).strip().upper(), "")""",
+        new="""    return "$" if currency else \"\"""",
+        expect_fail=[
+            "tests/test_formatting_and_mode.py::TestCurrencyFormatting::test_format_money_uses_account_currency",
+            "tests/test_formatting_and_mode.py::TestCurrencyFormatting::test_unknown_currency_has_no_symbol",
+        ],
+    ),
+    Mutation(
+        name="M22: demo-mode guard removed from execute_trade",
+        target="execution.py",
+        old="""    demo_ok, demo_reason = require_demo_account()
+    if not demo_ok:
+        return {
+            "success": False,
+            "status": "REFUSED",
+            "message": f"Refusing to place order: {demo_reason}",
+            "ticket": None,
+        }""",
+        new="""    demo_ok, demo_reason = True, ""
+    if not demo_ok:
+        return {
+            "success": False,
+            "status": "REFUSED",
+            "message": f"Refusing to place order: {demo_reason}",
+            "ticket": None,
+        }""",
+        expect_fail=[
+            "tests/test_formatting_and_mode.py::TestNoOrderSentOnLiveAccount::test_execute_trade_refused[2-REAL]",
+            "tests/test_formatting_and_mode.py::TestNoOrderSentOnLiveAccount::test_execute_trade_refused[1-CONTEST]",
+        ],
+    ),
+    Mutation(
+        name="M23: demo-mode guard removed from close_position",
+        target="execution.py",
+        old="""    demo_ok, demo_reason = require_demo_account()
+    if not demo_ok:
+        return {
+            "success": False,
+            "status": "REFUSED",
+            "message": f"Refusing to close: {demo_reason}",
+            "ticket": None,
+        }""",
+        new="""    demo_ok, demo_reason = True, ""
+    if not demo_ok:
+        return {
+            "success": False,
+            "status": "REFUSED",
+            "message": f"Refusing to close: {demo_reason}",
+            "ticket": None,
+        }""",
+        expect_fail=[
+            "tests/test_formatting_and_mode.py::TestNoOrderSentOnLiveAccount::test_close_position_refused_on_real_account",
+        ],
+    ),
+    Mutation(
+        name="M24: unknown account mode assumed safe (fails open)",
+        target="execution.py",
+        old="""    if trade_mode == demo_mode:
+        return True, \"\"""",
+        new="""    if trade_mode is not None:
+        return True, \"\"""",
+        expect_fail=[
+            "tests/test_formatting_and_mode.py::TestDemoModeGuard::test_real_account_is_refused",
+            "tests/test_formatting_and_mode.py::TestDemoModeGuard::test_unknown_mode_is_refused",
+        ],
+    ),
+    Mutation(
+        name="M25: verification script orders on a non-demo account",
+        target="scripts/demo_verification.py",
+        old="""    if not check_demo_account_mode(mt5_mod, log):
+        return log""",
+        new="""    if False:
+        return log""",
+        expect_fail=[
+            "tests/test_demo_verification.py::TestAccountModeGuard::test_non_demo_account_is_refused[2-REAL]",
+        ],
+    ),
+    Mutation(
+        name="M26: account number masking removed",
+        target="formatting.py",
+        old="""    return "*" * (len(text) - 3) + text[-3:]""",
+        new="""    return text""",
+        expect_fail=[
+            "tests/test_formatting_and_mode.py::TestMaskAccount::test_masks_all_but_last_three",
+        ],
+    ),
 ]
 
 

@@ -82,6 +82,18 @@ class TradingSettings(StrictModel):
     tradable_symbols: list[str] = Field(min_length=1)
 
 
+class DisplaySettings(StrictModel):
+    """Presentation thresholds, in account currency unless noted.
+
+    Kept in config so a magic number does not end up inlined in the HUD. The
+    margin-level cut-off in particular is a correctness boundary: below it the
+    percentage is meaningless and must render as N/A.
+    """
+
+    margin_level_na_below: float = Field(default=1.0, gt=0)
+    margin_level_na_below_currency: str = Field(default="ACCOUNT")
+
+
 class SymbolSettings(StrictModel):
     """symbols section.
 
@@ -98,6 +110,7 @@ class AppConfig(StrictModel):
     llm: LlmSettings
     trading: TradingSettings
     symbols: SymbolSettings
+    display: DisplaySettings = Field(default_factory=DisplaySettings)
 
     @model_validator(mode="after")
     def _whitelists_agree(self) -> "AppConfig":
@@ -182,4 +195,7 @@ def load_config(path: Path | str | None = None) -> AppConfig:
         "trading": _required(raw, "trading", cfg_path),
         "symbols": symbols,
     }
+    # display is optional in the YAML; the model supplies documented defaults.
+    if isinstance(raw.get("display"), dict):
+        payload["display"] = raw["display"]
     return AppConfig.model_validate(payload)

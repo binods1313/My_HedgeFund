@@ -157,6 +157,14 @@ sessions:
   block_friday_after_utc_hour: 20   # No new entries Friday evening
   block_sunday_before_utc_hour: 21  # No entries until Sunday NY open
 
+# ── Display / Formatting ─────────────────────────────────────────────────────
+display:
+  # Margin level is equity/margin. With little or no margin in use the ratio is
+  # meaningless and the broker reports 0, which used to render as 487,572%.
+  # Below this threshold (in ACCOUNT CURRENCY) the HUD shows N/A instead.
+  margin_level_na_below: 1.0
+  margin_level_na_below_currency: ACCOUNT
+
 # ── Engine ───────────────────────────────────────────────────────────────────
 engine:
   mode: PAPER                       # PAPER (default) | LIVE (requires typed confirmation)

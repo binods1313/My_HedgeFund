@@ -398,9 +398,52 @@ def check_classification(mt5_mod, classify_symbol, log: CheckLog):
               f"whitelist gating still enforced independently")
 
 
+def check_demo_account_mode(mt5_mod, log: CheckLog) -> bool:
+    """Refuse to continue if this is not a demo account.
+
+    This script sends a real order. On a live account it must refuse outright
+    rather than rely on the operator reading the account number.
+    """
+    print(section("ACCOUNT MODE GUARD"))
+
+    acc = mt5_mod.account_info()
+    if acc is None:
+        log.fail("account mode", "account_info() returned None")
+        print(f"  {FAIL:6s} account mode - account_info() returned None")
+        return False
+
+    trade_mode = getattr(acc, "trade_mode", None)
+    demo_mode = getattr(mt5_mod, "ACCOUNT_TRADE_MODE_DEMO", 0)
+    real_mode = getattr(mt5_mod, "ACCOUNT_TRADE_MODE_REAL", 2)
+    contest_mode = getattr(mt5_mod, "ACCOUNT_TRADE_MODE_CONTEST", 1)
+
+    label = {demo_mode: "DEMO", contest_mode: "CONTEST", real_mode: "REAL"}.get(
+        trade_mode, f"UNKNOWN({trade_mode})")
+
+    if trade_mode == demo_mode:
+        log.ok("account mode", f"{label} account; orders permitted")
+        print(f"  {OK:6s} account mode = {label} (orders permitted)")
+        return True
+
+    detail = f"account mode is {label}, not DEMO; this script will NOT place orders"
+    log.fail("account mode", detail)
+    print(f"  {FAIL:6s} {detail}")
+    return False
+
+
 def check_demo_order(mt5_mod, normalize_lot, log: CheckLog):
     """Place one real demo order and close it in a finally block."""
     print(section("DEMO ORDER"))
+
+    # Re-check the account mode here as well, immediately before ordering.
+    acc = mt5_mod.account_info()
+    trade_mode = getattr(acc, "trade_mode", None) if acc is not None else None
+    demo_mode = getattr(mt5_mod, "ACCOUNT_TRADE_MODE_DEMO", 0)
+    if trade_mode != demo_mode:
+        log.skip("demo order", f"not a demo account (trade_mode={trade_mode})")
+        print(f"  {SKIP:6s} demo order - not a demo account "
+              f"(trade_mode={trade_mode}); no order sent")
+        return
 
     symbol = next(
         (s for s in ("EURUSD", "XAUUSD") if mt5_mod.symbol_info(s) is not None),
@@ -557,6 +600,10 @@ def run(log: CheckLog | None = None) -> CheckLog:
     from execution import _normalize_lot
 
     if not check_connection(mt5_mod, initialize_mt5, log):
+        return log
+
+    # Refuse outright on a non-demo account: everything below may send orders.
+    if not check_demo_account_mode(mt5_mod, log):
         return log
 
     symbols = check_symbol_discovery(mt5_mod, _classify_symbol, log)

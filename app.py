@@ -14,6 +14,13 @@ from data_engine import (
 )
 from ai_brain import get_ai_decision
 from execution import execute_trade, get_open_positions, close_position, close_all_positions
+from formatting import (
+    currency_symbol,
+    format_margin_level,
+    format_money,
+    format_open_risk,
+    mask_account,
+)
 
 st.set_page_config(
     page_title="AI Hedge Fund Command Center",
@@ -548,15 +555,14 @@ ml  = telemetry["margin_level"]
 srv   = telemetry.get("server", "N/A")
 login = telemetry.get("login", "N/A")
 
-# Bug fix: use account currency symbol instead of hardcoded "$"
-_CURRENCY_SYMBOLS = {"USD": "$", "EUR": "€", "GBP": "£", "JPY": "¥",
-                     "CHF": "₣", "AUD": "A$", "CAD": "C$"}
-_cur_sym = _CURRENCY_SYMBOLS.get(telemetry.get("currency", "USD"), "")
 _currency = telemetry.get("currency", "USD")
-
-# Bug fix: show margin level as N/A when margin used is negligible (avoids 487,572%)
 _margin_used = telemetry.get("margin", 0.0)
-_margin_level_str = f"{ml:,.1f}%" if (ml > 0 and _margin_used > 1.0) else "N/A"
+
+# Formatting rules live in formatting.py so they are unit-tested rather than
+# inlined here. The margin-level threshold comes from config.yaml.
+_margin_level_str = format_margin_level(_margin_used, ml, _currency)
+_balance_str = format_money(bal, _currency)
+_equity_str = format_money(eq, _currency)
 
 conn_dot = '<span class="status-dot"></span>' if mt5_connected else '<span class="status-dot offline"></span>'
 conn_text = "CONNECTED" if mt5_connected else "OFFLINE"
@@ -570,15 +576,15 @@ st.markdown(f"""
   </div>
   <div class="hud-item">
     <span class="hud-label">MT5 Server / Account</span>
-    <span class="hud-value">{srv} ({login})</span>
+    <span class="hud-value">{srv} ({mask_account(login) if login != "N/A" else login})</span>
   </div>
   <div class="hud-item">
     <span class="hud-label">Balance</span>
-    <span class="hud-value">{_cur_sym}{bal:,.2f} {_currency}</span>
+    <span class="hud-value">{_balance_str} {_currency}</span>
   </div>
   <div class="hud-item">
     <span class="hud-label">Floating Equity</span>
-    <span class="hud-value">{_cur_sym}{eq:,.2f}</span>
+    <span class="hud-value">{_equity_str}</span>
   </div>
   <div class="hud-item">
     <span class="hud-label">Floating P&L</span>
@@ -602,6 +608,12 @@ strip_quote = get_symbol_live_quote(sym_for_strip) if mt5_connected else {}
 spread_str = f"{strip_quote.get('spread', '--')}" if strip_quote else "--"
 tick_time = strip_quote.get("time", "--") if strip_quote else "--"
 
+# These three previously hardcoded "$", which is wrong on any non-USD account.
+# This account is denominated in EUR, so they read 20.51 EUR, not $20.51.
+_margin_used_str = format_money(margin_used, _currency)
+_margin_free_str = format_money(margin_free, _currency)
+_open_risk_str = format_open_risk(open_risk, _currency)
+
 st.markdown(f"""
 <div class="info-strip">
   <div class="strip-item">
@@ -617,16 +629,16 @@ st.markdown(f"""
   </div>
   <div class="strip-divider"></div>
   <div class="strip-item">
-    <div><div class="strip-label">Margin Used</div><div class="strip-value">${margin_used:,.2f}</div></div>
+    <div><div class="strip-label">Margin Used</div><div class="strip-value">{_margin_used_str}</div></div>
   </div>
   <div class="strip-divider"></div>
   <div class="strip-item">
-    <div><div class="strip-label">Free Margin</div><div class="strip-value">${margin_free:,.2f}</div></div>
+    <div><div class="strip-label">Free Margin</div><div class="strip-value">{_margin_free_str}</div></div>
   </div>
   <div class="strip-divider"></div>
   <div class="strip-item">
-    <div><div class="strip-label">Open Risk $</div>
-    <div class="strip-value" style="color:{'#F43F5E' if open_risk>0 else '#34D399'};">${open_risk:,.2f}</div></div>
+    <div><div class="strip-label">Open Risk ({_currency})</div>
+    <div class="strip-value" style="color:{'#F43F5E' if open_risk>0 else '#34D399'};">{_open_risk_str}</div></div>
   </div>
   <div class="strip-divider"></div>
   <div class="strip-item">
@@ -758,7 +770,9 @@ with col_c:
       </div>
       <div class="badge-row">
         <span class="badge {str_cls}">AI SIGNAL &middot; {strength}</span>
-        <span class="badge cyan">CONFIDENCE {conf}%</span>
+        <span class="badge neutral" title="Asserted by the LLM for display only. This is not a
+              computed confidence score and is never used as an execution gate.">LLM-ASSERTED
+              (legacy, not an execution gate) {conf}%</span>
       </div>
       <div class="stat-pills">
         <div class="stat-pill"><div class="stat-pill-label">Target</div><div class="stat-pill-value">{sel_sym}</div></div>

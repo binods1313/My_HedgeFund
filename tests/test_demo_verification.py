@@ -54,7 +54,8 @@ class FakeTick:
         self.time = _t.time() if time is None else time
 
 
-def _make_fake(symbols, check_retcode=0, send_retcode=10009, connect=True):
+def _make_fake(symbols, check_retcode=0, send_retcode=10009, connect=True,
+               trade_mode=0):
     fake = types.SimpleNamespace()
     fake.ORDER_TYPE_BUY = 0
     fake.ORDER_TYPE_SELL = 1
@@ -63,6 +64,9 @@ def _make_fake(symbols, check_retcode=0, send_retcode=10009, connect=True):
     fake.ORDER_FILLING_FOK = 2
     fake.ORDER_TIME_GTC = 0
     fake.TRADE_RETCODE_DONE = 10009
+    fake.ACCOUNT_TRADE_MODE_DEMO = 0
+    fake.ACCOUNT_TRADE_MODE_CONTEST = 1
+    fake.ACCOUNT_TRADE_MODE_REAL = 2
 
     fake._symbols = {s.name: s for s in symbols}
     fake._ticks = {}
@@ -70,6 +74,7 @@ def _make_fake(symbols, check_retcode=0, send_retcode=10009, connect=True):
         fake._ticks[s.name] = FakeTick(1.08500, 1.08502)
     fake.check_retcode = check_retcode
     fake.send_retcode = send_retcode
+    fake.trade_mode = trade_mode
     fake.connect = connect
     fake.sent = []
     fake.closed = []
@@ -116,6 +121,7 @@ def _make_fake(symbols, check_retcode=0, send_retcode=10009, connect=True):
         return types.SimpleNamespace(
             login=1234567, server="MetaQuotes-Demo", currency="USD",
             balance=10000.0, equity=10000.0, margin=0.0, margin_level=0.0,
+            trade_mode=fake.trade_mode,
         )
 
     fake.symbol_info = symbol_info
@@ -507,6 +513,59 @@ class TestReportFile:
 # ─────────────────────────────────────────────────────────────────────────────
 # Importability (no MT5 needed at import time)
 # ─────────────────────────────────────────────────────────────────────────────
+
+class TestAccountModeGuard:
+    """C2: the script must refuse to order on a non-demo account."""
+
+    def test_demo_account_passes_the_guard(self):
+        fake = _make_fake([FakeSymbolInfo("EURUSD", "Forex\\Majors")], trade_mode=0)
+        log = dv.CheckLog()
+        with redirect_stdout(io.StringIO()):
+            ok = dv.check_demo_account_mode(fake, log)
+        assert ok is True
+        assert log.verdict() == dv.VERDICT_PASS
+
+    @pytest.mark.parametrize("trade_mode,label", [(2, "REAL"), (1, "CONTEST")])
+    def test_non_demo_account_is_refused(self, trade_mode, label):
+        fake = _make_fake([FakeSymbolInfo("EURUSD", "Forex\\Majors")],
+                          trade_mode=trade_mode)
+        log = dv.CheckLog()
+        with redirect_stdout(io.StringIO()):
+            ok = dv.check_demo_account_mode(fake, log)
+        assert ok is False
+        assert log.verdict() == dv.VERDICT_FAIL
+        assert label in log.render()
+
+    def test_unknown_mode_is_refused(self):
+        fake = _make_fake([FakeSymbolInfo("EURUSD", "Forex\\Majors")],
+                          trade_mode=99)
+        log = dv.CheckLog()
+        with redirect_stdout(io.StringIO()):
+            assert dv.check_demo_account_mode(fake, log) is False
+        assert log.verdict() == dv.VERDICT_FAIL
+
+    def test_no_order_is_sent_on_a_real_account(self):
+        """The end-to-end property: real account -> zero order_send calls."""
+        fake = _make_fake([FakeSymbolInfo("EURUSD", "Forex\\Majors")],
+                          trade_mode=2)
+        log = dv.CheckLog()
+        with redirect_stdout(io.StringIO()):
+            if not dv.check_demo_account_mode(fake, log):
+                return
+            raise AssertionError("guard should have refused; order path not reached")
+        assert fake.sent == [], "no order may be sent on a live account"
+        assert fake.closed == []
+
+    def test_check_demo_order_itself_refuses_on_real_account(self):
+        """Even if the caller skips the guard, check_demo_order re-checks."""
+        fake = _make_fake([FakeSymbolInfo("EURUSD", "Forex\\Majors")],
+                          trade_mode=2)
+        log = dv.CheckLog()
+        with redirect_stdout(io.StringIO()):
+            dv.check_demo_order(fake, _normalize_lot, log)
+        assert fake.sent == [], "no order may be sent on a live account"
+        assert log.verdict() == dv.VERDICT_INCOMPLETE
+
 
 class TestModuleImport:
 
