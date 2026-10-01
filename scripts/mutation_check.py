@@ -410,8 +410,10 @@ MUTATIONS: list[Mutation] = [
         target="scripts/secret_scan.py",
         old="""    config_hits = scan_git_config(repo)""",
         new="""    config_hits = []""",
+        # Must target the test that drives main(). The earlier test passes hits
+        # straight into render_report, so it cannot observe this mutation.
         expect_fail=[
-            "tests/test_secret_scan.py::TestGitConfigScanning::test_token_in_remote_url_is_masked_in_output",
+            "tests/test_secret_scan.py::TestGitConfigScanning::test_main_reports_git_config_hits",
         ],
     ),
 ]
