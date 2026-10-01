@@ -8,10 +8,12 @@ Run: python -m pytest tests/test_secret_scan.py -v
 """
 import subprocess
 import textwrap
+from pathlib import Path
 
 import pytest
 
 from scripts import secret_scan as ss
+from scripts import verify_history_clean as vh
 
 
 class TestScannerSelfTest:
@@ -339,6 +341,96 @@ class TestGitConfigScanning:
         hits = ss.scan_git_config(ss._REPO_ROOT)
         offenders = [f"{h.file}:{h.line_no} {h.masked_value}" for h in hits]
         assert not offenders, "credential in .git/config: " + "; ".join(offenders)
+
+
+class TestSyntheticValueAllowlist:
+    """E4: exemption is granted per VALUE, never per PATH.
+
+    A path-based exemption previously excused any credential-shaped string
+    under tests/ or scripts/secret_scan.py. A real password pasted into a test
+    file was therefore invisible. These tests pin the value-based behaviour.
+    """
+
+    @pytest.mark.parametrize("value", [
+        "YOUR_MT5_PASSWORD", "your_password", "YOUR_OPENROUTER_KEY",
+        "changeme", "CHANGEME",
+        "***REMOVED-MT5_PASSWORD***", "***REMOVED-OPENROUTER_API_KEY***",
+        "[REDACTED]", "REDACTED",
+        "999999999", "000000000", "123456789",
+    ])
+    def test_synthetic_values_are_recognised(self, value):
+        assert vh.is_synthetic(value) is True
+
+    @pytest.mark.parametrize("value", [
+        "Xq7SampleNotRealPwd9z",                       # a real-looking password
+        "sk-or-v1-AAAABBBBCCCCDDDDEEEEFFFF",
+        "AKIAIOSFODNN7EXAMPLE",
+        "hunter2xyz",
+        "999999998",                      # near-miss of an allowlisted value
+    ])
+    def test_real_values_are_not_synthetic(self, value):
+        assert vh.is_synthetic(value) is False
+
+    def test_path_is_not_consulted(self):
+        """The old design keyed off path. Prove it no longer does."""
+        import inspect
+        src = inspect.getsource(vh.search_history)
+        assert "TEST_ONLY_PATH_MARKERS" not in src, (
+            "search_history still references a path-based exemption"
+        )
+
+    def test_real_secret_in_a_test_file_is_still_a_leak(self, tmp_path):
+        """The regression this replaces: a live password under tests/.
+
+        Commits a file at tests/test_fixture.py containing a real-looking
+        credential. It must be reported, because location grants no exemption.
+        """
+        repo = tmp_path / "repo"
+        (repo / "tests").mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        (repo / "tests" / "test_fixture.py").write_text(
+            'MT5_PASSWORD = "Rea1LookingPassw0rd"\n', encoding="utf-8"
+        )
+        subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t",
+             "commit", "-q", "-m", "fixture"],
+            check=True,
+        )
+
+        commits, leak_files = vh.search_history(repo, "Rea1LookingPassw0rd")
+        assert leak_files > 0, (
+            "a real credential in tests/ was excused by its path"
+        )
+        assert "tests/test_fixture.py" in str(leak_files) or leak_files >= 1
+
+    def test_synthetic_value_in_a_test_file_is_not_a_leak(self, tmp_path):
+        """A placeholder in the same location is fine."""
+        repo = tmp_path / "repo"
+        (repo / "tests").mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        (repo / "tests" / "test_fixture.py").write_text(
+            'MT5_PASSWORD = "YOUR_MT5_PASSWORD"\n', encoding="utf-8"
+        )
+        subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t",
+             "commit", "-q", "-m", "fixture"],
+            check=True,
+        )
+
+        assert vh.search_history(repo, "YOUR_MT5_PASSWORD") == (0, 0)
+
+    def test_synthetic_check_short_circuits_search(self):
+        """A synthetic value must not even walk the history."""
+        assert vh.search_history(Path("/nonexistent"), "YOUR_MT5_PASSWORD") == (0, 0)
+
+    def test_allowlist_contains_only_intended_entries(self):
+        """Guard against someone allowlisting a live credential."""
+        for value in vh.SYNTHETIC_TEST_VALUES:
+            assert "sk-or-v1-" not in value, f"{value!r} looks like a live key"
+            assert not value.startswith("ghp_"), f"{value!r} looks like a live token"
+            assert not value.startswith("AKIA"), f"{value!r} looks like an AWS key"
 
 
 class TestThisRepoIsClean:
