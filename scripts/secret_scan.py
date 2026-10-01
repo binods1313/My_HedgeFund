@@ -101,6 +101,13 @@ def is_placeholder(value: str) -> bool:
         return True
     if v.startswith("<") and v.endswith(">"):
         return True
+    # Redaction / scrub markers left by a secret-removal rewrite, e.g.
+    # "***REMOVED-MT5_PASSWORD***" or "[REDACTED]". These are the intended
+    # output of scrubbing, not a credential.
+    if re.search(r"removed[-_ ]?(?:secret|password|key|token)?", v):
+        return True
+    if "redacted" in v or "scrubbed" in v:
+        return True
     return False
 
 
@@ -364,16 +371,18 @@ def verify_scanner_detects_known_secret() -> bool:
                   file=sys.stderr)
             return False
 
-    # Truncated example keys must not be reported.
-    for truncated in ("sk-or-v1-...", "gsk_...", "<your-key>"):
-        if not is_placeholder(truncated):
-            print(f"  BROKEN: truncated example {truncated!r} not recognised "
-                  f"as a placeholder", file=sys.stderr)
+    # Truncated example keys and scrub markers must not be reported.
+    for not_a_secret in ("sk-or-v1-...", "gsk_...", "<your-key>",
+                         "***REMOVED-MT5_PASSWORD***",
+                         "[REDACTED]"):
+        if not is_placeholder(not_a_secret):
+            print(f"  BROKEN: {not_a_secret!r} not recognised as a placeholder",
+                  file=sys.stderr)
             return False
 
     # A real literal must still be flagged even on the same line shape.
     for literal in (
-        'MT5_PASSWORD = "***REMOVED-MT5_PASSWORD***"',
+        'MT5_PASSWORD = "Xq7SampleNotRealPwd9z"',
         'OPENROUTER_API_KEY = "sk-or-v1-AAAABBBBCCCCDDDDEEEEFFFF"',
     ):
         m = dict(PATTERNS)["credential_assignment"].search(literal)
@@ -394,7 +403,7 @@ def redact_line(line: str, patterns: list[tuple[str, re.Pattern]] | None = None)
     """Replace any secret-looking substring in a source line with its mask.
 
     The report shows the offending line for context, so the line must be
-    redacted: printing 'MT5_PASSWORD = "***REMOVED-MT5_PASSWORD***"' into a report file would
+    redacted: printing 'MT5_PASSWORD = "Xq7SampleNotRealPwd9z"' into a report file would
     copy the very secret the scan exists to surface.
     """
     patterns = patterns or PATTERNS
