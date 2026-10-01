@@ -281,6 +281,53 @@ class TestGitConfigScanning:
         repo.mkdir()
         assert ss.scan_git_config(repo) == []
 
+    def test_main_reports_git_config_hits(self, tmp_path, monkeypatch, capsys):
+        """End to end: a token in the remote URL must surface in the report.
+
+        Drives main() rather than render_report(), because clearing the
+        config_hits variable inside main() is otherwise unobservable.
+        """
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        self._write_config(repo, "https://ghp_" + "b" * 36 + "@github.com/o/r.git")
+
+        secret = ("ghp_" + "b" * 36)
+        monkeypatch.setattr(
+            ss, "scan_git_config",
+            lambda r: [ss.Hit(pattern="github_token", commit="GIT_CONFIG",
+                              file=".git/config", line_no=8,
+                              masked_value=ss.mask(secret),
+                              line=f"url = https://{secret}@github.com/o/r.git")],
+        )
+        monkeypatch.setattr(ss, "scan_history", lambda r: [])
+        monkeypatch.setattr(ss, "scan_tree", lambda r: [])
+
+        ss.main(["--repo", str(repo)])
+        out = capsys.readouterr().out
+
+        assert ".git/config" in out, "git/config hits not surfaced by main()"
+        assert "remove the credential from .git/config" in out.lower(), (
+            "main() did not raise the git/config action"
+        )
+        assert secret not in out, "raw token leaked through main()"
+
+    def test_main_reports_no_action_when_config_is_clean(self, tmp_path,
+                                                         monkeypatch, capsys):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        self._write_config(repo, "https://github.com/o/r.git")
+
+        monkeypatch.setattr(ss, "scan_history", lambda r: [])
+        monkeypatch.setattr(ss, "scan_tree", lambda r: [])
+
+        ss.main(["--repo", str(repo)])
+        out = capsys.readouterr().out
+
+        assert "No secrets found" in out
+        assert "ACTION REQUIRED" not in out
+
     def test_this_repos_own_git_config_has_no_token(self):
         """The repo we are about to push must not embed a token in its remote."""
         hits = ss.scan_git_config(ss._REPO_ROOT)
