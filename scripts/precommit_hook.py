@@ -23,18 +23,6 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# Files that legitimately contain credential-shaped strings.
-#
-# The scanner must contain canary secrets, otherwise it cannot prove it still
-# detects anything; the tests must contain sample secrets for the same reason.
-# These are documented, reviewable, synthetic values -- not real credentials.
-ALLOWED_SECRET_SHAPES = {
-    "scripts/secret_scan.py",       # scanner self-test canaries
-    "scripts/precommit_hook.py",    # imports the canary paths
-    "tests/test_secret_scan.py",    # tests for the scanner
-    ".secrets.baseline",            # detect-secrets rule definitions
-}
-
 
 def staged_files() -> list[str]:
     proc = subprocess.run(
@@ -69,7 +57,9 @@ def main() -> int:
     findings: list[str] = []
     scanned = 0
     for rel in staged_files():
-        if rel in ALLOWED_SECRET_SHAPES:
+        # The scanner and its tests must contain synthetic canaries. The list
+        # lives with the scanner so the two cannot drift apart.
+        if rel in ss.SELF_REFERENTIAL_FILES:
             continue
         content = staged_blob(rel)
         if not content:

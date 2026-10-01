@@ -221,14 +221,32 @@ def scan_history(repo: Path) -> list[Hit]:
     return hits
 
 
+# Files that legitimately contain credential-shaped strings: the scanner needs
+# synthetic canaries to prove it still fires, and its tests need sample secrets
+# for the same reason. Kept in one place so the pre-commit hook and the tests
+# cannot drift apart.
+SELF_REFERENTIAL_FILES = frozenset({
+    "scripts/secret_scan.py",
+    "scripts/precommit_hook.py",
+    "tests/test_secret_scan.py",
+    ".secrets.baseline",
+})
+
+
 def scan_tree(repo: Path) -> list[Hit]:
-    """Scan the current working tree (tracked files only)."""
+    """Scan the current working tree (tracked files only).
+
+    Self-referential files listed in SELF_REFERENTIAL_FILES are skipped; their
+    credential-shaped content is synthetic by construction.
+    """
     code, out, err = _git(["ls-files"], repo)
     if code != 0:
         raise RuntimeError(f"git ls-files failed: {err.decode('utf-8', 'replace')}")
 
     hits: list[Hit] = []
     for rel in out.decode("utf-8", "replace").split():
+        if rel in SELF_REFERENTIAL_FILES:
+            continue
         path = repo / rel
         if not path.is_file():
             continue
