@@ -50,6 +50,8 @@ def build_indicator_snapshot(df_m15, df_h4) -> dict:
         df_m15: 15-minute OHLCV + indicator DataFrame (from get_technical_dataframe)
         df_h4:  4-hour OHLCV + indicator DataFrame
     """
+    if df_m15 is None or df_h4 is None:
+        return {}
     if df_m15.empty or df_h4.empty:
         return {}
 
