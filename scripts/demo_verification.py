@@ -581,23 +581,41 @@ def build_report(log: CheckLog, when: datetime | None = None) -> str:
 # Entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run(log: CheckLog | None = None) -> CheckLog:
-    """Execute every check against a live MT5 connection."""
+def _demo_normalize_lot(raw_lot, info):
+    """Default lot normaliser, used when run() is called without injected deps."""
+    from execution import _normalize_lot
+    return _normalize_lot(raw_lot, info)
+
+
+def run(log: CheckLog | None = None, deps: dict | None = None) -> CheckLog:
+    """Execute every check against a live MT5 connection.
+
+    `deps` allows tests to inject the MT5 module and its helpers, so the whole
+    pipeline including the account-mode gate can be exercised without a
+    terminal. Injected deps bypass the live import and the real MT5 library.
+    """
     log = log if log is not None else CheckLog()
 
-    try:
-        import MetaTrader5 as mt5_mod
-    except ImportError:
-        log.fail("MetaTrader5 import", "package not installed")
-        print(f"  {FAIL:6s} MetaTrader5 package not installed")
-        return log
+    if deps is not None:
+        mt5_mod = deps["mt5"]
+        _classify_symbol = deps["classify_symbol"]
+        get_symbol_live_quote = deps.get("get_symbol_live_quote")
+        initialize_mt5 = deps.get("initialize_mt5") or (lambda: True)
+        normalize_lot = deps.get("normalize_lot") or _demo_normalize_lot
+    else:
+        try:
+            import MetaTrader5 as mt5_mod
+        except ImportError:
+            log.fail("MetaTrader5 import", "package not installed")
+            print(f"  {FAIL:6s} MetaTrader5 package not installed")
+            return log
 
-    from data_engine import (
-        _classify_symbol,
-        get_symbol_live_quote,
-        initialize_mt5,
-    )
-    from execution import _normalize_lot
+        from data_engine import (
+            _classify_symbol,
+            get_symbol_live_quote,
+            initialize_mt5,
+        )
+        from execution import _normalize_lot as normalize_lot
 
     if not check_connection(mt5_mod, initialize_mt5, log):
         return log
@@ -608,9 +626,9 @@ def run(log: CheckLog | None = None) -> CheckLog:
 
     symbols = check_symbol_discovery(mt5_mod, _classify_symbol, log)
     check_spread(mt5_mod, get_symbol_live_quote, symbols, log)
-    check_lot_normalization(mt5_mod, _normalize_lot, log)
+    check_lot_normalization(mt5_mod, normalize_lot, log)
     check_classification(mt5_mod, _classify_symbol, log)
-    check_demo_order(mt5_mod, _normalize_lot, log)
+    check_demo_order(mt5_mod, normalize_lot, log)
 
     mt5_mod.shutdown()
     return log

@@ -566,6 +566,85 @@ class TestAccountModeGuard:
         assert fake.sent == [], "no order may be sent on a live account"
         assert log.verdict() == dv.VERDICT_INCOMPLETE
 
+    @pytest.mark.parametrize("trade_mode,label", [(2, "REAL"), (1, "CONTEST")])
+    def test_full_pipeline_sends_nothing_on_non_demo_account(self, trade_mode, label):
+        """The end-to-end property via run(): a non-demo account sends no order.
+
+        This drives the whole pipeline, not just the guard, so a future change
+        that reorders the gate cannot reintroduce a live order.
+        """
+        fake = _make_fake([
+            FakeSymbolInfo("EURUSD", "Forex\\Majors"),
+            FakeSymbolInfo("XAUUSD", "Metals\\Precious"),
+            FakeSymbolInfo("BTCUSD", "Crypto\\Bitcoin"),
+            FakeSymbolInfo("US30", "Indices\\US"),
+        ], trade_mode=trade_mode)
+
+        def quote(symbol, max_tick_age_seconds=30):
+            info = fake.symbol_info(symbol)
+            tick = fake.symbol_info_tick(symbol)
+            return {
+                "bid": tick.bid, "ask": tick.ask, "valid": True,
+                "spread": round((tick.ask - tick.bid) / info.point, 1),
+                "tick_age_s": 1.0,
+            }
+
+        deps = {
+            "mt5": fake,
+            "classify_symbol": dv.data_engine_classify,
+            "get_symbol_live_quote": quote,
+            "initialize_mt5": lambda: True,
+            "normalize_lot": _normalize_lot,
+        }
+
+        log = dv.CheckLog()
+        with redirect_stdout(io.StringIO()):
+            log = dv.run(log, deps=deps)
+
+        assert fake.sent == [], (
+            f"order_send reached on a {label} account — the mode guard was bypassed"
+        )
+        assert fake.closed == []
+        assert log.verdict() == dv.VERDICT_FAIL
+        assert label in log.render()
+
+    def test_full_pipeline_does_order_on_demo_account(self):
+        """Control: the same pipeline on a DEMO account does place an order.
+
+        Without this, the test above would also pass if run() simply never
+        placed orders at all.
+        """
+        fake = _make_fake([
+            FakeSymbolInfo("EURUSD", "Forex\\Majors"),
+            FakeSymbolInfo("XAUUSD", "Metals\\Precious"),
+        ], trade_mode=0)
+
+        def quote(symbol, max_tick_age_seconds=30):
+            info = fake.symbol_info(symbol)
+            tick = fake.symbol_info_tick(symbol)
+            return {
+                "bid": tick.bid, "ask": tick.ask, "valid": True,
+                "spread": round((tick.ask - tick.bid) / info.point, 1),
+                "tick_age_s": 1.0,
+            }
+
+        deps = {
+            "mt5": fake,
+            "classify_symbol": dv.data_engine_classify,
+            "get_symbol_live_quote": quote,
+            "initialize_mt5": lambda: True,
+            "normalize_lot": _normalize_lot,
+        }
+
+        log = dv.CheckLog()
+        with redirect_stdout(io.StringIO()):
+            log = dv.run(log, deps=deps)
+
+        assert len(fake.sent) == 1, (
+            "control failed: a DEMO account should place exactly one order"
+        )
+        assert len(fake.closed) == 1, "the order must be closed again"
+
 
 class TestModuleImport:
 
