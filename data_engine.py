@@ -59,54 +59,52 @@ def _classify_symbol(sym_info) -> str:
 
 
 def get_available_symbols() -> dict:
-    """Dynamically fetches and categorises available instruments directly from MT5.
+    """Dynamically fetches and categorises available instruments from MT5.
 
     Classification is based on sym_info.path, not name substrings, to avoid
     mis-categorising symbols like AETH (stock ETF) as crypto assets.
+
+    Only symbols that are BOTH in config.yaml's tradable whitelist AND
+    classifiable appear in the result. The dropdown source is therefore
+    incapable of offering an Unclassified or non-whitelisted symbol; the
+    executor enforces the same rule independently.
     """
+    from config_loader import load_config
+
+    try:
+        cfg = load_config()
+        allowed = {s.upper() for s in cfg.trading.tradable_symbols}
+    except Exception:
+        # Fails closed: with no validated whitelist we cannot prove any symbol is
+        # tradable, so we offer none.
+        return {}
+
     if not initialize_mt5():
-        return {
-            "Popular Watchlist": ["USDCAD", "XAUUSD", "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "BTCUSD"],
-            "Forex Majors": ["EURUSD", "GBPUSD", "USDJPY", "USDCAD", "USDCHF", "AUDUSD", "NZDUSD"],
-        }
+        return {}
 
     symbols = mt5.symbols_get()
     if not symbols:
-        return {"Popular Watchlist": ["USDCAD", "XAUUSD", "EURUSD", "GBPUSD", "USDJPY"]}
+        return {}
 
-    # Build categories via path-based classification
     categories: dict[str, list[str]] = {
         "Forex Currencies": [],
         "Metals & Commodities": [],
         "Crypto Assets": [],
         "Indices & Equities": [],
-        "Unclassified": [],
     }
-    symbol_set = {s.name for s in symbols}
 
     for sym in symbols:
+        if sym.name.upper() not in allowed:
+            continue
         cat = _classify_symbol(sym)
+        if cat == "Unclassified":
+            # Not offered for trading. Reported separately below so the reason
+            # is visible rather than silently dropped.
+            continue
         if len(categories[cat]) < 250:
             categories[cat].append(sym.name)
 
-    # Popular curated watchlist (only symbols actually available on this broker)
-    popular_candidates = [
-        "XAUUSD", "USDCAD", "EURUSD", "GBPUSD", "USDJPY", "AUDUSD",
-        "NZDUSD", "USDCHF", "BTCUSD", "ETHUSD", "US500", "USTEC",
-        "US30", "NAS100", "GER40", "UK100",
-    ]
-    popular = [s for s in popular_candidates if s in symbol_set]
-    if not popular:
-        popular = list(symbol_set)[:10]
-
-    result = {"Popular Watchlist": popular}
-    # Only include non-empty tradable categories (exclude Unclassified from top-level)
-    for cat, syms in categories.items():
-        if syms and cat != "Unclassified":
-            result[cat] = syms
-    if categories["Unclassified"]:
-        result["Unclassified (non-tradable)"] = categories["Unclassified"]
-
+    result = {cat: syms for cat, syms in categories.items() if syms}
     return result
 
 
