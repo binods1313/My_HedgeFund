@@ -540,11 +540,22 @@ if "ai_state" not in st.session_state:
 
 # ── HUD BAR ───────────────────────────────────────────────────────────────────
 bal = telemetry["balance"]
-eq = telemetry["equity"]
+eq  = telemetry["equity"]
 pnl = telemetry["profit"]
-ml = telemetry["margin_level"]
-srv = telemetry.get("server", "N/A")
+ml  = telemetry["margin_level"]
+srv   = telemetry.get("server", "N/A")
 login = telemetry.get("login", "N/A")
+
+# Bug fix: use account currency symbol instead of hardcoded "$"
+_CURRENCY_SYMBOLS = {"USD": "$", "EUR": "€", "GBP": "£", "JPY": "¥",
+                     "CHF": "₣", "AUD": "A$", "CAD": "C$"}
+_cur_sym = _CURRENCY_SYMBOLS.get(telemetry.get("currency", "USD"), "")
+_currency = telemetry.get("currency", "USD")
+
+# Bug fix: show margin level as N/A when margin used is negligible (avoids 487,572%)
+_margin_used = telemetry.get("margin", 0.0)
+_margin_level_str = f"{ml:,.1f}%" if (ml > 0 and _margin_used > 1.0) else "N/A"
+
 conn_dot = '<span class="status-dot"></span>' if mt5_connected else '<span class="status-dot offline"></span>'
 conn_text = "CONNECTED" if mt5_connected else "OFFLINE"
 conn_pill_color = "" if mt5_connected else "style='background:rgba(244,63,94,0.1);border-color:rgba(244,63,94,0.3);color:#F43F5E;'"
@@ -561,11 +572,11 @@ st.markdown(f"""
   </div>
   <div class="hud-item">
     <span class="hud-label">Balance</span>
-    <span class="hud-value">${bal:,.2f} {telemetry['currency']}</span>
+    <span class="hud-value">{_cur_sym}{bal:,.2f} {_currency}</span>
   </div>
   <div class="hud-item">
     <span class="hud-label">Floating Equity</span>
-    <span class="hud-value">${eq:,.2f}</span>
+    <span class="hud-value">{_cur_sym}{eq:,.2f}</span>
   </div>
   <div class="hud-item">
     <span class="hud-label">Floating P&L</span>
@@ -573,7 +584,7 @@ st.markdown(f"""
   </div>
   <div class="hud-item">
     <span class="hud-label">Margin Level</span>
-    <span class="hud-value cyan">{ml:,.1f}%</span>
+    <span class="hud-value cyan">{_margin_level_str}</span>
   </div>
 </div>
 """, unsafe_allow_html=True)
