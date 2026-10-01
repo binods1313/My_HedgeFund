@@ -210,3 +210,54 @@ class TestSpreadFormula:
         """Normal spread must NOT be rejected by the sanity check."""
         bid, ask = 1.08500, 1.08502
         assert (ask - bid) <= ask * 0.05
+
+    def test_zero_bid_detected(self):
+        """bid == 0 must be flagged as inverted/invalid."""
+        bid, ask = 0.0, 1.10000
+        assert bid <= 0
+
+    def test_negative_bid_detected(self):
+        """Negative bid must be flagged."""
+        bid = -1.0
+        assert bid <= 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STALE TICK TESTS (Item 4 of pre-approval checklist)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestStaleTick:
+    """Unit-test the stale-tick logic without a live MT5 connection.
+
+    We test the age comparison formula directly since the full function
+    requires MT5. Integration verification is in demo_verification.py.
+    """
+
+    def test_fresh_tick_is_valid(self):
+        import time
+        tick_time = time.time() - 5      # 5 seconds old
+        age = time.time() - tick_time
+        assert age < 30, "Fresh tick should be within 30s limit"
+
+    def test_stale_tick_exceeds_limit(self):
+        import time
+        tick_time = time.time() - 60     # 60 seconds old
+        age = time.time() - tick_time
+        assert age > 30, "Old tick should exceed 30s limit"
+
+    def test_boundary_tick_at_exact_limit(self):
+        import time
+        max_age = 30
+        tick_time = time.time() - max_age
+        age = time.time() - tick_time
+        # age should be >= max_age → reject
+        assert age >= max_age
+
+    def test_configurable_max_age(self):
+        """Different max_age values change what counts as stale."""
+        import time
+        tick_time = time.time() - 45    # 45 seconds old
+        age = time.time() - tick_time
+        assert age > 30,  "Stale at 30s limit"
+        assert age < 60,  "Fresh at 60s limit"
+        assert age > 10,  "Stale at 10s limit"

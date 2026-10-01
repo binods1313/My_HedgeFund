@@ -1,0 +1,126 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# My Hedge Fund — Runtime Configuration
+# All thresholds, risk limits, symbol lists and weights live here.
+# Never put secrets here. Use .env for MT5 login, passwords and API keys.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Tick / Feed Validation ───────────────────────────────────────────────────
+feed:
+  max_tick_age_seconds: 30          # Reject ticks older than this (stale feed)
+  max_spread_pct_of_ask: 0.05       # Reject spread > 5 % of ask (corrupt quote)
+
+# ── Tradable Symbol Whitelist ─────────────────────────────────────────────────
+# IMPORTANT: Only symbols in this list may be traded.
+# Anything returned by MT5 but NOT in this list is shown as
+# "Unclassified (non-tradable)" in the UI and is never passed to the executor.
+# Add broker-specific suffix variants here (e.g. EURUSD.m, XAUUSD#).
+symbols:
+  whitelist:
+    forex:
+      - EURUSD
+      - GBPUSD
+      - USDJPY
+      - USDCAD
+      - USDCHF
+      - AUDUSD
+      - NZDUSD
+      - EURGBP
+      - EURJPY
+      - GBPJPY
+    metals_commodities:
+      - XAUUSD
+      - XAGUSD
+      - XTIUSD      # WTI Oil
+      - XBRUSD      # Brent
+    crypto:
+      - BTCUSD
+      - ETHUSD
+    indices:
+      - US500       # S&P 500
+      - USTEC       # Nasdaq 100
+      - NAS100
+      - US30        # Dow Jones
+      - GER40       # DAX
+      - UK100       # FTSE
+
+  # Per-symbol overrides (max spread in points; omit to use risk.default_max_spread_points)
+  overrides:
+    BTCUSD:
+      max_spread_points: 500
+    XAUUSD:
+      max_spread_points: 80
+    NAS100:
+      max_spread_points: 30
+    US30:
+      max_spread_points: 30
+
+# ── Risk Limits ──────────────────────────────────────────────────────────────
+risk:
+  risk_per_trade_pct: 1.0           # % of equity risked per trade
+  daily_loss_limit_pct: 3.0         # % of start-of-day equity; auto-pause on breach
+  max_drawdown_pct: 10.0            # % from peak equity; requires manual resume
+  max_open_trades: 5
+  max_total_exposure_pct: 10.0      # Sum of SL-risk of all open trades as % of equity
+  default_max_spread_points: 30     # Reject if spread > this (per symbol unless overridden)
+
+# ── Confidence Engine Weights ────────────────────────────────────────────────
+confidence:
+  execution_threshold: 85           # Minimum computed confidence to allow execution
+  weights:
+    trend: 0.25
+    momentum: 0.25
+    volatility: 0.15
+    volume: 0.15
+    structure: 0.20
+  # Per-asset-class overrides (volume weight lower for forex tick volume proxy)
+  asset_class_overrides:
+    forex:
+      volume: 0.05
+      structure: 0.30
+
+# ── LLM Validation ───────────────────────────────────────────────────────────
+llm:
+  hallucination_tolerance: 0.03     # Max relative deviation of cited vs computed value
+  confidence_adjust_min: -20        # LLM may only REDUCE confidence (never increase)
+  confidence_adjust_max: 0
+  timeout_seconds: 25
+  max_retries: 0                    # Never retry LLM — timeout = HOLD
+
+# ── Trade Manager ────────────────────────────────────────────────────────────
+trade_manager:
+  breakeven_at_r: 1.0               # Move SL to entry when profit reaches 1R
+  breakeven_buffer_points: 5        # Extra points above entry for breakeven SL
+  partial_close_at_r: 2.0           # Close 50 % of position at 2R
+  trailing_mode: atr                # atr | structure | fixed
+  trailing_atr_multiplier: 1.5
+  take_profit_multiplier: 3.0       # TP at 3R (avoids TP being hit before trail starts)
+
+# ── Scanner ──────────────────────────────────────────────────────────────────
+scanner:
+  timeframe_entry: M15              # Entry signal timeframe
+  timeframe_htf: H4                 # Higher timeframe for bias
+  candles_required: 300             # Fetch at least this many bars (covers EMA200)
+  max_scan_seconds: 10              # Watchlist scan must complete within this
+  scan_cadence: on_new_bar          # Only compute on a newly closed bar
+
+# ── Trading Sessions ─────────────────────────────────────────────────────────
+sessions:
+  # New entries blocked outside these UTC hour ranges (per asset class)
+  forex:
+    allowed_utc_hours: [7, 20]      # London + NY overlap
+  metals_commodities:
+    allowed_utc_hours: [7, 20]
+  crypto:
+    allowed_utc_hours: [0, 23]      # 24h
+  indices:
+    allowed_utc_hours: [13, 21]     # US market hours
+  block_friday_after_utc_hour: 20   # No new entries Friday evening
+  block_sunday_before_utc_hour: 21  # No entries until Sunday NY open
+
+# ── Engine ───────────────────────────────────────────────────────────────────
+engine:
+  mode: PAPER                       # PAPER (default) | LIVE (requires typed confirmation)
+  magic_number: 100100
+  heartbeat_interval_seconds: 5
+  heartbeat_stale_threshold_seconds: 30   # UI shows ENGINE OFFLINE if heartbeat is stale
+  db_path: hedge_fund.db

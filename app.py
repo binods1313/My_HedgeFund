@@ -2,6 +2,8 @@ import streamlit as st
 import plotly.graph_objects as go
 from datetime import datetime
 
+import MetaTrader5 as mt5
+
 from data_engine import (
     initialize_mt5,
     get_available_symbols,
@@ -847,10 +849,12 @@ if scan_btn:
     else:
         with st.status(f"Autonomous cycle running for {sel_sym}...", expanded=True) as status:
             status.update(label=f"1/3 — Data Analyst computing indicators for {sel_sym}...")
-            market_data = get_market_data(sel_sym)
+            df_m15 = get_technical_dataframe(sel_sym, mt5.TIMEFRAME_M15, count=100)
+            df_h4  = get_technical_dataframe(sel_sym, mt5.TIMEFRAME_H4,  count=100)
 
             status.update(label=f"2/3 — Portfolio Manager (LLM) evaluating {sel_sym} setup...")
-            decision_obj = get_ai_decision(market_data)
+            decision_obj = get_ai_decision(df_m15=df_m15, df_h4=df_h4, symbol=sel_sym)
+
 
             status.update(label=f"3/3 — Risk Officer routing {decision_obj['decision']} order to MT5...")
             exec_res = execute_trade(

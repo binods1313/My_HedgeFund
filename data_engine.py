@@ -194,13 +194,24 @@ def get_market_data(symbol: str) -> str:
     return summary
 
 
-def get_symbol_live_quote(symbol: str) -> dict:
+def get_symbol_live_quote(symbol: str, max_tick_age_seconds: int = 30) -> dict:
     """Fetches real-time live bid, ask, spread, and price digits for an instrument.
 
     Spread is computed as (ask - bid) / point, which is correct for all asset
-    classes (forex, JPY pairs, gold, indices, crypto).  A sanity check rejects
-    stale or corrupt ticks before any value is returned.
+    classes (forex, JPY pairs, gold, indices, crypto).
+
+    Sanity checks (all result in valid=False):
+      1. Missing data
+      2. Inverted bid/ask (ask < bid)
+      3. Spread > 5 % of ask price (corrupt/stale quote)
+      4. Tick age > max_tick_age_seconds (stale feed)
+
+    Args:
+        symbol:               MT5 symbol name.
+        max_tick_age_seconds: Reject ticks older than this. Configurable;
+                              defaults to 30 s (set via config.yaml / env).
     """
+    import time as _time
     mt5.symbol_select(symbol, True)
     tick = mt5.symbol_info_tick(symbol)
     info = mt5.symbol_info(symbol)
@@ -209,11 +220,23 @@ def get_symbol_live_quote(symbol: str) -> dict:
         return {"bid": 0.0, "ask": 0.0, "spread": 0.0, "digits": 2,
                 "time": "N/A", "description": "", "valid": False, "reason": "No data"}
 
-    # Sanity: reject inverted quotes or wildly wide spread (> 5 % of ask)
+    # 1. Stale tick check — tick.time is a UNIX timestamp (seconds)
+    tick_age = _time.time() - tick.time
+    if tick_age > max_tick_age_seconds:
+        return {"bid": tick.bid, "ask": tick.ask, "spread": 0.0,
+                "digits": info.digits,
+                "time": pd.to_datetime(tick.time, unit="s").strftime("%H:%M:%S"),
+                "description": info.description or "",
+                "valid": False,
+                "reason": f"Stale tick: age {tick_age:.0f}s > {max_tick_age_seconds}s"}
+
+    # 2. Inverted bid/ask
     if tick.ask <= 0 or tick.bid <= 0 or tick.ask < tick.bid:
         return {"bid": 0.0, "ask": 0.0, "spread": 0.0, "digits": info.digits,
                 "time": "N/A", "description": info.description or "",
                 "valid": False, "reason": "Inverted bid/ask"}
+
+    # 3. Corrupt spread > 5 % of ask
     if (tick.ask - tick.bid) > tick.ask * 0.05:
         return {"bid": tick.bid, "ask": tick.ask, "spread": 0.0,
                 "digits": info.digits,
@@ -233,7 +256,9 @@ def get_symbol_live_quote(symbol: str) -> dict:
         "description": info.description or "",
         "valid": True,
         "reason": "",
+        "tick_age_s": round(tick_age, 1),
     }
+
 
 
 
