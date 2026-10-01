@@ -160,7 +160,7 @@ class FakeMT5(types.ModuleType):
         # account-mode guard must not mask what they are checking.
         return types.SimpleNamespace(
             trade_mode=self.ACCOUNT_TRADE_MODE_DEMO,
-            login=113363533, server="MetaQuotes-Demo", currency="EUR",
+            login=999999999, server="MetaQuotes-Demo", currency="EUR",
             balance=10000.0, equity=10000.0, profit=0.0,
             margin=0.0, margin_free=10000.0, margin_level=0.0,
         )

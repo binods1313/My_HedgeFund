@@ -220,7 +220,7 @@ class TestMasking:
 
     def test_account_masks_all_but_last_three(self):
         assert dv.mask_account(1234567) == "****567"
-        assert dv.mask_account("113363533") == "******533"
+        assert dv.mask_account("999999999") == "******999"
 
     def test_short_account_is_fully_masked(self):
         assert dv.mask_account("12") == "**"

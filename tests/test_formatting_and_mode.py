@@ -156,7 +156,7 @@ class TestCurrencyFormatting:
 class TestMaskAccount:
 
     def test_masks_all_but_last_three(self):
-        assert formatting.mask_account(113363533) == "******533"
+        assert formatting.mask_account(999999999) == "******999"
 
     def test_short_is_fully_masked(self):
         assert formatting.mask_account("12") == "**"
@@ -172,7 +172,7 @@ class FakeAccount:
     def __init__(self, trade_mode, omit_trade_mode=False):
         if not omit_trade_mode:
             self.trade_mode = trade_mode
-        self.login = 113363533
+        self.login = 999999999
         self.currency = "EUR"
         self.balance = 10000.0
         self.equity = 10000.0
