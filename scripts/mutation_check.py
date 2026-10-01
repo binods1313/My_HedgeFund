@@ -391,6 +391,29 @@ MUTATIONS: list[Mutation] = [
             "tests/test_formatting_and_mode.py::TestMaskAccount::test_masks_all_but_last_three",
         ],
     ),
+    Mutation(
+        name="M27: scanner stops checking .git/config for remote-URL tokens",
+        target="scripts/secret_scan.py",
+        old="""    config = repo / ".git" / "config"
+    if not config.exists():
+        return []""",
+        new="""    config = repo / ".git" / "config"
+    if True:
+        return []""",
+        expect_fail=[
+            "tests/test_secret_scan.py::TestGitConfigScanning::test_token_in_remote_url_is_detected",
+            "tests/test_secret_scan.py::TestGitConfigScanning::test_openrouter_token_in_remote_url_is_detected",
+        ],
+    ),
+    Mutation(
+        name="M28: .git/config hits are not surfaced in the report",
+        target="scripts/secret_scan.py",
+        old="""    config_hits = scan_git_config(repo)""",
+        new="""    config_hits = []""",
+        expect_fail=[
+            "tests/test_secret_scan.py::TestGitConfigScanning::test_token_in_remote_url_is_masked_in_output",
+        ],
+    ),
 ]
 
 
