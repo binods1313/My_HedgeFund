@@ -33,7 +33,7 @@ class TestScannerSelfTest:
         '_' in MT5_PASSWORD. This silently suppressed every real credential.
         """
         pattern = dict(ss.PATTERNS)["credential_assignment"]
-        for line in ('MT5_PASSWORD = "***REMOVED-MT5_PASSWORD***"',
+        for line in ('MT5_PASSWORD = "UbD-N1Jm"',
                      'OPENROUTER_API_KEY = "abcdef123456"'):
             assert pattern.search(line), f"pattern failed to match {line!r}"
 
@@ -44,16 +44,51 @@ class TestPlaceholderAndEnvReferenceHandling:
         "YOUR_MT5_PASSWORD", "your_password", "changeme", "placeholder",
         "sk-or-v1-...", "gsk_...", "<your-key>",
         "YOUR_MT5_ACCOUNT_NUMBER",
+        # Scrub markers: the intended output of a history rewrite.
+        "***REMOVED-MT5_PASSWORD***", "***REMOVED-OPENROUTER_API_KEY***",
+        "[REDACTED]",
     ])
     def test_placeholders_are_not_flagged(self, value):
         assert ss.is_placeholder(value) is True
 
     @pytest.mark.parametrize("value", [
-        "***REMOVED-MT5_PASSWORD***", "sk-or-v1-AAAABBBBCCCCDDDDEEEEFFFF",
+        "UbD-N1Jm", "sk-or-v1-AAAABBBBCCCCDDDDEEEEFFFF",
         "AKIAIOSFODNN7EXAMPLE", "hunter2xyz",
     ])
     def test_real_values_are_not_treated_as_placeholders(self, value):
         assert ss.is_placeholder(value) is False
+
+    def test_scrub_marker_is_not_reported_as_a_leak(self):
+        """A cleaned history must not report its own redactions.
+
+        Exercised through is_placeholder(), which is what the scanner applies to
+        each candidate value; render_report only formats hits it is handed.
+        """
+        marker = "***REMOVED-MT5_PASSWORD***"
+        pattern = dict(ss.PATTERNS)["credential_assignment"]
+        match = pattern.search(f"MT5_PASSWORD={marker}")
+        assert match is not None, "the pattern must still match the assignment"
+        assert ss.is_placeholder(match.groupdict()["val"]) is True
+        assert ss.is_env_reference(match.groupdict()["val"]) is False
+
+    def test_scan_commit_ignores_scrubbed_lines(self, tmp_path):
+        """End to end: a rewritten file yields no hit."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        (repo / "plan.md").write_text(
+            "MT5_PASSWORD=***REMOVED-MT5_PASSWORD***\n"
+            "OPENROUTER_API_KEY=***REMOVED-OPENROUTER_API_KEY***\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t",
+             "commit", "-q", "-m", "scrubbed"],
+            check=True,
+        )
+
+        assert ss.scan_commit(repo, ss.iter_commits(repo)[0]) == []
 
     @pytest.mark.parametrize("value", [
         'os.environ.get("MT5_PASSWORD", "")',
@@ -65,7 +100,7 @@ class TestPlaceholderAndEnvReferenceHandling:
         assert ss.is_env_reference(value) is True
 
     @pytest.mark.parametrize("value", [
-        "***REMOVED-MT5_PASSWORD***", "sk-or-v1-AAAABBBBCCCCDDDDEEEEFFFF",
+        "UbD-N1Jm", "sk-or-v1-AAAABBBBCCCCDDDDEEEEFFFF",
     ])
     def test_real_literals_are_not_env_references(self, value):
         assert ss.is_env_reference(value) is False
@@ -74,7 +109,7 @@ class TestPlaceholderAndEnvReferenceHandling:
 class TestMasking:
 
     def test_mask_hides_middle(self):
-        masked = ss.mask("***REMOVED-MT5_PASSWORD***LongPassword")
+        masked = ss.mask("UbD-N1JmLongPassword")
         assert "UbD-" not in masked[4:] or True  # prefix kept by design
         assert masked.count("*") >= 8
         assert "LongPassword" not in masked
@@ -83,17 +118,17 @@ class TestMasking:
         assert ss.mask("abcdef") == "******"
 
     def test_mask_strips_quotes(self):
-        assert ss.mask('"***REMOVED-MT5_PASSWORD***"').count("*") >= 4
+        assert ss.mask('"UbD-N1Jm"').count("*") >= 4
 
     def test_report_never_contains_raw_secret(self):
         hit = ss.Hit(
             pattern="credential_assignment", commit="abc123456789",
             file="config.py", line_no=1,
-            masked_value=ss.mask("***REMOVED-MT5_PASSWORD***Secret"),
-            line='MT5_PASSWORD = "***REMOVED-MT5_PASSWORD***Secret"',
+            masked_value=ss.mask("UbD-N1JmSecret"),
+            line='MT5_PASSWORD = "UbD-N1JmSecret"',
         )
         report = ss.render_report([hit], [], True)
-        assert "***REMOVED-MT5_PASSWORD***Secret" not in report, "raw secret leaked into the report"
+        assert "UbD-N1JmSecret" not in report, "raw secret leaked into the report"
         assert "abc123456789" in report
 
 
