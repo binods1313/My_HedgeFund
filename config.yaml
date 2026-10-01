@@ -10,10 +10,36 @@ feed:
   max_spread_pct_of_ask: 0.05       # Reject spread > 5 % of ask (corrupt quote)
 
 # ── Tradable Symbol Whitelist ─────────────────────────────────────────────────
-# IMPORTANT: Only symbols in this list may be traded.
-# Anything returned by MT5 but NOT in this list is shown as
-# "Unclassified (non-tradable)" in the UI and is never passed to the executor.
-# Add broker-specific suffix variants here (e.g. EURUSD.m, XAUUSD#).
+# THE AUTHORITATIVE LIST OF SYMBOLS THE SYSTEM MAY TRADE.
+# trading.tradable_symbols below is the flat list actually enforced by the
+# executor and config_loader; symbols.whitelist groups the same symbols by asset
+# class for UI presentation. config_loader.py FAILS LOUDLY if the two disagree,
+# so neither list can drift from the other unnoticed.
+trading:
+  tradable_symbols:
+    - EURUSD
+    - GBPUSD
+    - USDJPY
+    - USDCAD
+    - USDCHF
+    - AUDUSD
+    - NZDUSD
+    - EURGBP
+    - EURJPY
+    - GBPJPY
+    - XAUUSD
+    - XAGUSD
+    - XTIUSD      # WTI Oil
+    - XBRUSD      # Brent
+    - BTCUSD
+    - ETHUSD
+    - US500       # S&P 500
+    - USTEC       # Nasdaq 100
+    - NAS100
+    - US30        # Dow Jones
+    - GER40       # DAX
+    - UK100       # FTSE
+
 symbols:
   whitelist:
     forex:
@@ -80,7 +106,21 @@ confidence:
 
 # ── LLM Validation ───────────────────────────────────────────────────────────
 llm:
-  hallucination_tolerance: 0.03     # Max relative deviation of cited vs computed value
+  # Per-field tolerances for hallucination detection. A number the LLM cites in
+  # its reasoning is only accepted if it is within tolerance of the value we
+  # actually computed; otherwise the response is rejected and the result is HOLD.
+  #
+  # price / ema / atr / macd are RELATIVE fractions (0.002 == 0.2%).
+  # rsi_points is ABSOLUTE, because a relative tolerance on a 0-100 oscillator
+  # is not meaningful. macd_abs_floor keeps the relative MACD test from becoming
+  # absurdly tight when the histogram is near zero.
+  hallucination_tolerances:
+    price: 0.002        # 0.2 % of the computed close
+    ema: 0.002          # 0.2 % of the computed EMA
+    atr: 0.05           # 5 % of the computed ATR
+    rsi_points: 2.0     # +/- 2 RSI points
+    macd: 0.10          # 10 % of the computed MACD histogram
+    macd_abs_floor: 0.00001   # ...but never tighter than 1e-5 in price units
   confidence_adjust_min: -20        # LLM may only REDUCE confidence (never increase)
   confidence_adjust_max: 0
   timeout_seconds: 25
