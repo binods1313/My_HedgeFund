@@ -149,10 +149,10 @@ indicator_snapshot = {
 
 ```python
 # FIX — .env file (gitignored) + python-dotenv
-# .env
-MT5_LOGIN=113363533
-MT5_PASSWORD=***REMOVED-MT5_PASSWORD***
-OPENROUTER_API_KEY=sk-or-v1-...
+# .env  (copy .env.example; never commit the real file)
+MT5_LOGIN=YOUR_MT5_ACCOUNT_NUMBER
+MT5_PASSWORD=YOUR_MT5_PASSWORD
+OPENROUTER_API_KEY=YOUR_OPENROUTER_KEY
 
 # config.py
 from dotenv import load_dotenv; import os
