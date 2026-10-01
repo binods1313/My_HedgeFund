@@ -31,8 +31,39 @@ def initialize_mt5() -> bool:
     return False
 
 
+def _classify_symbol(sym_info) -> str:
+    """Classify an MT5 symbol into an asset class using its path/sector.
+
+    Uses sym_info.path (e.g. 'Forex\\Majors\\EURUSD') rather than name
+    substring matching, which incorrectly classifies symbols like 'AETH'
+    (a stock ETF) as crypto because its name contains 'ETH'.
+
+    Per §1.9 of Instructions_2.md: anything not matched is 'Unclassified'
+    and must not be traded until explicitly whitelisted in config.
+    """
+    path = (sym_info.path or "").upper()
+    desc = (sym_info.description or "").upper()
+
+    if any(k in path for k in ("FOREX", "FX", "CURRENCIES")):
+        return "Forex Currencies"
+    if any(k in path for k in ("CRYPTO", "DIGITAL", "COIN")):
+        return "Crypto Assets"
+    if any(k in path for k in ("METAL", "COMMODITY", "COMMODITIES", "ENERGY")):
+        return "Metals & Commodities"
+    if any(k in path for k in ("INDEX", "INDICES", "CFD")):
+        return "Indices & Equities"
+    if any(k in path for k in ("STOCK", "EQUITY", "EQUITIES", "SHARE")):
+        return "Indices & Equities"
+    # Fallback: non-tradable until whitelisted
+    return "Unclassified"
+
+
 def get_available_symbols() -> dict:
-    """Dynamically fetches and categorizes available instruments directly from MT5."""
+    """Dynamically fetches and categorises available instruments directly from MT5.
+
+    Classification is based on sym_info.path, not name substrings, to avoid
+    mis-categorising symbols like AETH (stock ETF) as crypto assets.
+    """
     if not initialize_mt5():
         return {
             "Popular Watchlist": ["USDCAD", "XAUUSD", "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "BTCUSD"],
@@ -43,40 +74,41 @@ def get_available_symbols() -> dict:
     if not symbols:
         return {"Popular Watchlist": ["USDCAD", "XAUUSD", "EURUSD", "GBPUSD", "USDJPY"]}
 
-    symbol_names = [s.name for s in symbols]
-    symbol_set = set(symbol_names)
+    # Build categories via path-based classification
+    categories: dict[str, list[str]] = {
+        "Forex Currencies": [],
+        "Metals & Commodities": [],
+        "Crypto Assets": [],
+        "Indices & Equities": [],
+        "Unclassified": [],
+    }
+    symbol_set = {s.name for s in symbols}
 
-    # 1. Popular curated list (check availability on broker)
+    for sym in symbols:
+        cat = _classify_symbol(sym)
+        if len(categories[cat]) < 250:
+            categories[cat].append(sym.name)
+
+    # Popular curated watchlist (only symbols actually available on this broker)
     popular_candidates = [
-        "XAUUSD", "USDCAD", "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "NZDUSD", "USDCHF",
-        "BTCUSD", "ETHUSD", "US500", "USTEC", "US30", "NVDA", "AMD", "MSFT", "AAPL"
+        "XAUUSD", "USDCAD", "EURUSD", "GBPUSD", "USDJPY", "AUDUSD",
+        "NZDUSD", "USDCHF", "BTCUSD", "ETHUSD", "US500", "USTEC",
+        "US30", "NAS100", "GER40", "UK100",
     ]
     popular = [s for s in popular_candidates if s in symbol_set]
     if not popular:
-        popular = symbol_names[:10]
+        popular = list(symbol_set)[:10]
 
-    # 2. Forex Majors & Crosses
-    forex = [s for s in symbol_names if len(s) == 6 and any(s.startswith(cur) for cur in ["EUR", "GBP", "USD", "AUD", "NZD", "CAD", "CHF", "JPY"])]
+    result = {"Popular Watchlist": popular}
+    # Only include non-empty tradable categories (exclude Unclassified from top-level)
+    for cat, syms in categories.items():
+        if syms and cat != "Unclassified":
+            result[cat] = syms
+    if categories["Unclassified"]:
+        result["Unclassified (non-tradable)"] = categories["Unclassified"]
 
-    # 3. Metals & Energy
-    metals = [s for s in symbol_names if any(x in s for x in ["XAU", "XAG", "GOLD", "SILVER", "OIL", "BRENT", "WTI"])]
+    return result
 
-    # 4. Crypto
-    crypto = [s for s in symbol_names if any(x in s for x in ["BTC", "ETH", "SOL", "XRP", "LTC", "DOGE"])]
-
-    # 5. Global Indices & Equities
-    indices_stocks = [s for s in symbol_names if any(x in s for x in ["US500", "USTEC", "US30", "GER40", "UK100", "NVDA", "AMD", "MSFT", "AAPL", "TSLA", "AMZN"])]
-
-    categories = {
-        "Popular Watchlist": popular,
-        "Forex Currencies": forex[:50] if forex else symbol_names[:30],
-        "Metals & Commodities": metals[:30] if metals else ["XAUUSD"],
-        "Crypto Assets": crypto[:30] if crypto else ["BTCUSD"],
-        "Indices & Equities": indices_stocks[:30] if indices_stocks else [],
-        "All MT5 Instruments": symbol_names[:250],
-    }
-
-    return categories
 
 
 def calculate_rsi(series: pd.Series, period: int = 14) -> pd.Series:
