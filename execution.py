@@ -78,6 +78,38 @@ def close_all_positions() -> list:
     return results
 
 
+def _normalize_lot(raw_lot: float, info) -> tuple[float, str]:
+    """Normalize a raw lot size to broker rules.
+
+    Correct order per §1.2 of Instructions_2.md:
+      1. Floor to volume_step (using Decimal to avoid float rounding errors like 0.07/0.01 = 6.999)
+      2. If result < volume_min  → REJECT (do NOT round up, that breaks the risk rule)
+      3. Clamp to volume_max
+
+    Returns (normalized_lot, error_string).  error_string is empty on success.
+    """
+    from decimal import Decimal, ROUND_DOWN
+
+    step   = Decimal(str(info.volume_step))
+    v_min  = Decimal(str(info.volume_min))
+    v_max  = Decimal(str(info.volume_max))
+    raw    = Decimal(str(raw_lot))
+
+    # 1. Floor to nearest step
+    floored = (raw / step).to_integral_value(rounding=ROUND_DOWN) * step
+
+    # 2. Reject if below minimum — do NOT clamp up (would break risk budget)
+    if floored < v_min:
+        return 0.0, (
+            f"Calculated lot {float(floored):.4f} is below broker minimum "
+            f"{float(v_min):.4f}. Risk budget too small — trade rejected."
+        )
+
+    # 3. Clamp to maximum
+    normalized = min(floored, v_max)
+    return float(normalized), ""
+
+
 def execute_trade(symbol: str, decision: str, lot_size: float = 0.01, sl_pips: float = 0, tp_pips: float = 0) -> dict:
     """Places market orders with dynamic filling mode, risk guardrails, and optional SL/TP."""
     decision = str(decision).upper().strip()
@@ -146,10 +178,15 @@ def execute_trade(symbol: str, decision: str, lot_size: float = 0.01, sl_pips: f
     elif symbol_info.filling_mode & 2:
         filling_mode = mt5.ORDER_FILLING_IOC
 
+    # Normalize lot to broker rules (§1.2: floor → reject if < min → clamp to max)
+    normalized_lot, lot_err = _normalize_lot(lot_size, symbol_info)
+    if lot_err:
+        return {"success": False, "status": "REJECTED", "message": lot_err, "ticket": None}
+
     request = {
         "action": mt5.TRADE_ACTION_DEAL,
         "symbol": symbol,
-        "volume": float(lot_size),
+        "volume": normalized_lot,
         "type": order_type,
         "price": price,
         "sl": sl,
@@ -160,6 +197,12 @@ def execute_trade(symbol: str, decision: str, lot_size: float = 0.01, sl_pips: f
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": filling_mode,
     }
+
+    # Pre-flight check via order_check before sending
+    check = mt5.order_check(request)
+    if check is None or check.retcode not in (0, mt5.TRADE_RETCODE_DONE):
+        err = mt5.last_error() if check is None else f"Code {check.retcode}: {check.comment}"
+        return {"success": False, "status": "REJECTED", "message": f"Pre-flight check failed: {err}", "ticket": None}
 
     result = mt5.order_send(request)
     if result is None:

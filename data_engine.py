@@ -163,23 +163,46 @@ def get_market_data(symbol: str) -> str:
 
 
 def get_symbol_live_quote(symbol: str) -> dict:
-    """Fetches real-time live bid, ask, spread, and price digits for an instrument."""
+    """Fetches real-time live bid, ask, spread, and price digits for an instrument.
+
+    Spread is computed as (ask - bid) / point, which is correct for all asset
+    classes (forex, JPY pairs, gold, indices, crypto).  A sanity check rejects
+    stale or corrupt ticks before any value is returned.
+    """
     mt5.symbol_select(symbol, True)
     tick = mt5.symbol_info_tick(symbol)
     info = mt5.symbol_info(symbol)
 
     if not tick or not info:
-        return {"bid": 0.0, "ask": 0.0, "spread": 0.0, "digits": 2, "time": "N/A", "description": ""}
+        return {"bid": 0.0, "ask": 0.0, "spread": 0.0, "digits": 2,
+                "time": "N/A", "description": "", "valid": False, "reason": "No data"}
 
-    spread = (tick.ask - tick.bid) / (info.point * 10 if info.digits in (3, 5) else info.point)
+    # Sanity: reject inverted quotes or wildly wide spread (> 5 % of ask)
+    if tick.ask <= 0 or tick.bid <= 0 or tick.ask < tick.bid:
+        return {"bid": 0.0, "ask": 0.0, "spread": 0.0, "digits": info.digits,
+                "time": "N/A", "description": info.description or "",
+                "valid": False, "reason": "Inverted bid/ask"}
+    if (tick.ask - tick.bid) > tick.ask * 0.05:
+        return {"bid": tick.bid, "ask": tick.ask, "spread": 0.0,
+                "digits": info.digits,
+                "time": pd.to_datetime(tick.time, unit="s").strftime("%H:%M:%S"),
+                "description": info.description or "",
+                "valid": False, "reason": "Spread > 5 % of price (stale/corrupt)"}
+
+    # Spread in points using the symbol's own point size — no hardcoded factor
+    spread_points = round((tick.ask - tick.bid) / info.point, 1)
+
     return {
         "bid": tick.bid,
         "ask": tick.ask,
-        "spread": round(spread, 1),
+        "spread": spread_points,
         "digits": info.digits,
         "time": pd.to_datetime(tick.time, unit="s").strftime("%H:%M:%S"),
         "description": info.description or "",
+        "valid": True,
+        "reason": "",
     }
+
 
 
 def get_account_telemetry() -> dict:
