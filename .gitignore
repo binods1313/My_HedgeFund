@@ -1,0 +1,55 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependency-based
+node_modules/
+pnpm-lockfile.yarn.lock
+yarn.lock
+
+# Environment variables
+.env*
+!.env.example
+
+# Production builds
+*.prod.*
+*.production.*
+
+# TypeScript
+*.tsbuildinfo
+*.tsbuildinfo
+
+# Database
+*.db
+*.sqlite
+
+# Logs
+logs/
+*.log
+
+# Runtime artifacts
+.pids
+*.seed*
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Docker
+.dockerignore
+
+# Supabase
+/.supabase
+
+# Vite/React build
+dist/
+build/
+
+# Coverage
+coverage/
+
+# IDE
+.idea/
+.vscode/
+
+# Temporary
+tmp/
+temp/
