@@ -455,6 +455,37 @@ def _unused_is_synthetic(value: str) -> bool:""",
             "tests/test_secret_scan.py::TestSyntheticValueAllowlist::test_synthetic_check_short_circuits_search",
         ],
     ),
+    Mutation(
+        name="M32: undeclared dependency (PyYAML) removed from requirements.txt",
+        target="requirements.txt",
+        old="""PyYAML==6.0.3""",
+        new="""# PyYAML removed (MUTATION)""",
+        expect_fail=[
+            "tests/test_dependencies.py::TestRequirementsAreComplete::test_known_config_dependencies_are_declared[yaml]",
+            "tests/test_dependencies.py::TestRequirementsAreComplete::test_every_third_party_import_is_declared[config_loader.py]",
+        ],
+    ),
+    Mutation(
+        name="M33: python-dotenv removed from requirements.txt",
+        target="requirements.txt",
+        old="""python-dotenv==1.2.3""",
+        new="""# python-dotenv removed (MUTATION)""",
+        expect_fail=[
+            "tests/test_dependencies.py::TestRequirementsAreComplete::test_known_config_dependencies_are_declared[dotenv]",
+        ],
+    ),
+    Mutation(
+        name="M34: dependency test stops checking requirements.txt",
+        target="tests/test_dependencies.py",
+        old="""def _declared_distributions() -> set[str]:
+    if not REQUIREMENTS.exists():
+        return set()""",
+        new="""def _declared_distributions() -> set[str]:
+    return set()""",
+        expect_fail=[
+            "tests/test_dependencies.py::TestRequirementsAreComplete::test_known_config_dependencies_are_declared[yaml]",
+        ],
+    ),
 ]
 
 
