@@ -367,7 +367,8 @@ MUTATIONS: list[Mutation] = [
     if False:
         return log""",
         expect_fail=[
-            "tests/test_demo_verification.py::TestAccountModeGuard::test_non_demo_account_is_refused[2-REAL]",
+            # Drives run() end to end, so removing the gate call site is caught.
+            "tests/test_demo_verification.py::TestAccountModeGuard::test_full_pipeline_sends_nothing_on_non_demo_account[2-REAL]",
         ],
     also=[
         Mutation(
