@@ -271,6 +271,37 @@ def scan_tree(repo: Path) -> list[Hit]:
     return hits
 
 
+def scan_git_config(repo: Path) -> list[Hit]:
+    """Scan .git/config for credentials embedded in remote URLs.
+
+    A token in an https remote URL (`https://<token>@github.com/...`) is a
+    live credential that never appears in any commit, so a history-only scan
+    reports the repo as clean while the token sits in plain sight on disk.
+    This checks it explicitly.
+    """
+    config = repo / ".git" / "config"
+    if not config.exists():
+        return []
+
+    hits: list[Hit] = []
+    for n, line in enumerate(config.read_text(encoding="utf-8",
+                                              errors="replace").splitlines(), 1):
+        for name, pattern in PATTERNS:
+            for m in pattern.finditer(line):
+                value = m.groupdict().get("val") or m.group(0)
+                if is_placeholder(value) or is_env_reference(value):
+                    continue
+                hits.append(Hit(
+                    pattern=name,
+                    commit="GIT_CONFIG",
+                    file=".git/config",
+                    line_no=n,
+                    masked_value=mask(value),
+                    line=redact_line(line.strip()),
+                ))
+    return hits
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Self-verification
 # ─────────────────────────────────────────────────────────────────────────────
@@ -377,7 +408,8 @@ def redact_line(line: str, patterns: list[tuple[str, re.Pattern]] | None = None)
 
 
 def render_report(history_hits: list[Hit], tree_hits: list[Hit],
-                  verified: bool) -> str:
+                  verified: bool, config_hits: list[Hit] | None = None) -> str:
+    config_hits = config_hits or []
     out: list[str] = []
     out.append("=" * 72)
     out.append("  SECRET SCAN REPORT")
@@ -385,13 +417,21 @@ def render_report(history_hits: list[Hit], tree_hits: list[Hit],
     out.append(f"  Scanner self-test : {'PASS' if verified else 'FAIL (results unreliable)'}")
     out.append(f"  History hits      : {len(history_hits)}")
     out.append(f"  Worktree hits     : {len(tree_hits)}")
+    out.append(f"  .git/config hits  : {len(config_hits)}")
     out.append("")
+
+    if config_hits:
+        out.append("  !! Credentials embedded in .git/config (e.g. a remote URL).")
+        out.append("     These are NOT in any commit, so a history rewrite will not")
+        out.append("     remove them. Fix the remote URL and rotate the token.")
+        out.append("")
 
     if not verified:
         out.append("  !! Scanner self-test failed; treat all counts below as unreliable.")
         out.append("")
 
-    for label, hits in (("GIT HISTORY", history_hits), ("WORKING TREE", tree_hits)):
+    for label, hits in (("GIT HISTORY", history_hits), ("WORKING TREE", tree_hits),
+                        (".GIT/CONFIG", config_hits)):
         out.append(f"--- {label} ---")
         if not hits:
             out.append("  (no hits)")
@@ -412,8 +452,10 @@ def render_report(history_hits: list[Hit], tree_hits: list[Hit],
 
     if history_hits or tree_hits:
         out.append("  ACTION REQUIRED: purge these from history with git filter-repo")
+    elif config_hits:
+        out.append("  ACTION REQUIRED: remove the credential from .git/config and rotate it")
     else:
-        out.append("  No secrets found in history or worktree.")
+        out.append("  No secrets found in history, worktree or .git/config.")
     return "\n".join(out)
 
 
@@ -435,15 +477,17 @@ def main(argv: list[str] | None = None) -> int:
 
     history_hits = scan_history(repo)
     tree_hits = scan_tree(repo)
+    config_hits = scan_git_config(repo)
 
     if args.json:
         print(json.dumps({
             "scanner_self_test_passed": verified,
             "history_hits": [h.to_dict() for h in history_hits],
             "worktree_hits": [h.to_dict() for h in tree_hits],
+            "git_config_hits": [h.to_dict() for h in config_hits],
         }, indent=2))
     else:
-        print(render_report(history_hits, tree_hits, verified))
+        print(render_report(history_hits, tree_hits, verified, config_hits))
 
     return 0 if verified else 1
 
