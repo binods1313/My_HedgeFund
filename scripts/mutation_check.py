@@ -30,6 +30,9 @@ class Mutation:
     old: str
     new: str
     expect_fail: list[str]   # test node ids that MUST fail while broken
+    # Companion edits applied with this mutation and reverted with it. Used
+    # where two independent guards make a single-point break unobservable.
+    also: list["Mutation"] | None = None
 
 
 def _run(node_ids: list[str]) -> tuple[int, str]:
@@ -351,16 +354,33 @@ MUTATIONS: list[Mutation] = [
         ],
     ),
     Mutation(
-        name="M25: verification script orders on a non-demo account",
+        # There are two independent account-mode gates: one in run() and one
+        # inside check_demo_order immediately before the send. Removing only one
+        # is unobservable, which is defence in depth working as intended. This
+        # mutation removes BOTH, which is the real "no gate at all" failure.
+        name="M25: verification script has NO account-mode gate at all",
         target="scripts/demo_verification.py",
-        old="""    if not check_demo_account_mode(mt5_mod, log):
+        old="""    # Refuse outright on a non-demo account: everything below may send orders.
+    if not check_demo_account_mode(mt5_mod, log):
         return log""",
-        new="""    if False:
+        new="""    # Refuse outright on a non-demo account: everything below may send orders.
+    if False:
         return log""",
         expect_fail=[
             "tests/test_demo_verification.py::TestAccountModeGuard::test_non_demo_account_is_refused[2-REAL]",
         ],
-    ),
+    also=[
+        Mutation(
+            name="M25b: inner guard in check_demo_order",
+            target="scripts/demo_verification.py",
+            old="""    if trade_mode != demo_mode:
+        log.skip("demo order", f"not a demo account (trade_mode={trade_mode})")""",
+            new="""    if False:
+        log.skip("demo order", f"not a demo account (trade_mode={trade_mode})")""",
+            expect_fail=[],
+        ),
+    ],
+),
     Mutation(
         name="M26: account number masking removed",
         target="formatting.py",
@@ -382,17 +402,40 @@ def _git_show(path: str) -> str | None:
 
 
 def apply_mutation(m: Mutation) -> bool:
-    """True when the mutation was applied (old text found and replaced)."""
+    """True when the mutation was applied (old text found and replaced).
+
+    Companion edits are applied first; if one cannot be applied the whole
+    mutation is rolled back so the tree is never left half-mutated.
+    """
     path = REPO_ROOT / m.target
     original = path.read_text(encoding="utf-8")
     if m.old not in original:
         print(f"    SKIP: anchor text not found in {m.target}")
         return False
+
+    applied_companions = []
+    for companion in (m.also or []):
+        cpath = REPO_ROOT / companion.target
+        coriginal = cpath.read_text(encoding="utf-8")
+        if companion.old not in coriginal:
+            print(f"    SKIP: companion anchor not found in {companion.target}")
+            for done in applied_companions:
+                (REPO_ROOT / done.target).write_text(done._original, encoding="utf-8")
+            return False
+        cpath.write_text(coriginal.replace(companion.old, companion.new, 1),
+                         encoding="utf-8")
+        companion._original = coriginal
+        applied_companions.append(companion)
+
     path.write_text(original.replace(m.old, m.new, 1), encoding="utf-8")
     return True
 
 
 def restore(m: Mutation) -> None:
+    for companion in (m.also or []):
+        original = getattr(companion, "_original", None)
+        if original is not None:
+            (REPO_ROOT / companion.target).write_text(original, encoding="utf-8")
     path = REPO_ROOT / m.target
     content = _git_show(m.target)
     if content is None:
