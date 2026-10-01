@@ -25,6 +25,11 @@ yarn.lock
 logs/
 *.log
 
+# Verification reports (may contain account details)
+reports/
+demo_verification_output.txt
+gitlog*.txt
+
 # Runtime artifacts
 .pids
 *.seed*

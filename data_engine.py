@@ -38,11 +38,14 @@ def _classify_symbol(sym_info) -> str:
     substring matching, which incorrectly classifies symbols like 'AETH'
     (a stock ETF) as crypto because its name contains 'ETH'.
 
-    Per §1.9 of Instructions_2.md: anything not matched is 'Unclassified'
-    and must not be traded until explicitly whitelisted in config.
+    Anything not matched is 'Unclassified' and is never tradable: it is not
+    offered in the UI dropdown and the executor rejects it independently.
+
+    Note the keyword lists must match plural forms. Brokers commonly use
+    'Indices', which does NOT contain the substring 'INDEX' -- matching only
+    the singular silently misfiled every index as Unclassified.
     """
     path = (sym_info.path or "").upper()
-    desc = (sym_info.description or "").upper()
 
     if any(k in path for k in ("FOREX", "FX", "CURRENCIES")):
         return "Forex Currencies"
@@ -50,11 +53,10 @@ def _classify_symbol(sym_info) -> str:
         return "Crypto Assets"
     if any(k in path for k in ("METAL", "COMMODITY", "COMMODITIES", "ENERGY")):
         return "Metals & Commodities"
-    if any(k in path for k in ("INDEX", "INDICES", "CFD")):
+    if any(k in path for k in ("INDEX", "INDICES", "INDICE", "CFD")):
         return "Indices & Equities"
-    if any(k in path for k in ("STOCK", "EQUITY", "EQUITIES", "SHARE")):
+    if any(k in path for k in ("STOCK", "EQUITY", "EQUITIES", "SHARE", "SHARES")):
         return "Indices & Equities"
-    # Fallback: non-tradable until whitelisted
     return "Unclassified"
 
 

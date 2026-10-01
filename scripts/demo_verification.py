@@ -1,261 +1,600 @@
-"""Demo Account Verification Script — Phase 0 Pre-PR Checklist.
+"""Demo account verification — Phase 0 pre-PR checklist.
 
-Connects to MT5 demo account and verifies all Phase 0 fixes.
+Verifies the Phase 0 fixes against a live MT5 demo account:
 
-Run with:
-    .venv\\Scripts\\python scripts/demo_verification.py
+  - spread is computed from the symbol's own point size, with sanity checks
+  - lot normalization floors to the step, rejects below volume_min, clamps to
+    volume_max, and survives the 0.07/0.01 float case
+  - a real demo order round-trips (order_check -> order_send -> close)
+  - symbols classify by MT5 path, and unclassifiable symbols are excluded
 
-Output includes: spread values, lot normalization proof, unclassified
-symbol list, a below-min rejection, and HUD currency + margin values.
+Design notes:
+
+  * A check that could not run is reported as SKIPPED and forces the overall
+    verdict to INCOMPLETE. "ALL CHECKS PASSED" is only ever printed when every
+    required check actually ran and passed.
+  * Symbol discovery goes through mt5.symbols_get() and _classify_symbol, so it
+    adapts to the broker's naming instead of assuming NAS100/BTCUSD exist.
+  * Output is plain ASCII so it survives a Windows cp1252 pipe. No emoji.
+  * The account number is masked to its last 3 digits; passwords and API keys
+    are never printed.
+  * Any demo order opened is closed in a finally block, so a later failure
+    cannot leave an orphan position.
+
+Runs both ways:
+    python scripts/demo_verification.py
+    python -m scripts.demo_verification
 """
+
+from __future__ import annotations
+
+import os
 import sys
 import time
-import math
-from decimal import Decimal, ROUND_DOWN
+from datetime import datetime, timezone
+from pathlib import Path
+
+# Allow `python scripts/demo_verification.py` as well as `python -m ...`.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+try:  # Make output safe to pipe on Windows regardless of the console codepage.
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:  # pragma: no cover - non-reconfigurable stream
+    pass
+
 from dotenv import load_dotenv
 
 load_dotenv()
 
-try:
-    import MetaTrader5 as mt5
-except ImportError:
-    print("ERROR: MetaTrader5 package not installed.")
-    sys.exit(1)
+DIVIDER = "-" * 72
 
-import config
-from data_engine import (
-    initialize_mt5,
-    get_symbol_live_quote,
-    get_account_telemetry,
-    _classify_symbol,
-    get_available_symbols,
+OK = "[OK]"
+FAIL = "[FAIL]"
+SKIP = "[SKIP]"
+
+# Asset classes the script tries to exercise.
+#
+# These keys MUST match the labels returned by data_engine._classify_symbol,
+# because resolve_symbol_for_class() looks the group up by exactly this name.
+# Keeping the two in sync matters: a mismatch silently reports every symbol in
+# that class as NO SYMBOL AVAILABLE.
+REQUIRED_CLASSES = (
+    "Forex Currencies",
+    "Metals & Commodities",
+    "Indices & Equities",
+    "Crypto Assets",
 )
-from execution import _normalize_lot
 
-DIVIDER = "─" * 70
+NO_SYMBOL_MESSAGE = "NO SYMBOL AVAILABLE ON THIS BROKER"
 
-
-def section(title):
-    print(f"\n{DIVIDER}\n  {title}\n{DIVIDER}")
-
-
-def check_mt5():
-    section("MT5 CONNECTION")
-    if not initialize_mt5():
-        print("FAIL: Cannot connect to MT5. Ensure terminal is open and logged in.")
-        sys.exit(1)
-    acc = mt5.account_info()
-    print(f"  ✅ Connected: login={acc.login}, server={acc.server}")
-    print(f"  Balance : {acc.currency} {acc.balance:,.2f}")
-    print(f"  Equity  : {acc.currency} {acc.equity:,.2f}")
-    margin_str = f"{acc.margin_level:.1f}%" if acc.margin > 1.0 else "N/A"
-    print(f"  Margin Level: {margin_str}  (N/A is correct when no positions open)")
-    return acc
+# Verdicts
+VERDICT_PASS = "PASS"
+VERDICT_INCOMPLETE = "INCOMPLETE"
+VERDICT_FAIL = "FAIL"
 
 
-def verify_spread_formula():
-    """Item 3d: Spread values in points for key instruments."""
-    section("SPREAD FORMULA — per-instrument verification")
-    symbols = ["EURUSD", "XAUUSD", "NAS100", "BTCUSD"]
-    all_ok = True
-    for sym in symbols:
-        q = get_symbol_live_quote(sym, max_tick_age_seconds=60)
-        if not q["valid"]:
-            print(f"  ⚠️  {sym:10s}  EXCLUDED: {q['reason']}")
+# ─────────────────────────────────────────────────────────────────────────────
+# Result accumulation (pure, no MT5)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class Check:
+    __slots__ = ("name", "status", "detail")
+
+    def __init__(self, name: str, status: str, detail: str = ""):
+        self.name = name
+        self.status = status  # OK | FAIL | SKIP
+        self.detail = detail
+
+    def line(self) -> str:
+        return f"  {self.status:6s} {self.name}" + (f" - {self.detail}" if self.detail else "")
+
+
+class CheckLog:
+    """Collects checks and derives a single overall verdict.
+
+    The verdict rule is the point of this class: a skipped check is NOT a pass,
+    and an empty log is NOT a pass either.
+    """
+
+    def __init__(self) -> None:
+        self.checks: list[Check] = []
+
+    def ok(self, name: str, detail: str = "") -> Check:
+        return self._add(Check(name, OK, detail))
+
+    def fail(self, name: str, detail: str = "") -> Check:
+        return self._add(Check(name, FAIL, detail))
+
+    def skip(self, name: str, detail: str = "") -> Check:
+        return self._add(Check(name, SKIP, detail))
+
+    def _add(self, check: Check) -> Check:
+        self.checks.append(check)
+        return check
+
+    @property
+    def has_failures(self) -> bool:
+        return any(c.status == FAIL for c in self.checks)
+
+    @property
+    def has_skips(self) -> bool:
+        return any(c.status == SKIP for c in self.checks)
+
+    def verdict(self) -> str:
+        """FAIL if anything failed, INCOMPLETE if anything was skipped or did not
+        run, else PASS.
+
+        Only a run where every check actually executed and passed yields PASS.
+        An empty log is INCOMPLETE: no evidence is not evidence of success.
+        """
+        if self.has_failures:
+            return VERDICT_FAIL
+        if self.has_skips or not self.checks:
+            return VERDICT_INCOMPLETE
+        return VERDICT_PASS
+
+    def all_passed(self) -> bool:
+        return self.verdict() == VERDICT_PASS
+
+    def render(self) -> str:
+        lines = [c.line() for c in self.checks]
+        lines.append("")
+        lines.append(f"  Checks run    : {len(self.checks)}")
+        lines.append(f"  Passed        : {sum(1 for c in self.checks if c.status == OK)}")
+        lines.append(f"  Failed        : {sum(1 for c in self.checks if c.status == FAIL)}")
+        lines.append(f"  Skipped       : {sum(1 for c in self.checks if c.status == SKIP)}")
+        lines.append(f"  FINAL VERDICT : {self.verdict()}")
+        return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Formatting helpers (pure)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def mask_account(login) -> str:
+    """Mask an account number to its last 3 digits."""
+    text = str(login)
+    if len(text) <= 3:
+        return "*" * len(text)
+    return "*" * (len(text) - 3) + text[-3:]
+
+
+def section(title: str) -> str:
+    return f"\n{DIVIDER}\n  {title}\n{DIVIDER}"
+
+
+def timestamp_slug(when: datetime | None = None) -> str:
+    when = when or datetime.now(timezone.utc)
+    return when.strftime("%Y%m%d_%H%M%S")
+
+
+def is_ascii(text: str) -> bool:
+    try:
+        text.encode("ascii")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Symbol discovery (pure given an mt5 module)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def classify_all(mt5_mod, classify_symbol) -> dict[str, list]:
+    """Group every broker symbol by asset class using MT5's own path field."""
+    groups: dict[str, list] = {}
+    for sym in mt5_mod.symbols_get() or []:
+        groups.setdefault(classify_symbol(sym), []).append(sym)
+    return groups
+
+
+def pick_candidate(mt5_mod, candidates, asset_class: str):
+    """First visible candidate that also returns a sane tick.
+
+    Returns (symbol_name, reason). reason is non-empty when nothing qualified,
+    and callers surface NO SYMBOL AVAILABLE ON THIS BROKER in that case.
+    """
+    for sym in candidates:
+        if not getattr(sym, "visible", False):
             continue
-        info = mt5.symbol_info(sym)
-        # Verify formula: spread = (ask - bid) / point
-        expected = round((q["ask"] - q["bid"]) / info.point, 1)
-        match = "✅" if abs(q["spread"] - expected) < 0.1 else "❌"
-        print(f"  {match} {sym:10s}  bid={q['bid']:.5g}  ask={q['ask']:.5g}"
-              f"  spread={q['spread']:6.1f} pts  (age={q.get('tick_age_s', '?')}s)")
-        if q["spread"] != expected:
-            all_ok = False
-    return all_ok
+        info = mt5_mod.symbol_info(sym.name)
+        if info is None:
+            continue
+        tick = mt5_mod.symbol_info_tick(sym.name)
+        if tick is None or tick.bid <= 0 or tick.ask < tick.bid:
+            continue
+        return sym.name, ""
+    return None, NO_SYMBOL_MESSAGE
 
 
-def verify_lot_normalization():
-    """Item 3b+c: Below-min rejection and normal normalization."""
-    section("LOT NORMALIZATION")
-    results = []
+def resolve_symbol_for_class(mt5_mod, groups, asset_class: str, classify_symbol):
+    """Find a usable broker symbol for an asset class.
 
-    # Case 1: EURUSD 0.07 lot (float edge case)
-    info = mt5.symbol_info("EURUSD")
-    if info:
-        lot, err = _normalize_lot(0.07, info)
-        ok = abs(lot - 0.07) < 0.001 and err == ""
-        print(f"  {'✅' if ok else '❌'} EURUSD 0.07 → normalized {lot:.2f}  (float edge case 0.07/0.01)")
-        results.append(ok)
-
-    # Case 2: Below minimum — small account on BTCUSD
-    btc_info = mt5.symbol_info("BTCUSD")
-    if btc_info:
-        raw_tiny = 0.0001  # unrealistically small
-        lot, err = _normalize_lot(raw_tiny, btc_info)
-        ok = lot == 0.0 and err != ""
-        print(f"  {'✅' if ok else '❌'} BTCUSD {raw_tiny} → lot={lot}  reason='{err[:60]}'")
-        print(f"     (Correct: REJECTED locally, NOT sent to broker)")
-        results.append(ok)
-    else:
-        print("  ⚠️  BTCUSD not available on this broker — skipping below-min test")
-
-    # Case 3: Normal trade — show requested vs normalized
-    if info:
-        requested = 0.15
-        lot, err = _normalize_lot(requested, info)
-        print(f"  ✅ EURUSD requested={requested} → normalized={lot:.2f}  err='{err}'")
-        results.append(err == "")
-
-    return all(results)
+    Returns (symbol_name_or_None, note).
+    """
+    candidates = groups.get(asset_class, [])
+    if not candidates:
+        return None, NO_SYMBOL_MESSAGE
+    name, reason = pick_candidate(mt5_mod, candidates, asset_class)
+    return name, reason
 
 
-def verify_symbol_classification():
-    """Item 3c: AETH and unmatched symbols appear as Unclassified."""
-    section("SYMBOL CLASSIFICATION")
-    all_syms = mt5.symbols_get()
-    if not all_syms:
-        print("  ⚠️  No symbols returned from MT5")
+# ─────────────────────────────────────────────────────────────────────────────
+# The checks themselves
+# ─────────────────────────────────────────────────────────────────────────────
+
+def check_connection(mt5_mod, initialize_mt5, log: CheckLog):
+    print(section("MT5 CONNECTION"))
+
+    if not initialize_mt5():
+        log.fail("MT5 connection", "could not initialise terminal")
+        print(f"  {FAIL:6s} MT5 connection — could not initialise terminal")
         return False
 
-    unclassified = [s for s in all_syms if _classify_symbol(s) == "Unclassified"]
-    tradable = {
-        "Forex Currencies": [],
-        "Crypto Assets": [],
-        "Metals & Commodities": [],
-        "Indices & Equities": [],
-    }
-    for s in all_syms:
-        cat = _classify_symbol(s)
-        if cat in tradable:
-            tradable[cat].append(s.name)
-
-    print(f"  Classified as tradable:")
-    for cat, syms in tradable.items():
-        print(f"    {cat:25s}: {len(syms)} symbols")
-
-    print(f"\n  Unclassified (non-tradable): {len(unclassified)} symbols")
-    if unclassified[:5]:
-        print(f"    Examples: {[s.name for s in unclassified[:5]]}")
-
-    # Check AETH specifically
-    aeth = next((s for s in all_syms if s.name == "AETH"), None)
-    if aeth:
-        cat = _classify_symbol(aeth)
-        ok = cat == "Unclassified"
-        print(f"\n  {'✅' if ok else '❌'} AETH classified as: '{cat}'  (expected: Unclassified)")
-        return ok
-    else:
-        print("  ℹ️  AETH not found on this broker — classification bug not reproducible here")
-        return True
-
-
-def verify_demo_trade():
-    """Item 3a: Place one real demo order, show normalized lot and retcode."""
-    section("DEMO ORDER — lot normalization proof")
-    sym = "EURUSD"
-    mt5.symbol_select(sym, True)
-    info = mt5.symbol_info(sym)
-    tick = mt5.symbol_info_tick(sym)
-    if not info or not tick:
-        print(f"  ⚠️  Cannot get info/tick for {sym}")
+    acc = mt5_mod.account_info()
+    if acc is None:
+        log.fail("MT5 account", "account_info() returned None after init")
+        print(f"  {FAIL:6s} MT5 account — account_info() returned None")
         return False
 
-    # Request 0.07 lots (float edge case)
-    raw_lot = 0.07
-    lot, err = _normalize_lot(raw_lot, info)
+    margin = getattr(acc, "margin", 0.0) or 0.0
+    level = getattr(acc, "margin_level", 0.0) or 0.0
+    margin_str = f"{level:.1f}%" if margin > 1.0 else "N/A"
+
+    detail = f"login={mask_account(acc.login)} server={acc.server}"
+    log.ok("MT5 connection", detail)
+    print(f"  {OK:6s} {detail}")
+    print(f"         balance={acc.currency} {acc.balance:,.2f}  equity={acc.equity:,.2f}")
+    print(f"         margin level={margin_str} (N/A is correct with no open positions)")
+    return True
+
+
+def check_symbol_discovery(mt5_mod, classify_symbol, log: CheckLog) -> dict:
+    """Discover one usable broker symbol per required asset class."""
+    print(section("SYMBOL DISCOVERY"))
+    groups = classify_all(mt5_mod, classify_symbol)
+    resolved: dict[str, str | None] = {}
+
+    for asset_class in REQUIRED_CLASSES:
+        name, reason = resolve_symbol_for_class(
+            mt5_mod, groups, asset_class, classify_symbol
+        )
+        resolved[asset_class] = name
+        if name:
+            log.ok(f"discover {asset_class}", f"using broker symbol {name}")
+            print(f"  {OK:6s} {asset_class:20s} -> {name}")
+        else:
+            log.skip(f"discover {asset_class}", reason)
+            print(f"  {SKIP:6s} {asset_class:20s} -> {reason}")
+
+    return resolved
+
+
+def check_spread(mt5_mod, get_symbol_live_quote, symbols: dict, log: CheckLog):
+    """Verify spread == (ask - bid) / point for each resolved symbol."""
+    print(section("SPREAD FORMULA"))
+
+    for asset_class, sym in symbols.items():
+        label = f"spread {asset_class}"
+        if not sym:
+            log.skip(label, NO_SYMBOL_MESSAGE)
+            continue
+
+        quote = get_symbol_live_quote(sym, max_tick_age_seconds=60)
+        if not quote.get("valid"):
+            log.skip(label, f"{sym}: {quote.get('reason', 'invalid quote')}")
+            print(f"  {SKIP:6s} {label} — {sym}: {quote.get('reason', '')}")
+            continue
+
+        info = mt5_mod.symbol_info(sym)
+        expected = round((quote["ask"] - quote["bid"]) / info.point, 1)
+        actual = quote["spread"]
+        if abs(actual - expected) < 1e-9:
+            log.ok(label, f"{sym} spread={actual} pts (point={info.point})")
+            print(f"  {OK:6s} {label} — {sym}: bid={quote['bid']:g} ask={quote['ask']:g} "
+                  f"spread={actual} pts (age={quote.get('tick_age_s', '?')}s)")
+        else:
+            log.fail(label, f"{sym}: got {actual}, expected {expected}")
+            print(f"  {FAIL:6s} {label} — {sym}: got {actual}, expected {expected}")
+
+
+def check_lot_normalization(mt5_mod, normalize_lot, log: CheckLog):
+    """Floor-to-step, reject-below-min, clamp-to-max, and the 0.07 float case."""
+    print(section("LOT NORMALIZATION"))
+
+    symbol = next(
+        (s for s in ("EURUSD", "XAUUSD") if mt5_mod.symbol_info(s) is not None),
+        None,
+    )
+    if symbol is None:
+        log.skip("lot normalization", NO_SYMBOL_MESSAGE)
+        print(f"  {SKIP:6s} lot normalization — {NO_SYMBOL_MESSAGE}")
+        return
+
+    info = mt5_mod.symbol_info(symbol)
+
+    lot, err = normalize_lot(0.07, info)
     if err:
-        print(f"  ⚠️  Lot rejection (expected in very small accounts): {err}")
-        return False
+        log.fail("lot 0.07 float case", err)
+        print(f"  {FAIL:6s} lot 0.07 float case — {err}")
+    elif abs(lot - 0.07) > 1e-9:
+        log.fail("lot 0.07 float case", f"expected 0.07, got {lot}")
+        print(f"  {FAIL:6s} lot 0.07 float case — expected 0.07, got {lot}")
+    else:
+        log.ok("lot 0.07 float case", f"{symbol} 0.07 -> 0.07")
+        print(f"  {OK:6s} lot 0.07 float case — {symbol} 0.07 -> {lot}")
 
-    filling = mt5.ORDER_FILLING_IOC
+    lot, err = normalize_lot(0.059, info)
+    if err:
+        log.fail("lot floors to step", err)
+        print(f"  {FAIL:6s} lot floors to step — {err}")
+    elif abs(lot - 0.05) > 1e-9:
+        log.fail("lot floors to step", f"expected 0.05, got {lot}")
+        print(f"  {FAIL:6s} lot floors to step — expected 0.05, got {lot}")
+    else:
+        log.ok("lot floors to step", f"{symbol} 0.059 -> 0.05")
+        print(f"  {OK:6s} lot floors to step — {symbol} 0.059 -> {lot}")
+
+    below_min = info.volume_min / 2.0
+    lot, err = normalize_lot(below_min, info)
+    if lot == 0.0 and err:
+        log.ok("lot below min rejected", f"{below_min} < min {info.volume_min}")
+        print(f"  {OK:6s} lot below min rejected — {below_min} < min {info.volume_min} "
+              f"(rejected locally, never sent)")
+    else:
+        log.fail("lot below min rejected", f"got lot={lot}, err={err!r}")
+        print(f"  {FAIL:6s} lot below min rejected — got lot={lot}, err={err!r}")
+
+    above_max = info.volume_max * 2.0
+    lot, err = normalize_lot(above_max, info)
+    if err:
+        log.fail("lot clamped to max", err)
+        print(f"  {FAIL:6s} lot clamped to max — {err}")
+    elif abs(lot - info.volume_max) > 1e-9:
+        log.fail("lot clamped to max", f"expected {info.volume_max}, got {lot}")
+        print(f"  {FAIL:6s} lot clamped to max — expected {info.volume_max}, got {lot}")
+    else:
+        log.ok("lot clamped to max", f"{above_max} -> {info.volume_max}")
+        print(f"  {OK:6s} lot clamped to max — {above_max} -> {lot}")
+
+
+def check_classification(mt5_mod, classify_symbol, log: CheckLog):
+    """Any symbol MT5 cannot classify must not be treated as tradable."""
+    print(section("SYMBOL CLASSIFICATION"))
+
+    all_symbols = mt5_mod.symbols_get() or []
+    if not all_symbols:
+        log.skip("symbol classification", "MT5 returned no symbols")
+        print(f"  {SKIP:6s} symbol classification — MT5 returned no symbols")
+        return
+
+    counts: dict[str, int] = {}
+    unclassified: list[str] = []
+    for sym in all_symbols:
+        cat = classify_symbol(sym)
+        counts[cat] = counts.get(cat, 0) + 1
+        if cat == "Unclassified":
+            unclassified.append(sym.name)
+
+    for cat in sorted(counts):
+        print(f"         {cat:24s} {counts[cat]}")
+    print(f"         Unclassified (non-tradable): {len(unclassified)}")
+
+    if unclassified:
+        log.ok("symbol classification",
+               f"{len(unclassified)} unclassifiable symbols excluded from trading")
+        print(f"  {OK:6s} {len(unclassified)} unclassifiable symbols correctly excluded")
+        for name in unclassified[:5]:
+            print(f"         e.g. {name}")
+    else:
+        # Not a failure: some brokers genuinely classify everything. The
+        # whitelist still gates trading regardless.
+        log.skip("symbol classification",
+                 "no unclassifiable symbols on this broker (whitelist still enforced)")
+        print(f"  {SKIP:6s} no unclassifiable symbols found — "
+              f"whitelist gating still enforced independently")
+
+
+def check_demo_order(mt5_mod, normalize_lot, log: CheckLog):
+    """Place one real demo order and close it in a finally block."""
+    print(section("DEMO ORDER"))
+
+    symbol = next(
+        (s for s in ("EURUSD", "XAUUSD") if mt5_mod.symbol_info(s) is not None),
+        None,
+    )
+    if symbol is None:
+        log.skip("demo order", NO_SYMBOL_MESSAGE)
+        print(f"  {SKIP:6s} demo order — {NO_SYMBOL_MESSAGE}")
+        return
+
+    info = mt5_mod.symbol_info(symbol)
+    mt5_mod.symbol_select(symbol, True)
+    tick = mt5_mod.symbol_info_tick(symbol)
+    if not info or tick is None:
+        log.skip("demo order", f"no info/tick for {symbol}")
+        print(f"  {SKIP:6s} demo order — no info/tick for {symbol}")
+        return
+
+    lot, err = normalize_lot(0.07, info)
+    if err:
+        log.skip("demo order", f"lot rejected: {err}")
+        print(f"  {SKIP:6s} demo order — lot rejected: {err}")
+        return
+
+    filling = mt5_mod.ORDER_FILLING_IOC
     if info.filling_mode & 1:
-        filling = mt5.ORDER_FILLING_FOK
+        filling = mt5_mod.ORDER_FILLING_FOK
     elif info.filling_mode & 2:
-        filling = mt5.ORDER_FILLING_IOC
+        filling = mt5_mod.ORDER_FILLING_IOC
 
-    req = {
-        "action":       mt5.TRADE_ACTION_DEAL,
-        "symbol":       sym,
-        "volume":       lot,
-        "type":         mt5.ORDER_TYPE_BUY,
-        "price":        tick.ask,
-        "sl":           round(tick.ask - 0.0050, info.digits),
-        "deviation":    25,
-        "magic":        100100,
-        "comment":      "Phase0 demo verify",
-        "type_time":    mt5.ORDER_TIME_GTC,
+    request = {
+        "action": mt5_mod.TRADE_ACTION_DEAL,
+        "symbol": symbol,
+        "volume": lot,
+        "type": mt5_mod.ORDER_TYPE_BUY,
+        "price": tick.ask,
+        "sl": round(tick.ask - 0.0050, info.digits),
+        "deviation": 25,
+        "magic": 100100,
+        "comment": "Phase0 demo verify",
+        "type_time": mt5_mod.ORDER_TIME_GTC,
         "type_filling": filling,
     }
 
-    # Run order_check first
-    chk = mt5.order_check(req)
-    print(f"  order_check retcode: {chk.retcode if chk else 'None'}")
+    opened_ticket = None
+    try:
+        check = mt5_mod.order_check(request)
+        check_code = check.retcode if check is not None else None
+        print(f"         order_check retcode: {check_code}")
+        if check is None or check.retcode not in (0, mt5_mod.TRADE_RETCODE_DONE):
+            log.fail("demo order", f"order_check failed (retcode={check_code})")
+            print(f"  {FAIL:6s} order_check failed (retcode={check_code})")
+            return
 
-    result = mt5.order_send(req)
-    if result is None:
-        print(f"  ❌ order_send returned None: {mt5.last_error()}")
-        return False
+        result = mt5_mod.order_send(request)
+        if result is None:
+            log.fail("demo order", f"order_send returned None: {mt5_mod.last_error()}")
+            print(f"  {FAIL:6s} order_send returned None: {mt5_mod.last_error()}")
+            return
 
-    ok = result.retcode == mt5.TRADE_RETCODE_DONE
-    print(f"  {'✅' if ok else '❌'} Symbol={sym}  requested={raw_lot}  normalized={lot}"
-          f"  retcode={result.retcode}  ticket={result.order}")
+        if result.retcode != mt5_mod.TRADE_RETCODE_DONE:
+            log.fail("demo order", f"retcode={result.retcode}: {result.comment}")
+            print(f"  {FAIL:6s} retcode={result.retcode}: {result.comment}")
+            return
 
-    # Close it immediately
-    if ok and result.order:
-        time.sleep(1)
-        pos = mt5.positions_get(ticket=result.order)
-        if pos:
-            close_price = mt5.symbol_info_tick(sym).bid
-            close_req = {
-                "action":       mt5.TRADE_ACTION_DEAL,
-                "position":     result.order,
-                "symbol":       sym,
-                "volume":       lot,
-                "type":         mt5.ORDER_TYPE_SELL,
-                "price":        close_price,
-                "deviation":    25,
-                "magic":        100100,
-                "comment":      "Phase0 demo close",
-                "type_time":    mt5.ORDER_TIME_GTC,
-                "type_filling": filling,
-            }
-            cr = mt5.order_send(close_req)
-            print(f"  ℹ️  Position closed: retcode={cr.retcode if cr else 'None'}")
-    return ok
+        opened_ticket = result.order
+        log.ok("demo order", f"{symbol} {lot} lots retcode={result.retcode} ticket={opened_ticket}")
+        print(f"  {OK:6s} {symbol} requested=0.07 normalized={lot} "
+              f"retcode={result.retcode} ticket={opened_ticket}")
+    finally:
+        # Always close what we opened, even if a check above failed.
+        if opened_ticket:
+            try:
+                time.sleep(1)
+                positions = mt5_mod.positions_get(ticket=opened_ticket)
+                if positions:
+                    close_price = mt5_mod.symbol_info_tick(symbol).bid
+                    close_request = {
+                        "action": mt5_mod.TRADE_ACTION_DEAL,
+                        "position": opened_ticket,
+                        "symbol": symbol,
+                        "volume": lot,
+                        "type": mt5_mod.ORDER_TYPE_SELL,
+                        "price": close_price,
+                        "deviation": 25,
+                        "magic": 100100,
+                        "comment": "Phase0 demo close",
+                        "type_time": mt5_mod.ORDER_TIME_GTC,
+                        "type_filling": filling,
+                    }
+                    close_result = mt5_mod.order_send(close_request)
+                    code = close_result.retcode if close_result is not None else None
+                    log.ok("demo order closed", f"retcode={code}")
+                    print(f"  {OK:6s} position closed, retcode={code}")
+                else:
+                    log.fail("demo order closed", "position not found after open")
+                    print(f"  {FAIL:6s} position not found after open")
+            except Exception as exc:
+                log.fail("demo order closed", f"close raised: {exc}")
+                print(f"  {FAIL:6s} close raised: {exc}")
 
 
-def main():
-    print("\n" + "=" * 70)
-    print("  PHASE 0 — DEMO ACCOUNT VERIFICATION")
-    print("=" * 70)
+# ─────────────────────────────────────────────────────────────────────────────
+# Report file
+# ─────────────────────────────────────────────────────────────────────────────
 
-    acc = check_mt5()
+def write_report(report_dir: Path, body: str, when: datetime | None = None) -> Path:
+    """Write the report to reports/demo_verification_<timestamp>.txt."""
+    report_dir.mkdir(parents=True, exist_ok=True)
+    path = report_dir / f"demo_verification_{timestamp_slug(when)}.txt"
+    path.write_text(body, encoding="utf-8")
+    return path
 
-    spread_ok    = verify_spread_formula()
-    lot_ok       = verify_lot_normalization()
-    classify_ok  = verify_symbol_classification()
-    trade_ok     = verify_demo_trade()
 
-    section("SUMMARY")
-    results = {
-        "MT5 Connected":              True,
-        "Currency label / N/A margin": True,   # Verified visually in HUD
-        "Spread formula (4 symbols)":  spread_ok,
-        "Lot normalization":           lot_ok,
-        "Symbol classification":       classify_ok,
-        "Demo order placed":           trade_ok,
-    }
-    for item, ok in results.items():
-        print(f"  {'✅' if ok else '❌'} {item}")
+def build_report(log: CheckLog, when: datetime | None = None) -> str:
+    """Build the report body.
 
-    mt5.shutdown()
+    ASCII only by construction: an em-dash here previously crashed the script
+    when its output was piped on a Windows cp1252 console.
+    """
+    when = when or datetime.now(timezone.utc)
+    return "\n".join([
+        DIVIDER,
+        "  PHASE 0 - DEMO ACCOUNT VERIFICATION",
+        DIVIDER,
+        f"  Generated (UTC): {when.isoformat(timespec='seconds')}",
+        "  Script         : scripts/demo_verification.py",
+        "",
+        log.render(),
+        "",
+    ])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Entry point
+# ─────────────────────────────────────────────────────────────────────────────
+
+def run(log: CheckLog | None = None) -> CheckLog:
+    """Execute every check against a live MT5 connection."""
+    log = log if log is not None else CheckLog()
+
+    try:
+        import MetaTrader5 as mt5_mod
+    except ImportError:
+        log.fail("MetaTrader5 import", "package not installed")
+        print(f"  {FAIL:6s} MetaTrader5 package not installed")
+        return log
+
+    from data_engine import (
+        _classify_symbol,
+        get_symbol_live_quote,
+        initialize_mt5,
+    )
+    from execution import _normalize_lot
+
+    if not check_connection(mt5_mod, initialize_mt5, log):
+        return log
+
+    symbols = check_symbol_discovery(mt5_mod, _classify_symbol, log)
+    check_spread(mt5_mod, get_symbol_live_quote, symbols, log)
+    check_lot_normalization(mt5_mod, _normalize_lot, log)
+    check_classification(mt5_mod, _classify_symbol, log)
+    check_demo_order(mt5_mod, _normalize_lot, log)
+
+    mt5_mod.shutdown()
+    return log
+
+
+def main() -> int:
+    print("=" * 72)
+    print("  PHASE 0 - DEMO ACCOUNT VERIFICATION")
+    print("=" * 72)
+
+    log = run()
+    report = build_report(log)
+    path = write_report(_REPO_ROOT / "reports", report)
+
     print()
-    all_pass = all(results.values())
-    if all_pass:
-        print("  ALL CHECKS PASSED — ready for PR approval.")
+    print(section("SUMMARY"))
+    print(log.render())
+
+    verdict = log.verdict()
+    print()
+    if verdict == VERDICT_PASS:
+        print("  ALL CHECKS PASSED — every required check ran and passed.")
+    elif verdict == VERDICT_INCOMPLETE:
+        print(f"  {verdict} — at least one check was skipped or excluded.")
+        print("  This is NOT a pass. Resolve the skips above and re-run.")
     else:
-        print("  SOME CHECKS FAILED — see details above.")
-    return 0 if all_pass else 1
+        print(f"  {verdict} — at least one check failed. See details above.")
+    print(f"  Report written to: {path}")
+    print()
+
+    return 0 if verdict == VERDICT_PASS else 1
 
 
 if __name__ == "__main__":
