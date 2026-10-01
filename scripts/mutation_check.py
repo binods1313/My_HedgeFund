@@ -466,6 +466,31 @@ def _git_show(path: str) -> str | None:
     return proc.stdout.decode("utf-8", "replace")
 
 
+def restore(m: Mutation) -> None:
+    """Restore a mutated file exactly, including line endings.
+
+    With core.autocrlf=true, git normalises to CRLF on checkout but stores LF in
+    the object database. Reconstructing the file from `git show` therefore yields
+    LF, which git then reports as a permanent modification and which blocks the
+    next run with 'Refusing to run: working tree is dirty'.
+
+    `git checkout -- <path>` asks git to materialise the file itself, so the
+    line endings match exactly. This is safe here because a mutation is
+    deliberately temporary and the harness owns the file for its duration.
+    """
+    for companion in (m.also or []):
+        original = getattr(companion, "_original", None)
+        if original is not None:
+            subprocess.run(
+                ["git", "checkout", "--", companion.target],
+                cwd=str(REPO_ROOT), capture_output=True,
+            )
+
+    targets = [m.target] + [c.target for c in (m.also or [])]
+    subprocess.run(["git", "checkout", "--", *targets],
+                   cwd=str(REPO_ROOT), capture_output=True)
+
+
 def apply_mutation(m: Mutation) -> bool:
     """True when the mutation was applied (old text found and replaced).
 
@@ -496,11 +521,12 @@ def apply_mutation(m: Mutation) -> bool:
     return True
 
 
-def restore(m: Mutation) -> None:
-    for companion in (m.also or []):
-        original = getattr(companion, "_original", None)
-        if original is not None:
-            (REPO_ROOT / companion.target).write_text(original, encoding="utf-8")
+def restore_legacy(m: Mutation) -> None:
+    """Content-based restore, kept for reference.
+
+    Superseded by git checkout because it cannot reproduce CRLF working-tree
+    files under core.autocrlf=true.
+    """
     path = REPO_ROOT / m.target
     content = _git_show(m.target)
     if content is None:
