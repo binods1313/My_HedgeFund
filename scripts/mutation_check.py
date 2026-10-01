@@ -211,13 +211,20 @@ MUTATIONS: list[Mutation] = [
         ],
     ),
     Mutation(
-        name="M15: demo order not closed on failure (no finally)",
+        # Breaking try:/finally: pair-wise replacement is not possible (the
+        # finally must bind a try), so instead break the guard inside the
+        # finally that decides whether to close. With it disabled, an opened
+        # position is never closed and the failure is never recorded.
+        name="M15: opened demo order is never closed (finally guard disabled)",
         target="scripts/demo_verification.py",
-        old="""    opened_ticket = None
-    try:""",
-        new="""    opened_ticket = None
-    if True:""",
+        old="""        if opened_ticket:
+            try:
+                time.sleep(1)""",
+        new="""        if False:
+            try:
+                time.sleep(1)""",
         expect_fail=[
+            "tests/test_demo_verification.py::TestDemoOrderAlwaysCloses::test_order_opened_and_closed",
             "tests/test_demo_verification.py::TestDemoOrderAlwaysCloses::test_close_failure_is_recorded_not_swallowed",
         ],
     ),
@@ -311,7 +318,9 @@ def main(argv: list[str] | None = None) -> int:
             continue
 
         code, output = _run(m.expect_fail)
-        # pytest returns 1 when tests fail, which is what we WANT here.
+        # pytest exit 1 = tests failed, which is what we WANT here.
+        # Exit 4 = usage/collection error: the mutation produced invalid
+        # Python rather than a behavioural break, which is a broken mutation.
         caught = code == 1
         tail = ""
         m2 = re.findall(r"(\d+) failed", output)
@@ -319,6 +328,8 @@ def main(argv: list[str] | None = None) -> int:
             tail = f"{m2[-1]} test(s) failed as expected"
         elif code == 0:
             tail = "NO TEST FAILED -- these tests do not actually guard this rule"
+        elif code == 4:
+            tail = "BROKEN MUTATION -- pytest could not collect (invalid syntax?)"
         else:
             tail = f"pytest exit {code}"
 
