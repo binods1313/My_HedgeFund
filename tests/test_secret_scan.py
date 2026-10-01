@@ -206,6 +206,88 @@ class TestTreeScanFindsPlantedSecret:
         assert ss.scan_history(repo) == []
 
 
+class TestGitConfigScanning:
+    """A credential in a remote URL is a leak that never appears in a commit.
+
+    This is the case that made the original scan report "clean" while a live
+    GitHub token sat in .git/config. It must be detected.
+    """
+
+    def _write_config(self, repo, url_line):
+        cfg = repo / ".git" / "config"
+        cfg.parent.mkdir(parents=True, exist_ok=True)
+        cfg.write_text(
+            "[core]\n"
+            "\trepositoryformatversion = 0\n"
+            "\tbare = false\n"
+            "\n"
+            "[remote \"origin\"]\n"
+            f"\turl = {url_line}\n"
+            "\tfetch = +refs/heads/*:refs/remotes/origin/*\n",
+            encoding="utf-8",
+        )
+        return cfg
+
+    def test_token_in_remote_url_is_detected(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        self._write_config(repo, "https://ghp_" + "a" * 36 + "@github.com/o/r.git")
+
+        hits = ss.scan_git_config(repo)
+        assert len(hits) == 1, (
+            f"token in remote URL not detected; got {len(hits)} hit(s)"
+        )
+        hit = hits[0]
+        assert hit.pattern == "github_token"
+        assert hit.file == ".git/config"
+        assert hit.commit == "GIT_CONFIG"
+        assert hit.line_no > 0
+
+    def test_token_in_remote_url_is_masked_in_output(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        self._write_config(repo, "https://ghp_" + "a" * 36 + "@github.com/o/r.git")
+
+        report = ss.render_report([], [], True, ss.scan_git_config(repo))
+        assert ("ghp_" + "a" * 36) not in report, "raw token leaked into the report"
+        assert "***" in report
+        assert ".git/config" in report
+
+    def test_clean_remote_url_is_not_flagged(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        self._write_config(repo, "https://github.com/o/r.git")
+
+        assert ss.scan_git_config(repo) == []
+
+    def test_ssh_remote_is_not_flagged(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        self._write_config(repo, "git@github.com:o/r.git")
+
+        assert ss.scan_git_config(repo) == []
+
+    def test_openrouter_token_in_remote_url_is_detected(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        self._write_config(
+            repo, "https://sk-or-v1-AAAABBBBCCCCDDDDEEEEFFFFGGGG@github.com/o/r.git")
+
+        hits = ss.scan_git_config(repo)
+        assert any(h.pattern == "openrouter_key" for h in hits)
+
+    def test_missing_git_config_returns_empty(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        assert ss.scan_git_config(repo) == []
+
+    def test_this_repos_own_git_config_has_no_token(self):
+        """The repo we are about to push must not embed a token in its remote."""
+        hits = ss.scan_git_config(ss._REPO_ROOT)
+        offenders = [f"{h.file}:{h.line_no} {h.masked_value}" for h in hits]
+        assert not offenders, "credential in .git/config: " + "; ".join(offenders)
+
+
 class TestThisRepoIsClean:
     """The working tree of this repo must contain no secrets."""
 
