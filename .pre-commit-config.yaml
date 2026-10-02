@@ -1,0 +1,34 @@
+# Standard pre-commit configuration.
+#
+# The repo's primary secret control is scripts/precommit_hook.py, installed by
+#   python scripts/install_precommit_hook.py
+# It self-tests against planted canaries before trusting its own "clean" result,
+# which detect-secrets alone does not do.
+#
+# Install everything with:
+#   pip install pre-commit
+#   pre-commit install
+# The hook above is installed separately because it must work even where
+# pre-commit is unavailable.
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: check-added-large-files
+        args: ["--maxkb=1024"]
+      - id: detect-private-key
+      - id: check-merge-conflict
+      - id: end-of-file-fixer
+        exclude: ^\.secrets\.baseline$
+      - id: trailing-whitespace
+        exclude: ^\.secrets\.baseline$
+      - id: check-yaml
+      - id: check-added-large-files
+        args: ["--maxkb=1024"]
+
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args: ["--baseline", ".secrets.baseline"]

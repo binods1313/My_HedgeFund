@@ -1,0 +1,230 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# My Hedge Fund — Runtime Configuration
+# All thresholds, risk limits, symbol lists and weights live here.
+# Never put secrets here. Use .env for MT5 login, passwords and API keys.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Tick / Feed Validation ───────────────────────────────────────────────────
+feed:
+  max_tick_age_seconds: 30          # Reject ticks older than this (stale feed)
+  max_spread_pct_of_ask: 0.05       # Reject spread > 5 % of ask (corrupt quote)
+
+# ── Tradable Symbol Whitelist ─────────────────────────────────────────────────
+# THE AUTHORITATIVE LIST OF SYMBOLS THE SYSTEM MAY TRADE.
+# trading.tradable_symbols below is the flat list actually enforced by the
+# executor and config_loader; symbols.whitelist groups the same symbols by asset
+# class for UI presentation. config_loader.py FAILS LOUDLY if the two disagree,
+# so neither list can drift from the other unnoticed.
+trading:
+  tradable_symbols:
+    - EURUSD
+    - GBPUSD
+    - USDJPY
+    - USDCAD
+    - USDCHF
+    - AUDUSD
+    - NZDUSD
+    - EURGBP
+    - EURJPY
+    - GBPJPY
+    - XAUUSD
+    - XAGUSD
+    - XTIUSD      # WTI Oil
+    - XBRUSD      # Brent
+    - BTCUSD
+    - ETHUSD
+    - US500       # S&P 500
+    - USTEC       # Nasdaq 100
+    - NAS100
+    - US30        # Dow Jones
+    - GER40       # DAX
+    - UK100       # FTSE
+
+symbols:
+  whitelist:
+    forex:
+      - EURUSD
+      - GBPUSD
+      - USDJPY
+      - USDCAD
+      - USDCHF
+      - AUDUSD
+      - NZDUSD
+      - EURGBP
+      - EURJPY
+      - GBPJPY
+    metals_commodities:
+      - XAUUSD
+      - XAGUSD
+      - XTIUSD      # WTI Oil
+      - XBRUSD      # Brent
+    crypto:
+      - BTCUSD
+      - ETHUSD
+    indices:
+      - US500       # S&P 500
+      - USTEC       # Nasdaq 100
+      - NAS100
+      - US30        # Dow Jones
+      - GER40       # DAX
+      - UK100       # FTSE
+
+  # Per-symbol overrides (max spread in points; omit to use risk.default_max_spread_points)
+  overrides:
+    BTCUSD:
+      max_spread_points: 500
+    XAUUSD:
+      max_spread_points: 80
+    NAS100:
+      max_spread_points: 30
+    US30:
+      max_spread_points: 30
+
+# ── Risk Limits ──────────────────────────────────────────────────────────────
+risk:
+  risk_per_trade_pct: 1.0           # % of equity risked per trade
+  daily_loss_limit_pct: 3.0         # % of start-of-day equity; auto-pause on breach
+  max_drawdown_pct: 10.0            # % from peak equity; requires manual resume
+  max_open_trades: 5
+  max_total_exposure_pct: 10.0      # Sum of SL-risk of all open trades as % of equity
+  default_max_spread_points: 30     # Reject if spread > this (per symbol unless overridden)
+
+# ── Confidence Engine Weights ────────────────────────────────────────────────
+confidence:
+  execution_threshold: 85           # Minimum computed confidence to allow execution
+  weights:
+    trend: 0.25
+    momentum: 0.25
+    volatility: 0.15
+    volume: 0.15
+    structure: 0.20
+  # Per-asset-class overrides (volume weight lower for forex tick volume proxy)
+  asset_class_overrides:
+    forex:
+      volume: 0.05
+      structure: 0.30
+
+# ── LLM Validation ───────────────────────────────────────────────────────────
+llm:
+  # Per-field tolerances for hallucination detection. A number the LLM cites in
+  # its reasoning is only accepted if it is within tolerance of the value we
+  # actually computed; otherwise the response is rejected and the result is HOLD.
+  #
+  # price / ema / atr / macd are RELATIVE fractions (0.002 == 0.2%).
+  # rsi_points is ABSOLUTE, because a relative tolerance on a 0-100 oscillator
+  # is not meaningful. macd_abs_floor keeps the relative MACD test from becoming
+  # absurdly tight when the histogram is near zero.
+  hallucination_tolerances:
+    price: 0.002        # 0.2 % of the computed close
+    ema: 0.002          # 0.2 % of the computed EMA
+    atr: 0.05           # 5 % of the computed ATR
+    rsi_points: 2.0     # +/- 2 RSI points
+    macd: 0.10          # 10 % of the computed MACD histogram
+    macd_abs_floor: 0.00001   # ...but never tighter than 1e-5 in price units
+  confidence_adjust_min: -20        # LLM may only REDUCE confidence (never increase)
+  confidence_adjust_max: 0
+  timeout_seconds: 25
+  max_retries: 0                    # Never retry LLM — timeout = HOLD
+
+# ── Trade Manager ────────────────────────────────────────────────────────────
+trade_manager:
+  breakeven_at_r: 1.0               # Move SL to entry when profit reaches 1R
+  breakeven_buffer_points: 5        # Extra points above entry for breakeven SL
+  partial_close_at_r: 2.0           # Close 50 % of position at 2R
+  trailing_mode: atr                # atr | structure | fixed
+  trailing_atr_multiplier: 1.5
+  take_profit_multiplier: 3.0       # TP at 3R (avoids TP being hit before trail starts)
+
+# ── Scanner ──────────────────────────────────────────────────────────────────
+scanner:
+  timeframe_entry: M15              # Entry signal timeframe
+  timeframe_htf: H4                 # Higher timeframe for bias
+  candles_required: 300             # Fetch at least this many bars (covers EMA200)
+  max_scan_seconds: 10              # Watchlist scan must complete within this
+  scan_cadence: on_new_bar          # Only compute on a newly closed bar
+
+# ── Trading Sessions ─────────────────────────────────────────────────────────
+sessions:
+  # New entries blocked outside these UTC hour ranges (per asset class)
+  forex:
+    allowed_utc_hours: [7, 20]      # London + NY overlap
+  metals_commodities:
+    allowed_utc_hours: [7, 20]
+  crypto:
+    allowed_utc_hours: [0, 23]      # 24h
+  indices:
+    allowed_utc_hours: [13, 21]     # US market hours
+  block_friday_after_utc_hour: 20   # No new entries Friday evening
+  block_sunday_before_utc_hour: 21  # No entries until Sunday NY open
+
+# ── Asset Class Requirements ──────────────────────────────────────────────────
+# Which asset classes this broker is expected to provide, and which are optional.
+#
+# `required: true`  -> the class must yield a usable, live, quotable symbol, or
+#                      verification reports INCOMPLETE.
+# `required: false` -> the class is probed and reported, but an absent symbol
+#                      does not block the verdict.
+#
+# Rationale: a demo broker without crypto liquidity cannot supply crypto
+# symbols. Requiring them would mean INCOMPLETE forever, which erodes the
+# signal a verdict is supposed to carry. Optional classes are still probed and
+# reported, so their absence stays visible.
+#
+# `allow_stale_feed: true` relaxes the LIVE-QUOTE staleness threshold for that
+# class during verification only. It does NOT relax the trading path: execution
+# still refuses to trade any symbol whose quote is stale. See the note in
+# data_engine.get_symbol_live_quote.
+verification:
+  # Which asset classes this broker is expected to provide, and which are optional.
+  #
+  # `required: true`  -> the class must yield a usable, live, quotable symbol, or
+  #                      verification reports INCOMPLETE.
+  # `required: false` -> the class is probed and reported, but an absent symbol
+  #                      does not block the verdict.
+  #
+  # Rationale: a demo broker without crypto liquidity cannot supply crypto
+  # symbols. Requiring them would mean INCOMPLETE forever, which erodes the
+  # signal a verdict is meant to carry. Optional classes are still probed and
+  # reported, so their absence stays visible.
+  #
+  # `allow_stale_feed: true` relaxes the LIVE-QUOTE staleness threshold for that
+  # class during VERIFICATION ONLY. It does NOT relax the trading path: execution
+  # still refuses to trade any symbol whose quote is stale. See the note in
+  # data_engine.get_symbol_live_quote.
+  asset_classes:
+    Forex Currencies:
+      required: true
+      allow_stale_feed: false
+      max_tick_age_seconds: 60
+    Metals & Commodities:
+      required: true
+      allow_stale_feed: false
+      max_tick_age_seconds: 60
+    Indices & Equities:
+      required: true
+      # This broker lists index symbols but serves no live feed for some of them
+      # (UK100 quotes are ~140 days old). Discovery succeeds, quoting does not.
+      # Non-blocking for verification; still refused by the trading path.
+      allow_stale_feed: true
+      max_tick_age_seconds: 60
+    Crypto Assets:
+      # Not offered on this broker account.
+      required: false
+      allow_stale_feed: false
+      max_tick_age_seconds: 60
+
+# ── Display / Formatting ─────────────────────────────────────────────────────
+display:
+  # Margin level is equity/margin. With little or no margin in use the ratio is
+  # meaningless and the broker reports 0, which used to render as 487,572%.
+  # Below this threshold (in ACCOUNT CURRENCY) the HUD shows N/A instead.
+  margin_level_na_below: 1.0
+  margin_level_na_below_currency: ACCOUNT
+
+# ── Engine ───────────────────────────────────────────────────────────────────
+engine:
+  mode: PAPER                       # PAPER (default) | LIVE (requires typed confirmation)
+  magic_number: 100100
+  heartbeat_interval_seconds: 5
+  heartbeat_stale_threshold_seconds: 30   # UI shows ENGINE OFFLINE if heartbeat is stale
+  db_path: hedge_fund.db

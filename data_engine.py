@@ -31,52 +31,117 @@ def initialize_mt5() -> bool:
     return False
 
 
+def _classify_symbol(sym_info) -> str:
+    """Classify an MT5 symbol into an asset class using its path/sector.
+
+    Uses sym_info.path (e.g. 'Forex\\Majors\\EURUSD') rather than name
+    substring matching, which incorrectly classifies symbols like 'AETH'
+    (a stock ETF) as crypto because its name contains 'ETH'.
+
+    Anything not matched is 'Unclassified' and is never tradable: it is not
+    offered in the UI dropdown and the executor rejects it independently.
+
+    Note the keyword lists must match plural forms. Brokers commonly use
+    'Indices', which does NOT contain the substring 'INDEX' -- matching only
+    the singular silently misfiled every index as Unclassified.
+    """
+    path = (sym_info.path or "").upper()
+
+    if any(k in path for k in ("FOREX", "FX", "CURRENCIES")):
+        return "Forex Currencies"
+    if any(k in path for k in ("CRYPTO", "DIGITAL", "COIN")):
+        return "Crypto Assets"
+    if any(k in path for k in ("METAL", "COMMODITY", "COMMODITIES", "ENERGY")):
+        return "Metals & Commodities"
+    if any(k in path for k in ("INDEX", "INDICES", "INDICE", "CFD")):
+        return "Indices & Equities"
+    if any(k in path for k in ("STOCK", "EQUITY", "EQUITIES", "SHARE", "SHARES")):
+        return "Indices & Equities"
+    return "Unclassified"
+
+
+def get_symbol_info_safe(symbol) -> dict | None:
+    """Fetch a symbol's trade specification as a plain dict.
+
+    Returns None when the symbol is unknown or MT5 is unavailable, so callers
+    can treat "no spec" as unknown rather than substituting defaults. The tick
+    value and tick size come from here: they are needed to convert a
+    price distance into account currency, and guessing them would produce a
+    risk figure that looks computed but is invented.
+    """
+    if not symbol:
+        return None
+    try:
+        if not initialize_mt5():
+            return None
+        info = mt5.symbol_info(symbol)
+    except Exception:
+        return None
+
+    if info is None:
+        return None
+
+    return {
+        "name": getattr(info, "name", symbol),
+        "digits": getattr(info, "digits", None),
+        "point": getattr(info, "point", None),
+        "trade_tick_value": getattr(info, "trade_tick_value", None),
+        "trade_tick_size": getattr(info, "trade_tick_size", None),
+        "volume_min": getattr(info, "volume_min", None),
+        "volume_max": getattr(info, "volume_max", None),
+        "volume_step": getattr(info, "volume_step", None),
+    }
+
+
 def get_available_symbols() -> dict:
-    """Dynamically fetches and categorizes available instruments directly from MT5."""
+    """Dynamically fetches and categorises available instruments from MT5.
+
+    Classification is based on sym_info.path, not name substrings, to avoid
+    mis-categorising symbols like AETH (stock ETF) as crypto assets.
+
+    Only symbols that are BOTH in config.yaml's tradable whitelist AND
+    classifiable appear in the result. The dropdown source is therefore
+    incapable of offering an Unclassified or non-whitelisted symbol; the
+    executor enforces the same rule independently.
+    """
+    from config_loader import load_config
+
+    try:
+        cfg = load_config()
+        allowed = {s.upper() for s in cfg.trading.tradable_symbols}
+    except Exception:
+        # Fails closed: with no validated whitelist we cannot prove any symbol is
+        # tradable, so we offer none.
+        return {}
+
     if not initialize_mt5():
-        return {
-            "Popular Watchlist": ["USDCAD", "XAUUSD", "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "BTCUSD"],
-            "Forex Majors": ["EURUSD", "GBPUSD", "USDJPY", "USDCAD", "USDCHF", "AUDUSD", "NZDUSD"],
-        }
+        return {}
 
     symbols = mt5.symbols_get()
     if not symbols:
-        return {"Popular Watchlist": ["USDCAD", "XAUUSD", "EURUSD", "GBPUSD", "USDJPY"]}
+        return {}
 
-    symbol_names = [s.name for s in symbols]
-    symbol_set = set(symbol_names)
-
-    # 1. Popular curated list (check availability on broker)
-    popular_candidates = [
-        "XAUUSD", "USDCAD", "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "NZDUSD", "USDCHF",
-        "BTCUSD", "ETHUSD", "US500", "USTEC", "US30", "NVDA", "AMD", "MSFT", "AAPL"
-    ]
-    popular = [s for s in popular_candidates if s in symbol_set]
-    if not popular:
-        popular = symbol_names[:10]
-
-    # 2. Forex Majors & Crosses
-    forex = [s for s in symbol_names if len(s) == 6 and any(s.startswith(cur) for cur in ["EUR", "GBP", "USD", "AUD", "NZD", "CAD", "CHF", "JPY"])]
-
-    # 3. Metals & Energy
-    metals = [s for s in symbol_names if any(x in s for x in ["XAU", "XAG", "GOLD", "SILVER", "OIL", "BRENT", "WTI"])]
-
-    # 4. Crypto
-    crypto = [s for s in symbol_names if any(x in s for x in ["BTC", "ETH", "SOL", "XRP", "LTC", "DOGE"])]
-
-    # 5. Global Indices & Equities
-    indices_stocks = [s for s in symbol_names if any(x in s for x in ["US500", "USTEC", "US30", "GER40", "UK100", "NVDA", "AMD", "MSFT", "AAPL", "TSLA", "AMZN"])]
-
-    categories = {
-        "Popular Watchlist": popular,
-        "Forex Currencies": forex[:50] if forex else symbol_names[:30],
-        "Metals & Commodities": metals[:30] if metals else ["XAUUSD"],
-        "Crypto Assets": crypto[:30] if crypto else ["BTCUSD"],
-        "Indices & Equities": indices_stocks[:30] if indices_stocks else [],
-        "All MT5 Instruments": symbol_names[:250],
+    categories: dict[str, list[str]] = {
+        "Forex Currencies": [],
+        "Metals & Commodities": [],
+        "Crypto Assets": [],
+        "Indices & Equities": [],
     }
 
-    return categories
+    for sym in symbols:
+        if sym.name.upper() not in allowed:
+            continue
+        cat = _classify_symbol(sym)
+        if cat == "Unclassified":
+            # Not offered for trading. Reported separately below so the reason
+            # is visible rather than silently dropped.
+            continue
+        if len(categories[cat]) < 250:
+            categories[cat].append(sym.name)
+
+    result = {cat: syms for cat, syms in categories.items() if syms}
+    return result
+
 
 
 def calculate_rsi(series: pd.Series, period: int = 14) -> pd.Series:
@@ -162,24 +227,72 @@ def get_market_data(symbol: str) -> str:
     return summary
 
 
-def get_symbol_live_quote(symbol: str) -> dict:
-    """Fetches real-time live bid, ask, spread, and price digits for an instrument."""
+def get_symbol_live_quote(symbol: str, max_tick_age_seconds: int = 30) -> dict:
+    """Fetches real-time live bid, ask, spread, and price digits for an instrument.
+
+    Spread is computed as (ask - bid) / point, which is correct for all asset
+    classes (forex, JPY pairs, gold, indices, crypto).
+
+    Sanity checks (all result in valid=False):
+      1. Missing data
+      2. Inverted bid/ask (ask < bid)
+      3. Spread > 5 % of ask price (corrupt/stale quote)
+      4. Tick age > max_tick_age_seconds (stale feed)
+
+    Args:
+        symbol:               MT5 symbol name.
+        max_tick_age_seconds: Reject ticks older than this. Configurable;
+                              defaults to 30 s (set via config.yaml / env).
+    """
+    import time as _time
     mt5.symbol_select(symbol, True)
     tick = mt5.symbol_info_tick(symbol)
     info = mt5.symbol_info(symbol)
 
     if not tick or not info:
-        return {"bid": 0.0, "ask": 0.0, "spread": 0.0, "digits": 2, "time": "N/A", "description": ""}
+        return {"bid": 0.0, "ask": 0.0, "spread": 0.0, "digits": 2,
+                "time": "N/A", "description": "", "valid": False, "reason": "No data"}
 
-    spread = (tick.ask - tick.bid) / (info.point * 10 if info.digits in (3, 5) else info.point)
+    # 1. Stale tick check — tick.time is a UNIX timestamp (seconds)
+    tick_age = _time.time() - tick.time
+    if tick_age > max_tick_age_seconds:
+        return {"bid": tick.bid, "ask": tick.ask, "spread": 0.0,
+                "digits": info.digits,
+                "time": pd.to_datetime(tick.time, unit="s").strftime("%H:%M:%S"),
+                "description": info.description or "",
+                "valid": False,
+                "reason": f"Stale tick: age {tick_age:.0f}s > {max_tick_age_seconds}s"}
+
+    # 2. Inverted bid/ask
+    if tick.ask <= 0 or tick.bid <= 0 or tick.ask < tick.bid:
+        return {"bid": 0.0, "ask": 0.0, "spread": 0.0, "digits": info.digits,
+                "time": "N/A", "description": info.description or "",
+                "valid": False, "reason": "Inverted bid/ask"}
+
+    # 3. Corrupt spread > 5 % of ask
+    if (tick.ask - tick.bid) > tick.ask * 0.05:
+        return {"bid": tick.bid, "ask": tick.ask, "spread": 0.0,
+                "digits": info.digits,
+                "time": pd.to_datetime(tick.time, unit="s").strftime("%H:%M:%S"),
+                "description": info.description or "",
+                "valid": False, "reason": "Spread > 5 % of price (stale/corrupt)"}
+
+    # Spread in points using the symbol's own point size — no hardcoded factor
+    spread_points = round((tick.ask - tick.bid) / info.point, 1)
+
     return {
         "bid": tick.bid,
         "ask": tick.ask,
-        "spread": round(spread, 1),
+        "spread": spread_points,
         "digits": info.digits,
         "time": pd.to_datetime(tick.time, unit="s").strftime("%H:%M:%S"),
         "description": info.description or "",
+        "valid": True,
+        "reason": "",
+        "tick_age_s": round(tick_age, 1),
     }
+
+
 
 
 def get_account_telemetry() -> dict:
