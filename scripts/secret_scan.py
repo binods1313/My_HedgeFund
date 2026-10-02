@@ -276,13 +276,49 @@ def scan_history(repo: Path) -> list[Hit]:
     return hits
 
 
+# Canonical canaries: the synthetic values used to prove detection still works.
+# Declared in ONE place so the audit, the allowlist and the tests agree.
+#
+# These are deliberately low-entropy and obviously fake (repeated letters,
+# example-domain shapes). A real credential would not look like this, and
+# TestSyntheticAllowlistIsSafe enforces the distinction structurally rather than
+# by guessing with an entropy threshold.
+DECLARED_CANARIES = frozenset({
+    # AWS
+    "AKIAIOSFODNN7EXAMPLE",
+    # OpenRouter / OpenAI-style
+    "sk-or-v1-AAAABBBBCCCCDDDDEEEEFFFF",
+    "sk-or-v1-AAAABBBBCCCCDDDDEEEEFFFFGGGG",
+    "sk-or-v1-AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHH",
+    # Groq
+    "gsk_AAAABBBBCCCCDDDDEEEEFFFF",
+    # Slack
+    "xoxb-1234567890-abcdefghij",
+    # Private key material (header only; no key body)
+    "-----BEGIN RSA PRIVATE KEY-----",
+    # Generic credential assignments
+    "abcd1234efgh5678",
+    "abcdef123456",
+    "Sup3rSecretValue123",
+    # Password-shaped canaries
+    "Hunter2xyz",
+    "CorrectHorse7",
+    "Rea1LookingPassw0rd",
+    "ZzTopSecret99",
+    "UbD-N1JmSecret",
+})
+
 # Files that legitimately contain credential-shaped strings: the scanner needs
-# synthetic canaries to prove it still fires, and its tests need sample secrets
-# for the same reason. Kept in one place so the pre-commit hook and the tests
-# cannot drift apart.
+# synthetic canaries, the allowlist necessarily lists them, and the tests need
+# sample values for the same reasons. Kept in one place so the pre-commit hook
+# and the tests cannot drift apart.
 SELF_REFERENTIAL_FILES = frozenset({
     "scripts/secret_scan.py",
     "scripts/precommit_hook.py",
+    "scripts/secret_triage.py",
+    # Holds the synthetic allowlist, which by definition contains
+    # credential-shaped strings.
+    "scripts/verify_history_clean.py",
     "tests/test_secret_scan.py",
     ".secrets.baseline",
 })

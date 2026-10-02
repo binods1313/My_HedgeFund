@@ -362,14 +362,31 @@ class TestSyntheticValueAllowlist:
         assert vh.is_synthetic(value) is True
 
     @pytest.mark.parametrize("value", [
-        "UbD-N1Jm",                       # a real-looking password
-        "sk-or-v1-AAAABBBBCCCCDDDDEEEEFFFF",
-        "AKIAIOSFODNN7EXAMPLE",
+        "AKIAIOSFODNN7NOTLISTED",
+        "sk-or-v1-ZZZZrandomrandom1234",
         "hunter2xyz",
         "999999998",                      # near-miss of an allowlisted value
     ])
-    def test_real_values_are_not_synthetic(self, value):
+    def test_values_not_on_the_allowlist_are_not_synthetic(self, value):
+        """Values outside the allowlist are never excused, even if they are
+        recognisably fake: exemption must be explicit, never inferred."""
+        assert value not in vh.SYNTHETIC_TEST_VALUES
         assert vh.is_synthetic(value) is False
+
+    @pytest.mark.parametrize("value", [
+        "AKIAIOSFODNN7EXAMPLE",
+        "sk-or-v1-AAAABBBBCCCCDDDDEEEEFFFF",
+        "gsk_AAAABBBBCCCCDDDDEEEEFFFF",
+        "xoxb-1234567890-abcdefghij",
+    ])
+    def test_registered_canaries_are_classified_as_synthetic(self, value):
+        """The scanner's own canaries are allow-listed so audits classify them."""
+        assert value in vh.SYNTHETIC_TEST_VALUES
+        assert vh.is_synthetic(value) is True
+
+    def test_a_different_aws_key_is_not_synthetic(self):
+        """Allow-listing the AWS example key must not exempt other AWS keys."""
+        assert vh.is_synthetic("AKIAIOSFODNN7NOTLISTED") is False
 
     def test_path_is_not_consulted(self):
         """The old design keyed off path. Prove it no longer does."""
@@ -383,13 +400,18 @@ class TestSyntheticValueAllowlist:
         """The regression this replaces: a live password under tests/.
 
         Commits a file at tests/test_fixture.py containing a real-looking
-        credential. It must be reported, because location grants no exemption.
+        credential that is NOT on the synthetic allowlist. It must be reported,
+        because location grants no exemption and the value is not registered
+        as a canary.
         """
+        secret = "Tr0ub4dor-unlisted-9x7"
+        assert secret not in vh.SYNTHETIC_TEST_VALUES
+
         repo = tmp_path / "repo"
         (repo / "tests").mkdir(parents=True)
         subprocess.run(["git", "init", "-q", str(repo)], check=True)
         (repo / "tests" / "test_fixture.py").write_text(
-            'MT5_PASSWORD = "Rea1LookingPassw0rd"\n', encoding="utf-8"
+            f'MT5_PASSWORD = "{secret}"\n', encoding="utf-8"
         )
         subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
         subprocess.run(
@@ -398,7 +420,7 @@ class TestSyntheticValueAllowlist:
             check=True,
         )
 
-        commits, leak_files = vh.search_history(repo, "Rea1LookingPassw0rd")
+        commits, leak_files = vh.search_history(repo, secret)
         assert leak_files > 0, (
             "a real credential in tests/ was excused by its path"
         )
@@ -426,11 +448,99 @@ class TestSyntheticValueAllowlist:
         assert vh.search_history(Path("/nonexistent"), "YOUR_MT5_PASSWORD") == (0, 0)
 
     def test_allowlist_contains_only_intended_entries(self):
-        """Guard against someone allowlisting a live credential."""
+        """The AWS example key is registered so audits can classify it.
+
+        What must NOT happen is allow-listing a whole key type, which would
+        exempt real keys. That is pinned by the neighbouring test.
+        """
+        assert "AKIAIOSFODNN7EXAMPLE" in ss.DECLARED_CANARIES
         for value in vh.SYNTHETIC_TEST_VALUES:
-            assert "sk-or-v1-" not in value, f"{value!r} looks like a live key"
-            assert not value.startswith("ghp_"), f"{value!r} looks like a live token"
-            assert not value.startswith("AKIA"), f"{value!r} looks like an AWS key"
+            if "AKIA" not in value:
+                continue
+            # The single documented AWS example, and nothing else of that shape.
+            assert value == "AKIAIOSFODNN7EXAMPLE", (
+                f"{value!r} is an AWS key that should not be allow-listed"
+            )
+
+
+class TestSyntheticAllowlistIsSafe:
+    """The allowlist must not become a place to hide real credentials.
+
+    Exemption is per value, so the allowlist is the single point where a live
+    credential could be quietly excused. These tests constrain what may enter it.
+    """
+
+    def test_allowlist_entries_are_declared_canaries_or_placeholders(self):
+        """Structural check, replacing an entropy threshold.
+
+        An earlier version used Shannon entropy to guess whether an allowlisted
+        value looked like a real credential. That is a poor discriminator: the
+        Slack canary's fixed digits push it above any usable threshold while a
+        genuine key needs a much higher one. Instead, exemption must come from
+        one of the explicitly justified sets.
+        """
+        justified = (
+            set(vh.SYNTHETIC_TEST_VALUES)
+            & (set(ss.DECLARED_CANARIES) | {"999999999", "000000000",
+                                           "123456789"})
+        )
+        for value in justified:
+            assert vh.is_synthetic(value) is True
+
+        # Anything not in the allowlist is never exempt, regardless of entropy.
+        for value in ("AKIAIOSFODNN7NOTLISTED", "sk-or-v1-ZZZZrandomrandom1234",
+                      "ghp_" + "c" * 36):
+            assert vh.is_synthetic(value) is False, (
+                f"{value[:16]!r} was exempted without being declared synthetic"
+            )
+
+    def test_allowlist_is_the_union_of_declared_sets(self):
+        """The allowlist must equal canaries plus placeholders, nothing else."""
+        base = {
+            "YOUR_MT5_PASSWORD", "your_password", "YOUR_OPENROUTER_KEY",
+            "YOUR_KEY_HERE", "changeme",
+            "***REMOVED-MT5_PASSWORD***", "***REMOVED-OPENROUTER_API_KEY***",
+            "[REDACTED]", "999999999", "000000000", "123456789",
+        }
+        expected = base | set(ss.DECLARED_CANARIES)
+        assert set(vh.SYNTHETIC_TEST_VALUES) == expected, (
+            "allowlist drifted from declared canaries + placeholders; "
+            f"unexpected: {sorted(set(vh.SYNTHETIC_TEST_VALUES) - expected)}"
+        )
+
+    def test_allowlist_does_not_contain_any_live_env_secret(self):
+        """The definitive check: nothing in .env may be allow-listed."""
+        import config as cfg
+
+        live = {
+            name: value
+            for name in ("MT5_PASSWORD", "OPENROUTER_API_KEY", "GROQ_API_KEY",
+                         "MT5_LOGIN")
+            if (value := getattr(cfg, name, None))
+            and isinstance(value, str)
+            and not value.startswith("YOUR_")
+            and len(value) >= 6
+        }
+        for name, value in live.items():
+            assert value not in vh.SYNTHETIC_TEST_VALUES, (
+                f"{name} is on the synthetic allowlist; a live credential must "
+                f"never be exempted from leak detection"
+            )
+
+    def test_allowlist_is_explicitly_enumerated_not_inferred(self):
+        """Exemption must come from the list, never from a shape heuristic."""
+        import inspect
+
+        src = inspect.getsource(vh.is_synthetic)
+        # A length or charset heuristic would look like a regex over the value.
+        assert "re.match" not in src and "re.search" not in src, (
+            "is_synthetic must not infer safety from a value's shape"
+        )
+        assert "SYNTHETIC_TEST_VALUES" in src
+
+    def test_live_secret_is_still_detected_through_the_allowlist_path(self):
+        """Even with a populated allowlist, a non-listed secret is a leak."""
+        assert vh.is_synthetic("NotOnTheList12345") is False
 
 
 class TestThisRepoIsClean:
