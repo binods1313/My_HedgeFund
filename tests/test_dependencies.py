@@ -96,6 +96,59 @@ def _module_key(path: Path) -> tuple[str, ...]:
     return tuple(rel.parts)
 
 
+class TestAllSourceFilesCompile:
+    """Every tracked source file must parse.
+
+    This exists because an IndentationError shipped in app.py undetected. The
+    dependency test walks the AST, and ast.parse tolerates misindented lines
+    that fall inside a triple-quoted f-string, so 408 tests passed while the
+    app could not start. Compiling the module is the check the AST walk is not.
+
+    Note: compile() raises IndentationError for a dedented statement inside a
+    function body, which is exactly the failure that shipped.
+    """
+
+    @pytest.mark.parametrize("path", _source_files(), ids=lambda p: p.name)
+    def test_file_compiles(self, path):
+        source = path.read_text(encoding="utf-8")
+        try:
+            compile(source, str(path), "exec")
+        except IndentationError as exc:
+            pytest.fail(
+                f"{path.relative_to(REPO_ROOT)} has an IndentationError at "
+                f"line {exc.lineno}: {exc.msg}. The app cannot start."
+            )
+        except SyntaxError as exc:
+            pytest.fail(
+                f"{path.relative_to(REPO_ROOT)} has a SyntaxError at line "
+                f"{exc.lineno}: {exc.msg}"
+            )
+
+    def test_app_compiles_specifically(self):
+        """app.py is the entry point; pin it explicitly."""
+        app = REPO_ROOT / "app.py"
+        assert app.exists(), "app.py is the Streamlit entry point"
+        compile(app.read_text(encoding="utf-8"), str(app), "exec")
+
+    def test_no_indentation_error_survives_a_compile(self):
+        """Catch the exact failure that shipped: a statement dedented out of a
+        block while the surrounding lines stayed indented.
+
+        compile() is the authoritative check. An earlier attempt also asserted
+        on indentation levels inside the HTML block, which was fragile and
+        produced a false positive on legitimately nested markup.
+        """
+        app = REPO_ROOT / "app.py"
+        source = app.read_text(encoding="utf-8")
+        try:
+            compile(source, str(app), "exec")
+        except IndentationError as exc:
+            pytest.fail(
+                f"app.py line {exc.lineno}: {exc.msg}. A statement was dedented "
+                f"out of its enclosing block."
+            )
+
+
 class TestRequirementsAreComplete:
 
     def test_requirements_file_exists(self):
