@@ -486,6 +486,33 @@ def _unused_is_synthetic(value: str) -> bool:""",
             "tests/test_dependencies.py::TestRequirementsAreComplete::test_known_config_dependencies_are_declared[yaml]",
         ],
     ),
+    Mutation(
+        name="M35: open P&L sign discarded (loss shown as gain)",
+        target="app.py",
+        old="""open_pnl = sum(p["profit"] for p in open_pos) if open_pos else 0.0""",
+        new="""open_pnl = sum(abs(p["profit"]) for p in open_pos) if open_pos else 0.0""",
+        expect_fail=[
+            "tests/test_formatting_and_mode.py::TestOpenPnlSignPreservation::test_negative_positions_sum_to_a_negative_total",
+        ],
+    ),
+    Mutation(
+        name="M36: signed P&L relabelled as 'Open Risk'",
+        target="app.py",
+        old="""Open P&amp;L ({_currency})""",
+        new="""Open Risk ({_currency})""",
+        expect_fail=[
+            "tests/test_formatting_and_mode.py::TestOpenPnlSignPreservation::test_app_does_not_label_the_signed_value_as_risk",
+        ],
+    ),
+    Mutation(
+        name="M37: open P&L colour inverts the risk signal",
+        target="app.py",
+        old="""{'#F43F5E' if open_pnl<0 else '#34D399'}""",
+        new="""{'#F43F5E' if open_pnl>0 else '#34D399'}""",
+        expect_fail=[
+            "tests/test_formatting_and_mode.py::TestOpenPnlSignPreservation::test_signed_loss_renders_with_minus",
+        ],
+    ),
 ]
 
 

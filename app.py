@@ -600,6 +600,11 @@ st.markdown(f"""
 # ── LIVE INFO STRIP ───────────────────────────────────────────────────────────
 now_str = datetime.now().strftime("%H:%M:%S")
 open_pos = get_open_positions() if mt5_connected else []
+# Sum the signed P&L of open positions. Using abs() here discarded the sign, so
+# a portfolio sitting on a EUR 10 loss was reported as "+EUR 10.19" in green.
+open_pnl = sum(p["profit"] for p in open_pos) if open_pos else 0.0
+# Gross exposure is the magnitude regardless of direction: what the account is
+# exposed to if every open position moved against it by this much.
 open_risk = sum(abs(p["profit"]) for p in open_pos) if open_pos else 0.0
 margin_used = telemetry.get("margin", 0.0)
 margin_free = telemetry.get("margin_free", 0.0)
@@ -612,7 +617,7 @@ tick_time = strip_quote.get("time", "--") if strip_quote else "--"
 # This account is denominated in EUR, so they read 20.51 EUR, not $20.51.
 _margin_used_str = format_money(margin_used, _currency)
 _margin_free_str = format_money(margin_free, _currency)
-_open_risk_str = format_open_risk(open_risk, _currency)
+_open_pnl_str = format_open_risk(open_pnl, _currency)
 
 st.markdown(f"""
 <div class="info-strip">
@@ -637,8 +642,8 @@ st.markdown(f"""
   </div>
   <div class="strip-divider"></div>
   <div class="strip-item">
-    <div><div class="strip-label">Open Risk ({_currency})</div>
-    <div class="strip-value" style="color:{'#F43F5E' if open_risk>0 else '#34D399'};">{_open_risk_str}</div></div>
+    <div><div class="strip-label">Open P&amp;L ({_currency})</div>
+    <div class="strip-value" style="color:{'#F43F5E' if open_pnl<0 else '#34D399'};">{_open_pnl_str}</div></div>
   </div>
   <div class="strip-divider"></div>
   <div class="strip-item">

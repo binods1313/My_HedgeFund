@@ -15,6 +15,7 @@ every order path refuses unless the account is provably DEMO.
 Run: python -m pytest tests/test_formatting_and_mode.py -v
 """
 import math
+from pathlib import Path
 
 import pytest
 
@@ -151,6 +152,53 @@ class TestCurrencyFormatting:
         assert formatting.format_open_risk(4.71, "EUR") == "+€4.71"
         assert formatting.format_open_risk(-4.71, "EUR") == "-€4.71"
         assert formatting.format_open_risk(0.0, "EUR") == "+€0.00"
+
+
+class TestOpenPnlSignPreservation:
+    """A loss must never render as a gain.
+
+    app.py summed abs(profit) for the strip labelled 'Open Risk', so a book
+    sitting on a loss displayed '+EUR 10.19' in green. The sign came from
+    summing magnitudes, not from the positions.
+    """
+
+    def test_negative_positions_sum_to_a_negative_total(self):
+        positions = [{"profit": -3.89}, {"profit": -6.30}]
+        total = sum(p["profit"] for p in positions)
+        assert total < 0
+        assert total == pytest.approx(-10.19)
+
+    def test_signed_loss_renders_with_minus(self):
+        assert formatting.format_open_risk(-10.19, "EUR") == "-€10.19"
+
+    def test_signed_profit_renders_with_plus(self):
+        positions = [{"profit": 3.89}, {"profit": 6.30}]
+        total = sum(p["profit"] for p in positions)
+        assert formatting.format_open_risk(total, "EUR") == "+€10.19"
+
+    def test_mixed_positions_net_out(self):
+        positions = [{"profit": 12.00}, {"profit": -3.00}]
+        total = sum(p["profit"] for p in positions)
+        assert formatting.format_open_risk(total, "EUR") == "+€9.00"
+
+    def test_no_positions_is_zero(self):
+        assert formatting.format_open_risk(0.0, "EUR") == "+€0.00"
+
+    def test_gross_exposure_still_available_separately(self):
+        """Gross exposure is the magnitude, for reporting 'at risk'."""
+        positions = [{"profit": -3.89}, {"profit": -6.30}]
+        gross = sum(abs(p["profit"]) for p in positions)
+        assert gross == pytest.approx(10.19)
+        assert gross > 0
+
+    def test_app_does_not_label_the_signed_value_as_risk(self):
+        """The strip must not present net P&L under a 'risk' label."""
+        source = (Path(__file__).resolve().parent.parent / "app.py").read_text(
+            encoding="utf-8")
+        assert "Open Risk" not in source, (
+            "the strip still labels net signed P&L as 'Open Risk', which "
+            "inverts the meaning of a loss"
+        )
 
 
 class TestMaskAccount:
