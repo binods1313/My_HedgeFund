@@ -404,6 +404,8 @@ SELF_REFERENTIAL_FILES = frozenset({
     # credential-shaped strings.
     "scripts/verify_history_clean.py",
     "tests/test_secret_scan.py",
+    # Reuses a registered canary to prove keyring redaction.
+    "tests/test_engine/test_boundaries.py",
     ".secrets.baseline",
 })
 

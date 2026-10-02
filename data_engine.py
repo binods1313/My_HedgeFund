@@ -3,6 +3,18 @@ import pandas as pd
 import numpy as np
 from config import MT5_LOGIN, MT5_PASSWORD, MT5_SERVER, MT5_PATH
 
+# Chart timeframe constants, re-exported so the Streamlit UI never needs to
+# import MetaTrader5 itself.
+#
+# Phase 1 deliverable: the UI reads market data from the database and inserts
+# commands; it must not hold a terminal connection. app.py previously did
+# `import MetaTrader5 as mt5` purely to name these two timeframes, which meant
+# the UI owned a terminal dependency it had no business having.
+TIMEFRAME_M15 = mt5.TIMEFRAME_M15
+TIMEFRAME_H4 = mt5.TIMEFRAME_H4
+TIMEFRAME_D1 = mt5.TIMEFRAME_D1
+TIMEFRAME_H1 = mt5.TIMEFRAME_H1
+
 
 def initialize_mt5() -> bool:
     """Connects to the MetaTrader 5 terminal with robust retry and timeout handling."""
