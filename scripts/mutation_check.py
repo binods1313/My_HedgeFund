@@ -492,7 +492,9 @@ def _unused_is_synthetic(value: str) -> bool:""",
         old="""open_pnl = sum(p["profit"] for p in open_pos) if open_pos else 0.0""",
         new="""open_pnl = sum(abs(p["profit"]) for p in open_pos) if open_pos else 0.0""",
         expect_fail=[
-            "tests/test_formatting_and_mode.py::TestOpenPnlSignPreservation::test_negative_positions_sum_to_a_negative_total",
+            # Must target the test that reads app.py's source. The earlier test
+            # recomputed the sum locally and passed regardless of app.py.
+            "tests/test_formatting_and_mode.py::TestOpenPnlSignPreservation::test_app_sums_signed_profit_not_absolute",
         ],
     ),
     Mutation(
@@ -510,7 +512,7 @@ def _unused_is_synthetic(value: str) -> bool:""",
         old="""{'#F43F5E' if open_pnl<0 else '#34D399'}""",
         new="""{'#F43F5E' if open_pnl>0 else '#34D399'}""",
         expect_fail=[
-            "tests/test_formatting_and_mode.py::TestOpenPnlSignPreservation::test_signed_loss_renders_with_minus",
+            "tests/test_formatting_and_mode.py::TestOpenPnlSignPreservation::test_app_colours_a_loss_red",
         ],
     ),
 ]
