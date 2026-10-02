@@ -794,12 +794,12 @@ with col_c:
     rr = st.session_state.ai_state["risk_reward"]
     rationale = st.session_state.ai_state["reasoning"]
 
-dec_class = dec.lower()
-badge_cls = {"BUY": "green", "SELL": "red", "HOLD": "amber"}.get(dec, "neutral")
-str_cls = {"VERY STRONG": "cyan", "STRONG": "green", "MODERATE": "amber", "NEUTRAL": "neutral"}.get(strength, "neutral")
+    dec_class = dec.lower()
+    badge_cls = {"BUY": "green", "SELL": "red", "HOLD": "amber"}.get(dec, "neutral")
+    str_cls = {"VERY STRONG": "cyan", "STRONG": "green", "MODERATE": "amber", "NEUTRAL": "neutral"}.get(strength, "neutral")
 
-# A safety HOLD produces no confidence at all, so nothing numeric is rendered.
-conf_display = format_llm_confidence(conf, dec)
+    # A safety HOLD produces no confidence at all, so nothing numeric is rendered.
+    conf_display = format_llm_confidence(conf, dec)
 
     st.markdown(f"""
     <div class="reactor-wrap">
