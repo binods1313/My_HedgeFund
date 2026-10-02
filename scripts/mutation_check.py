@@ -191,16 +191,17 @@ MUTATIONS: list[Mutation] = [
         ],
     ),
     Mutation(
-        # These two originally disabled the blocking-skip branch. That branch
-        # moved into CheckLog.blocking_checks, so they now target the property
-        # that decides which skips count.
-        name="M13: a skipped check counts as a pass",
+        # Making blocking_checks return every check means an informational skip
+        # holds the verdict at INCOMPLETE. The tests that catch this are the
+        # optional-class ones, which legitimately produce informational skips.
+        # The plain-skip tests still pass: their skips are already blocking.
+        name="M13: an informational skip counts as a pass",
         target="scripts/demo_verification.py",
         old="""        return [c for c in self.checks if c.blocking]""",
         new="""        return list(self.checks)""",
         expect_fail=[
-            "tests/test_demo_verification.py::TestVerdictNeverPassesWithSkips::test_one_skip_gives_incomplete",
-            "tests/test_demo_verification.py::TestSymbolDiscovery::test_missing_class_makes_verdict_incomplete",
+            "tests/test_demo_verification.py::TestAssetClassPolicy::test_missing_optional_class_yields_pass",
+            "tests/test_demo_verification.py::TestAssetClassPolicy::test_stale_feed_on_permitted_class_is_non_blocking",
         ],
     ),
     Mutation(
