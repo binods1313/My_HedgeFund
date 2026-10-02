@@ -676,6 +676,20 @@ def _unused_is_synthetic(value: str) -> bool:""",
             "tests/test_demo_verification.py::TestAssetClassPolicy::test_wrong_spread_fails_even_on_an_optional_class",
         ],
     ),
+    Mutation(
+        # The IndentationError that shipped: a statement dedented out of its
+        # block, which ast.parse tolerates inside an f-string but compile() does not.
+        name="M51: app.py statement dedented out of its function",
+        target="app.py",
+        old="""    dec_class = dec.lower()
+    badge_cls = {"BUY": "green", "SELL": "red", "HOLD": "amber"}.get(dec, "neutral")""",
+        new="""dec_class = dec.lower()
+    badge_cls = {"BUY": "green", "SELL": "red", "HOLD": "amber"}.get(dec, "neutral")""",
+        expect_fail=[
+            "tests/test_dependencies.py::TestAllSourceFilesCompile::test_app_compiles_specifically",
+            "tests/test_dependencies.py::TestAllSourceFilesCompile::test_no_indentation_error_survives_a_compile",
+        ],
+    ),
 ]
 
 
