@@ -174,6 +174,18 @@ class Gateway:
             self._handle(item)
 
     def _handle(self, request: "_Request") -> None:
+        """Service one request. Runs on the owner thread.
+
+        The MT5 call is made inline, so MT5 is only ever touched by its owner.
+        An earlier implementation spawned a fresh thread per call to avoid being
+        blocked by a hang, which meant MT5 was driven from a different thread on
+        every request: precisely what this design exists to prevent.
+
+        The consequence is deliberate. If order_send blocks, the owner thread is
+        stuck, the caller's deadline fires, and the outcome is UNKNOWN + HALT.
+        That is the honest answer rather than a guess, because a blocked owner
+        means the terminal cannot be read for reconciliation either.
+        """
         # Reconnect before servicing a request, so callers never see a stale
         # failure when the link is simply down.
         if not self.status.connected:
@@ -181,7 +193,7 @@ class Gateway:
                 request.reject(NotConnected(self.status.last_error))
                 return
         try:
-            result = self._invoke(request)
+            result = request.fn(*request.args, **request.kwargs)
         except Exception as exc:      # noqa: BLE001 - recorded and reported
             self.status.consecutive_failures += 1
             self.status.last_error = f"{type(exc).__name__}: {exc}"
@@ -232,37 +244,13 @@ class Gateway:
     # -- the actual call -------------------------------------------------
 
     def _invoke(self, request: "_Request") -> Any:
-        """Call into MT5 from the owner thread, with a hard deadline.
+        """Execute inline on the owner thread.
 
-        A timeout is not a hard kill: the underlying call may still complete
-        inside the terminal. The caller is told it timed out so it can reconcile
-        rather than retry, and the pending call is left to finish so a stale
-        response cannot be mistaken for a fresh one.
+        No worker is spawned. The deadline lives on the CALLER's wait (see
+        _Request.wait), not here, so a blocked MT5 call blocks the owner thread
+        and the caller resolves to UNKNOWN rather than being told 'failed'.
         """
-        fn = request.fn
-        deadline = time.monotonic() + request.timeout
-        done = threading.Event()
-        box: dict[str, Any] = {}
-
-        def run():
-            try:
-                box["value"] = fn(*request.args, **request.kwargs)
-            except BaseException as exc:   # noqa: BLE001
-                box["error"] = exc
-            finally:
-                done.set()
-
-        # Daemon thread so a wedged MT5 call cannot block engine shutdown.
-        threading.Thread(target=run, daemon=True,
-                         name=f"mt5-call-{request.name}").start()
-
-        if not done.wait(timeout=request.timeout):
-            raise MT5Timeout(request.name, request.timeout)
-        if time.monotonic() > deadline:
-            raise MT5Timeout(request.name, request.timeout)
-        if "error" in box:
-            raise box["error"]
-        return box.get("value")
+        return request.fn(*request.args, **request.kwargs)
 
     # -- request helpers -------------------------------------------------
 
@@ -634,7 +622,14 @@ class _Request:
         self.done.set()
 
     def wait(self) -> Any:
-        self.done.wait(timeout=self.timeout + 1.0)
+        """Wait for the owner thread, or raise MT5Timeout.
+
+        The deadline is enforced on the CALLER's wait. The owner runs the MT5
+        call inline, so a blocked call blocks the owner and the caller must
+        treat the outcome as unknown rather than assuming the call failed.
+        """
+        if not self.done.wait(timeout=self.timeout):
+            raise MT5Timeout(self.name, self.timeout)
         if self.error is not None:
             raise self.error
         return self.value
