@@ -292,24 +292,56 @@ before the import is removed — otherwise it does not prove anything.
    channel.
 6. Full pytest output, all passing.
 
-## 11. Open questions
+## 11. Resolved decisions
 
-1. **DB location.** `data/engine.db` relative to repo, or an absolute path in
-   config? Absolute is safer against a cwd difference between UI and engine.
-2. **Command poll interval.** 1 s costs a query per second per process. Is 1 s
-   acceptable, or should the UI wake the engine via a filesystem flag?
-3. **`CLOSE_ALL` in emergency.** Should it require confirmation? It should, but
-   an emergency that stalls on a dialog is arguably worse than one that does not.
-   My default: EMERGENCY_STOP never prompts; `CLOSE_ALL` prompts unless it comes
-   bundled with the stop.
-4. **Position adoption on restart.** If MT5 has a position with our magic number
-   that we have no record of, do we adopt it silently (logged) or refuse to start?
-   I lean adopt-with-event, because refusing could leave unmanaged exposure.
-5. **Multi-account.** One engine, one MT5 account? I assume yes for Phase 1.
-6. **Magic number.** Phase 0 uses `100100`. Keep it, or allocate a distinct range
-   per module so gateway and executor traffic is separable?
+Approved by the owner. These are now settled, not open questions.
 
-## 12. Risks
+| # | Question | Decision |
+|---|---|---|
+| 1 | Position adoption on restart | **Adopt and log.** A position matching our magic number is adopted immediately, with an `events` row. Leaving exposure unmanaged is the worse risk. |
+| 2 | Emergency confirmation | **No prompts on emergency paths.** `EMERGENCY_STOP` executes instantly and bypasses all UI confirmation. Manual `CLOSE_ALL` in the HUD may confirm; the emergency path may not. |
+| 3 | Database path | **Absolute, derived from the project root.** Never relative: the UI and engine may run with different working directories, and a relative path would split the DB in two. |
+| 4 | Command poll interval | **1 s.** Retained. |
+| 5 | Magic number | **`100100`, unchanged.** Single-account topology for the core loop. |
+| 6 | Multi-account | **Out of scope for Phase 1.** One engine, one MT5 account. |
+
+Operational notes from the Phase 0 live cycle:
+
+- The hallucination guard fired on a real mismatch (`cited 0.00016 vs
+  m15.atr=0.0004`) and defaulted to HOLD. Fail-safe confirmed under load.
+- A MetaQuotes-Demo connection drop occurred and left no ghost positions. This is
+  the behaviour §5 was written for: `TimeoutError` plus reconciliation, never a
+  blind retry.
+
+## 12. Provider key routing
+
+The engine needs credentials for more than one provider over its life. They are
+loaded through a single interface so no module reads `.env` directly and no key
+is ever logged, echoed, or placed in a URL.
+
+**`engine/keys.py`** exposes `ProviderKeyring`:
+
+- Reads from the environment, which `config.py` has already populated via
+  `python-dotenv`.
+- `get("xai")` returns the value or raises `KeyNotConfigured`. It never returns
+  an empty string, so a missing key cannot be mistaken for a configured one.
+- `require("xai")` is the same, for call sites that want the raise.
+- `is_configured("xai")` for optional features.
+- Every accessor is redacted in `repr`, `str` and any exception message. A key
+  printed by accident, including in a traceback, shows as
+  `xai:***(set,len=84)`.
+- Providers are enumerated, so adding one is a config change rather than a code
+  change.
+
+**Rule: no module outside `engine/keys.py` calls `os.environ` for a secret.**
+Test enforces it, same shape as the MT5-import test.
+
+**Logging rule: a key may appear in a log only through `keyring.describe()`**,
+which returns the redacted form. The pre-commit hook and the secret scanner both
+already treat `XAI_API_KEY` as credential-shaped, so a committed key fails the
+build rather than shipping.
+
+## 13. Risks
 
 | Risk | Mitigation |
 |---|---|
