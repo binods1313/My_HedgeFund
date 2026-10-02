@@ -1,4 +1,4 @@
-"""Demo account verification — Phase 0 pre-PR checklist.
+"""Demo account verification - Phase 0 pre-PR checklist.
 
 Verifies the Phase 0 fixes against a live MT5 demo account:
 
@@ -81,58 +81,72 @@ VERDICT_FAIL = "FAIL"
 # ─────────────────────────────────────────────────────────────────────────────
 
 class Check:
-    __slots__ = ("name", "status", "detail")
+    __slots__ = ("name", "status", "detail", "blocking")
 
-    def __init__(self, name: str, status: str, detail: str = ""):
+    def __init__(self, name: str, status: str, detail: str = "",
+                 blocking: bool = True):
         self.name = name
         self.status = status  # OK | FAIL | SKIP
         self.detail = detail
+        # blocking=False marks an informational check: it is reported, but it
+        # does not hold the verdict back. Used for optional asset classes and
+        # for classes allowed to serve a stale feed during verification.
+        self.blocking = blocking
 
     def line(self) -> str:
-        return f"  {self.status:6s} {self.name}" + (f" - {self.detail}" if self.detail else "")
+        tag = "" if self.blocking else " (informational)"
+        return (f"  {self.status:6s} {self.name}{tag}"
+                + (f" - {self.detail}" if self.detail else ""))
 
 
 class CheckLog:
     """Collects checks and derives a single overall verdict.
 
     The verdict rule is the point of this class: a skipped check is NOT a pass,
-    and an empty log is NOT a pass either.
+    and an empty log is NOT a pass either. Blocking checks only: an
+    informational skip (an optional class, a class allowed to serve a stale
+    feed) is reported but does not hold the verdict at INCOMPLETE.
     """
 
     def __init__(self) -> None:
         self.checks: list[Check] = []
 
-    def ok(self, name: str, detail: str = "") -> Check:
-        return self._add(Check(name, OK, detail))
+    def ok(self, name: str, detail: str = "", blocking: bool = True) -> Check:
+        return self._add(Check(name, OK, detail, blocking))
 
-    def fail(self, name: str, detail: str = "") -> Check:
-        return self._add(Check(name, FAIL, detail))
+    def fail(self, name: str, detail: str = "", blocking: bool = True) -> Check:
+        return self._add(Check(name, FAIL, detail, blocking))
 
-    def skip(self, name: str, detail: str = "") -> Check:
-        return self._add(Check(name, SKIP, detail))
+    def skip(self, name: str, detail: str = "", blocking: bool = True) -> Check:
+        return self._add(Check(name, SKIP, detail, blocking))
 
     def _add(self, check: Check) -> Check:
         self.checks.append(check)
         return check
 
     @property
+    def blocking_checks(self) -> list[Check]:
+        return [c for c in self.checks if c.blocking]
+
+    @property
     def has_failures(self) -> bool:
-        return any(c.status == FAIL for c in self.checks)
+        return any(c.status == FAIL for c in self.blocking_checks)
 
     @property
     def has_skips(self) -> bool:
-        return any(c.status == SKIP for c in self.checks)
+        return any(c.status == SKIP for c in self.blocking_checks)
 
     def verdict(self) -> str:
-        """FAIL if anything failed, INCOMPLETE if anything was skipped or did not
-        run, else PASS.
+        """FAIL if anything blocking failed, INCOMPLETE if anything blocking
+        was skipped, else PASS.
 
-        Only a run where every check actually executed and passed yields PASS.
-        An empty log is INCOMPLETE: no evidence is not evidence of success.
+        Only a run where every blocking check actually executed and passed
+        yields PASS. An empty log is INCOMPLETE: no evidence is not evidence of
+        success.
         """
         if self.has_failures:
             return VERDICT_FAIL
-        if self.has_skips or not self.checks:
+        if self.has_skips or not self.blocking_checks:
             return VERDICT_INCOMPLETE
         return VERDICT_PASS
 
@@ -141,12 +155,16 @@ class CheckLog:
 
     def render(self) -> str:
         lines = [c.line() for c in self.checks]
+        skipped_optional = sum(
+            1 for c in self.checks if c.status == SKIP and not c.blocking)
         lines.append("")
-        lines.append(f"  Checks run    : {len(self.checks)}")
-        lines.append(f"  Passed        : {sum(1 for c in self.checks if c.status == OK)}")
-        lines.append(f"  Failed        : {sum(1 for c in self.checks if c.status == FAIL)}")
-        lines.append(f"  Skipped       : {sum(1 for c in self.checks if c.status == SKIP)}")
-        lines.append(f"  FINAL VERDICT : {self.verdict()}")
+        lines.append(f"  Checks run       : {len(self.checks)}")
+        lines.append(f"  Passed           : {sum(1 for c in self.checks if c.status == OK)}")
+        lines.append(f"  Failed           : {sum(1 for c in self.checks if c.status == FAIL)}")
+        lines.append(f"  Skipped          : {sum(1 for c in self.checks if c.status == SKIP)}")
+        if skipped_optional:
+            lines.append(f"    of which informational (non-blocking): {skipped_optional}")
+        lines.append(f"  FINAL VERDICT    : {self.verdict()}")
         return "\n".join(lines)
 
 
@@ -285,13 +303,13 @@ def check_connection(mt5_mod, initialize_mt5, log: CheckLog):
 
     if not initialize_mt5():
         log.fail("MT5 connection", "could not initialise terminal")
-        print(f"  {FAIL:6s} MT5 connection — could not initialise terminal")
+        print(f"  {FAIL:6s} MT5 connection - could not initialise terminal")
         return False
 
     acc = mt5_mod.account_info()
     if acc is None:
         log.fail("MT5 account", "account_info() returned None after init")
-        print(f"  {FAIL:6s} MT5 account — account_info() returned None")
+        print(f"  {FAIL:6s} MT5 account - account_info() returned None")
         return False
 
     margin = getattr(acc, "margin", 0.0) or 0.0
@@ -306,8 +324,13 @@ def check_connection(mt5_mod, initialize_mt5, log: CheckLog):
     return True
 
 
-def check_symbol_discovery(mt5_mod, classify_symbol, log: CheckLog) -> dict:
-    """Discover one usable broker symbol per required asset class."""
+def check_symbol_discovery(mt5_mod, classify_symbol, log: CheckLog,
+                           policy=None) -> dict:
+    """Discover one usable broker symbol per required asset class.
+
+    Classes marked optional in config.yaml are probed and reported, but their
+    absence is informational: it does not hold the verdict at INCOMPLETE.
+    """
     print(section("SYMBOL DISCOVERY"))
     groups = classify_all(mt5_mod, classify_symbol)
     resolved: dict[str, str | None] = {}
@@ -317,42 +340,116 @@ def check_symbol_discovery(mt5_mod, classify_symbol, log: CheckLog) -> dict:
             mt5_mod, groups, asset_class, classify_symbol
         )
         resolved[asset_class] = name
+        required = _is_required(policy, asset_class)
+
         if name:
-            log.ok(f"discover {asset_class}", f"using broker symbol {name}")
-            print(f"  {OK:6s} {asset_class:20s} -> {name}")
+            note = "" if required else " (optional class)"
+            log.ok(f"discover {asset_class}",
+                   f"using broker symbol {name}{note}", blocking=required)
+            print(f"  {OK:6s} {asset_class:24s} -> {name}{note}")
+        elif required:
+            log.skip(f"discover {asset_class}", reason, blocking=True)
+            print(f"  {SKIP:6s} {asset_class:24s} -> {reason}")
         else:
-            log.skip(f"discover {asset_class}", reason)
-            print(f"  {SKIP:6s} {asset_class:20s} -> {reason}")
+            log.skip(f"discover {asset_class}",
+                     f"{reason} (optional class)", blocking=False)
+            print(f"  {SKIP:6s} {asset_class:24s} -> {reason} "
+                  f"(optional class, non-blocking)")
 
     return resolved
 
 
-def check_spread(mt5_mod, get_symbol_live_quote, symbols: dict, log: CheckLog):
+def _is_required(policy, asset_class: str) -> bool:
+    """Whether an asset class must yield a symbol for a clean verdict.
+
+    Defaults to required when no policy is supplied or the class is absent from
+    it, so an unconfigured class is still verified rather than quietly excused.
+    """
+    if policy is None:
+        return True
+    try:
+        return bool(policy.is_required(asset_class))
+    except Exception:
+        return True
+
+
+def _allows_stale_feed(policy, asset_class: str) -> bool:
+    """Whether a stale quote is acceptable for this class IN VERIFICATION.
+
+    This never applies to the trading path; see get_symbol_live_quote. A class
+    permitted to serve a stale feed is still reported, because a dead feed is
+    information the operator should see even when it is not disqualifying.
+    """
+    if policy is None:
+        return False
+    try:
+        return bool(policy.allows_stale_feed(asset_class))
+    except Exception:
+        return False
+
+
+def check_spread(mt5_mod, get_symbol_live_quote, symbols: dict, log: CheckLog,
+                 policy=None):
     """Verify spread == (ask - bid) / point for each resolved symbol."""
     print(section("SPREAD FORMULA"))
 
     for asset_class, sym in symbols.items():
         label = f"spread {asset_class}"
+        required = _is_required(policy, asset_class)
+        stale_ok = _allows_stale_feed(policy, asset_class)
+
         if not sym:
-            log.skip(label, NO_SYMBOL_MESSAGE)
+            if required:
+                log.skip(label, NO_SYMBOL_MESSAGE, blocking=True)
+                print(f"  {SKIP:6s} {label} - {NO_SYMBOL_MESSAGE}")
+            else:
+                log.skip(label, f"{NO_SYMBOL_MESSAGE} (optional class)",
+                         blocking=False)
+                print(f"  {SKIP:6s} {label} - {NO_SYMBOL_MESSAGE} "
+                      f"(optional class, non-blocking)")
             continue
 
-        quote = get_symbol_live_quote(sym, max_tick_age_seconds=60)
+        max_age = 60
+        if policy is not None:
+            try:
+                max_age = int(policy.max_tick_age(asset_class, 60))
+            except Exception:
+                max_age = 60
+
+        quote = get_symbol_live_quote(sym, max_tick_age_seconds=max_age)
         if not quote.get("valid"):
-            log.skip(label, f"{sym}: {quote.get('reason', 'invalid quote')}")
-            print(f"  {SKIP:6s} {label} — {sym}: {quote.get('reason', '')}")
+            reason = quote.get("reason", "invalid quote")
+            stale = "Stale tick" in str(reason)
+            # A stale feed on a class that permits it is reported but does not
+            # disqualify: discovery succeeded, the broker simply has no live
+            # price, which is an environment fact rather than a defect.
+            if stale and stale_ok:
+                log.skip(label, f"{sym}: {reason} (stale feed permitted)",
+                         blocking=False)
+                print(f"  {SKIP:6s} {label} - {sym}: {reason} "
+                      f"(stale feed permitted, non-blocking)")
+            elif not required:
+                log.skip(label, f"{sym}: {reason}", blocking=False)
+                print(f"  {SKIP:6s} {label} - {sym}: {reason} "
+                      f"(optional class, non-blocking)")
+            else:
+                log.skip(label, f"{sym}: {reason}", blocking=True)
+                print(f"  {SKIP:6s} {label} - {sym}: {reason}")
             continue
 
         info = mt5_mod.symbol_info(sym)
         expected = round((quote["ask"] - quote["bid"]) / info.point, 1)
         actual = quote["spread"]
         if abs(actual - expected) < 1e-9:
-            log.ok(label, f"{sym} spread={actual} pts (point={info.point})")
-            print(f"  {OK:6s} {label} — {sym}: bid={quote['bid']:g} ask={quote['ask']:g} "
-                  f"spread={actual} pts (age={quote.get('tick_age_s', '?')}s)")
+            log.ok(label, f"{sym} spread={actual} pts (point={info.point})",
+                   blocking=required)
+            print(f"  {OK:6s} {label} - {sym}: bid={quote['bid']:g} "
+                  f"ask={quote['ask']:g} spread={actual} pts "
+                  f"(age={quote.get('tick_age_s', '?')}s)")
         else:
+            # A wrong spread value is a real defect regardless of class.
             log.fail(label, f"{sym}: got {actual}, expected {expected}")
-            print(f"  {FAIL:6s} {label} — {sym}: got {actual}, expected {expected}")
+            print(f"  {FAIL:6s} {label} - {sym}: got {actual}, expected {expected}")
 
 
 def check_lot_normalization(mt5_mod, normalize_lot, log: CheckLog):
@@ -365,7 +462,7 @@ def check_lot_normalization(mt5_mod, normalize_lot, log: CheckLog):
     )
     if symbol is None:
         log.skip("lot normalization", NO_SYMBOL_MESSAGE)
-        print(f"  {SKIP:6s} lot normalization — {NO_SYMBOL_MESSAGE}")
+        print(f"  {SKIP:6s} lot normalization - {NO_SYMBOL_MESSAGE}")
         return
 
     info = mt5_mod.symbol_info(symbol)
@@ -373,46 +470,46 @@ def check_lot_normalization(mt5_mod, normalize_lot, log: CheckLog):
     lot, err = normalize_lot(0.07, info)
     if err:
         log.fail("lot 0.07 float case", err)
-        print(f"  {FAIL:6s} lot 0.07 float case — {err}")
+        print(f"  {FAIL:6s} lot 0.07 float case - {err}")
     elif abs(lot - 0.07) > 1e-9:
         log.fail("lot 0.07 float case", f"expected 0.07, got {lot}")
-        print(f"  {FAIL:6s} lot 0.07 float case — expected 0.07, got {lot}")
+        print(f"  {FAIL:6s} lot 0.07 float case - expected 0.07, got {lot}")
     else:
         log.ok("lot 0.07 float case", f"{symbol} 0.07 -> 0.07")
-        print(f"  {OK:6s} lot 0.07 float case — {symbol} 0.07 -> {lot}")
+        print(f"  {OK:6s} lot 0.07 float case - {symbol} 0.07 -> {lot}")
 
     lot, err = normalize_lot(0.059, info)
     if err:
         log.fail("lot floors to step", err)
-        print(f"  {FAIL:6s} lot floors to step — {err}")
+        print(f"  {FAIL:6s} lot floors to step - {err}")
     elif abs(lot - 0.05) > 1e-9:
         log.fail("lot floors to step", f"expected 0.05, got {lot}")
-        print(f"  {FAIL:6s} lot floors to step — expected 0.05, got {lot}")
+        print(f"  {FAIL:6s} lot floors to step - expected 0.05, got {lot}")
     else:
         log.ok("lot floors to step", f"{symbol} 0.059 -> 0.05")
-        print(f"  {OK:6s} lot floors to step — {symbol} 0.059 -> {lot}")
+        print(f"  {OK:6s} lot floors to step - {symbol} 0.059 -> {lot}")
 
     below_min = info.volume_min / 2.0
     lot, err = normalize_lot(below_min, info)
     if lot == 0.0 and err:
         log.ok("lot below min rejected", f"{below_min} < min {info.volume_min}")
-        print(f"  {OK:6s} lot below min rejected — {below_min} < min {info.volume_min} "
+        print(f"  {OK:6s} lot below min rejected - {below_min} < min {info.volume_min} "
               f"(rejected locally, never sent)")
     else:
         log.fail("lot below min rejected", f"got lot={lot}, err={err!r}")
-        print(f"  {FAIL:6s} lot below min rejected — got lot={lot}, err={err!r}")
+        print(f"  {FAIL:6s} lot below min rejected - got lot={lot}, err={err!r}")
 
     above_max = info.volume_max * 2.0
     lot, err = normalize_lot(above_max, info)
     if err:
         log.fail("lot clamped to max", err)
-        print(f"  {FAIL:6s} lot clamped to max — {err}")
+        print(f"  {FAIL:6s} lot clamped to max - {err}")
     elif abs(lot - info.volume_max) > 1e-9:
         log.fail("lot clamped to max", f"expected {info.volume_max}, got {lot}")
-        print(f"  {FAIL:6s} lot clamped to max — expected {info.volume_max}, got {lot}")
+        print(f"  {FAIL:6s} lot clamped to max - expected {info.volume_max}, got {lot}")
     else:
         log.ok("lot clamped to max", f"{above_max} -> {info.volume_max}")
-        print(f"  {OK:6s} lot clamped to max — {above_max} -> {lot}")
+        print(f"  {OK:6s} lot clamped to max - {above_max} -> {lot}")
 
 
 def check_classification(mt5_mod, classify_symbol, log: CheckLog):
@@ -422,7 +519,7 @@ def check_classification(mt5_mod, classify_symbol, log: CheckLog):
     all_symbols = mt5_mod.symbols_get() or []
     if not all_symbols:
         log.skip("symbol classification", "MT5 returned no symbols")
-        print(f"  {SKIP:6s} symbol classification — MT5 returned no symbols")
+        print(f"  {SKIP:6s} symbol classification - MT5 returned no symbols")
         return
 
     counts: dict[str, int] = {}
@@ -448,7 +545,7 @@ def check_classification(mt5_mod, classify_symbol, log: CheckLog):
         # whitelist still gates trading regardless.
         log.skip("symbol classification",
                  "no unclassifiable symbols on this broker (whitelist still enforced)")
-        print(f"  {SKIP:6s} no unclassifiable symbols found — "
+        print(f"  {SKIP:6s} no unclassifiable symbols found - "
               f"whitelist gating still enforced independently")
 
 
@@ -505,7 +602,7 @@ def check_demo_order(mt5_mod, normalize_lot, log: CheckLog):
     )
     if symbol is None:
         log.skip("demo order", NO_SYMBOL_MESSAGE)
-        print(f"  {SKIP:6s} demo order — {NO_SYMBOL_MESSAGE}")
+        print(f"  {SKIP:6s} demo order - {NO_SYMBOL_MESSAGE}")
         return
 
     info = mt5_mod.symbol_info(symbol)
@@ -513,13 +610,13 @@ def check_demo_order(mt5_mod, normalize_lot, log: CheckLog):
     tick = mt5_mod.symbol_info_tick(symbol)
     if not info or tick is None:
         log.skip("demo order", f"no info/tick for {symbol}")
-        print(f"  {SKIP:6s} demo order — no info/tick for {symbol}")
+        print(f"  {SKIP:6s} demo order - no info/tick for {symbol}")
         return
 
     lot, err = normalize_lot(0.07, info)
     if err:
         log.skip("demo order", f"lot rejected: {err}")
-        print(f"  {SKIP:6s} demo order — lot rejected: {err}")
+        print(f"  {SKIP:6s} demo order - lot rejected: {err}")
         return
 
     filling = mt5_mod.ORDER_FILLING_IOC
@@ -656,6 +753,7 @@ def run(log: CheckLog | None = None, deps: dict | None = None) -> CheckLog:
         get_symbol_live_quote = deps.get("get_symbol_live_quote")
         initialize_mt5 = deps.get("initialize_mt5") or (lambda: True)
         normalize_lot = deps.get("normalize_lot") or _demo_normalize_lot
+        policy = deps.get("policy")
     else:
         try:
             import MetaTrader5 as mt5_mod
@@ -664,12 +762,22 @@ def run(log: CheckLog | None = None, deps: dict | None = None) -> CheckLog:
             print(f"  {FAIL:6s} MetaTrader5 package not installed")
             return log
 
+        from config_loader import load_config as _load_cfg
         from data_engine import (
             _classify_symbol,
             get_symbol_live_quote,
             initialize_mt5,
         )
         from execution import _normalize_lot as normalize_lot
+
+        try:
+            policy = _load_cfg().verification
+        except Exception as exc:
+            # Without a validated policy every class is treated as required,
+            # which is the conservative outcome: an unreadable config must not
+            # silently downgrade checks to informational.
+            log.skip("verification policy", f"config unavailable: {exc}")
+            policy = None
 
     if not check_connection(mt5_mod, initialize_mt5, log):
         return log
@@ -678,8 +786,8 @@ def run(log: CheckLog | None = None, deps: dict | None = None) -> CheckLog:
     if not check_demo_account_mode(mt5_mod, log):
         return log
 
-    symbols = check_symbol_discovery(mt5_mod, _classify_symbol, log)
-    check_spread(mt5_mod, get_symbol_live_quote, symbols, log)
+    symbols = check_symbol_discovery(mt5_mod, _classify_symbol, log, policy)
+    check_spread(mt5_mod, get_symbol_live_quote, symbols, log, policy)
     check_lot_normalization(mt5_mod, normalize_lot, log)
     check_classification(mt5_mod, _classify_symbol, log)
     check_demo_order(mt5_mod, normalize_lot, log)
@@ -704,12 +812,12 @@ def main() -> int:
     verdict = log.verdict()
     print()
     if verdict == VERDICT_PASS:
-        print("  ALL CHECKS PASSED — every required check ran and passed.")
+        print("  ALL CHECKS PASSED - every required check ran and passed.")
     elif verdict == VERDICT_INCOMPLETE:
-        print(f"  {verdict} — at least one check was skipped or excluded.")
+        print(f"  {verdict} - at least one check was skipped or excluded.")
         print("  This is NOT a pass. Resolve the skips above and re-run.")
     else:
-        print(f"  {verdict} — at least one check failed. See details above.")
+        print(f"  {verdict} - at least one check failed. See details above.")
     print(f"  Report written to: {path}")
     print()
 

@@ -615,6 +615,65 @@ def _unused_is_synthetic(value: str) -> bool:""",
             "tests/test_metrics.py::TestNetOpenPnl::test_losses_sum_to_a_negative_total",
         ],
     ),
+    Mutation(
+        name="M46: informational skips hold the verdict at INCOMPLETE",
+        target="scripts/demo_verification.py",
+        old="""        return any(c.status == SKIP for c in self.blocking_checks)""",
+        new="""        return any(c.status == SKIP for c in self.checks)""",
+        expect_fail=[
+            "tests/test_demo_verification.py::TestAssetClassPolicy::test_missing_optional_class_yields_pass",
+            "tests/test_demo_verification.py::TestAssetClassPolicy::test_stale_feed_on_permitted_class_is_non_blocking",
+        ],
+    ),
+    Mutation(
+        name="M47: optional asset class treated as required",
+        target="config_loader.py",
+        old="""    def is_required(self, asset_class: str) -> bool:
+        \"\"\"Default to required when a class is not configured.
+
+        Failing closed matters: an unconfigured class must not silently become
+        optional, or adding a new class would quietly stop being verified.
+        \"\"\"
+        policy = self.asset_classes.get(asset_class)
+        if policy is None:
+            return True
+        return policy.required""",
+        new="""    def is_required(self, asset_class: str) -> bool:
+        return True""",
+        expect_fail=[
+            "tests/test_demo_verification.py::TestAssetClassPolicy::test_config_marks_crypto_optional",
+            "tests/test_demo_verification.py::TestAssetClassPolicy::test_missing_optional_class_yields_pass",
+        ],
+    ),
+    Mutation(
+        name="M48: stale feed permitted regardless of class",
+        target="scripts/demo_verification.py",
+        old="""            if stale and stale_ok:""",
+        new="""            if stale:""",
+        expect_fail=[
+            "tests/test_demo_verification.py::TestAssetClassPolicy::test_stale_feed_on_non_permitted_class_still_blocks",
+        ],
+    ),
+    Mutation(
+        name="M49: trading path honours the verification stale relaxation",
+        target="data_engine.py",
+        old="""    if tick_age > max_tick_age_seconds:""",
+        new="""    if False:""",
+        expect_fail=[
+            "tests/test_demo_verification.py::TestTradingPathStalenessUnaffected::test_live_quote_rejects_a_stale_tick",
+        ],
+    ),
+    Mutation(
+        name="M50: optional class excuses a wrong spread value",
+        target="scripts/demo_verification.py",
+        old="""            # A wrong spread value is a real defect regardless of class.
+            log.fail(label, f"{sym}: got {actual}, expected {expected}")""",
+        new="""            log.skip(label, f"{sym}: got {actual}, expected {expected}",
+                     blocking=required)""",
+        expect_fail=[
+            "tests/test_demo_verification.py::TestAssetClassPolicy::test_wrong_spread_fails_even_on_an_optional_class",
+        ],
+    ),
 ]
 
 

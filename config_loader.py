@@ -82,6 +82,20 @@ class TradingSettings(StrictModel):
     tradable_symbols: list[str] = Field(min_length=1)
 
 
+class AssetClassPolicy(StrictModel):
+    """Per-asset-class verification policy.
+
+    `required` decides whether the class must yield a live, quotable symbol for
+    verification to report a clean verdict. `allow_stale_feed` relaxes the
+    quote-staleness threshold during VERIFICATION ONLY; it never affects the
+    trading path, which refuses stale quotes unconditionally.
+    """
+
+    required: bool = True
+    allow_stale_feed: bool = False
+    max_tick_age_seconds: int = Field(default=60, gt=0, le=86400)
+
+
 class DisplaySettings(StrictModel):
     """Presentation thresholds, in account currency unless noted.
 
@@ -92,6 +106,43 @@ class DisplaySettings(StrictModel):
 
     margin_level_na_below: float = Field(default=1.0, gt=0)
     margin_level_na_below_currency: str = Field(default="ACCOUNT")
+
+
+class VerificationSettings(StrictModel):
+    """How the demo verification script decides PASS vs INCOMPLETE."""
+
+    asset_classes: dict[str, AssetClassPolicy] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _at_least_one_required(self) -> "VerificationSettings":
+        if self.asset_classes and not any(
+                p.required for p in self.asset_classes.values()):
+            raise ValueError(
+                "verification.asset_classes: at least one class must be "
+                "required, otherwise no check can ever fail the verdict"
+            )
+        return self
+
+    def is_required(self, asset_class: str) -> bool:
+        """Default to required when a class is not configured.
+
+        Failing closed matters: an unconfigured class must not silently become
+        optional, or adding a new class would quietly stop being verified.
+        """
+        policy = self.asset_classes.get(asset_class)
+        if policy is None:
+            return True
+        return policy.required
+
+    def allows_stale_feed(self, asset_class: str) -> bool:
+        policy = self.asset_classes.get(asset_class)
+        return bool(policy and policy.allow_stale_feed)
+
+    def max_tick_age(self, asset_class: str, default: int = 60) -> int:
+        policy = self.asset_classes.get(asset_class)
+        if policy is None:
+            return default
+        return policy.max_tick_age_seconds
 
 
 class SymbolSettings(StrictModel):
@@ -111,6 +162,8 @@ class AppConfig(StrictModel):
     trading: TradingSettings
     symbols: SymbolSettings
     display: DisplaySettings = Field(default_factory=DisplaySettings)
+    verification: VerificationSettings = Field(
+        default_factory=VerificationSettings)
 
     @model_validator(mode="after")
     def _whitelists_agree(self) -> "AppConfig":
@@ -195,7 +248,9 @@ def load_config(path: Path | str | None = None) -> AppConfig:
         "trading": _required(raw, "trading", cfg_path),
         "symbols": symbols,
     }
-    # display is optional in the YAML; the model supplies documented defaults.
-    if isinstance(raw.get("display"), dict):
-        payload["display"] = raw["display"]
+    # display and verification are optional in the YAML; the models supply
+    # documented defaults so a minimal config still validates.
+    for optional in ("display", "verification"):
+        if isinstance(raw.get(optional), dict):
+            payload[optional] = raw[optional]
     return AppConfig.model_validate(payload)
