@@ -874,7 +874,12 @@ class TestAssetClassPolicy:
         assert "stale feed permitted" in log.render()
 
     def test_stale_feed_on_non_permitted_class_still_blocks(self):
-        """A stale forex feed is disqualifying; the relaxation is per class."""
+        """A stale forex feed is disqualifying; the relaxation is per class.
+
+        Runs discovery first so a blocking check has passed. Without that, an
+        empty blocking set would yield INCOMPLETE anyway and the assertion would
+        pass even if every stale feed were wrongly permitted.
+        """
         fake = _make_fake([FakeSymbolInfo("EURUSD", "Forex\\Majors")])
 
         def stale_quote(symbol, max_tick_age_seconds=30):
@@ -882,12 +887,19 @@ class TestAssetClassPolicy:
                     "reason": "Stale tick: age 999999s > 60s"}
 
         log = dv.CheckLog()
+        policy = self._policy({"Forex Currencies"},
+                              stale_classes={"Indices & Equities"})
         with redirect_stdout(io.StringIO()):
-            dv.check_spread(fake, stale_quote, {"Forex Currencies": "EURUSD"},
-                            log, self._policy({"Forex Currencies"},
-                                              stale_classes={"Indices & Equities"}))
+            symbols = dv.check_symbol_discovery(fake, dv.data_engine_classify,
+                                                log, policy)
+            dv.check_spread(fake, stale_quote, symbols, log, policy)
 
-        assert log.verdict() == dv.VERDICT_INCOMPLETE
+        stale_line = next(c for c in log.checks if c.name.startswith("spread"))
+        assert stale_line.status == dv.SKIP
+        assert stale_line.blocking is True, (
+            "a stale feed on a class that does not permit it must be blocking"
+        )
+        assert log.verdict() == dv.VERDICT_INCOMPLETE, log.render()
 
     def test_wrong_spread_fails_even_on_an_optional_class(self):
         """A real defect is never excused by class optionality."""
