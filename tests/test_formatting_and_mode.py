@@ -160,7 +160,46 @@ class TestOpenPnlSignPreservation:
     app.py summed abs(profit) for the strip labelled 'Open Risk', so a book
     sitting on a loss displayed '+EUR 10.19' in green. The sign came from
     summing magnitudes, not from the positions.
+
+    These tests parse app.py rather than recomputing the sum locally: a local
+    recomputation passes whether or not app.py is actually correct, which is
+    how the first version of this test failed to catch the bug it describes.
     """
+
+    @staticmethod
+    def _app_source() -> str:
+        return (Path(__file__).resolve().parent.parent / "app.py").read_text(
+            encoding="utf-8")
+
+    def test_app_sums_signed_profit_not_absolute(self):
+        src = self._app_source()
+        assert "open_pnl = sum(p[\"profit\"] for p in open_pos)" in src, (
+            "app.py must sum signed profit for the open P&L figure"
+        )
+        assert "open_pnl = sum(abs(" not in src, (
+            "app.py still discards the sign of open P&L"
+        )
+
+    def test_app_still_computes_gross_exposure_separately(self):
+        src = self._app_source()
+        assert "open_risk = sum(abs(" in src, (
+            "gross at-risk exposure should remain available, computed from "
+            "absolute values"
+        )
+
+    def test_app_colours_a_loss_red(self):
+        """The colour must key off the signed value, not the magnitude."""
+        src = self._app_source()
+        assert "'#F43F5E' if open_pnl<0 else '#34D399'" in src, (
+            "open P&L colour must be red when the signed total is negative"
+        )
+        assert "'#F43F5E' if open_pnl>0 else '#34D399'" not in src, (
+            "open P&L colour logic is inverted: a profit would render red"
+        )
+
+    def test_app_renders_the_signed_value(self):
+        src = self._app_source()
+        assert "_open_pnl_str = format_open_risk(open_pnl, _currency)" in src
 
     def test_negative_positions_sum_to_a_negative_total(self):
         positions = [{"profit": -3.89}, {"profit": -6.30}]
@@ -193,9 +232,7 @@ class TestOpenPnlSignPreservation:
 
     def test_app_does_not_label_the_signed_value_as_risk(self):
         """The strip must not present net P&L under a 'risk' label."""
-        source = (Path(__file__).resolve().parent.parent / "app.py").read_text(
-            encoding="utf-8")
-        assert "Open Risk" not in source, (
+        assert "Open Risk" not in self._app_source(), (
             "the strip still labels net signed P&L as 'Open Risk', which "
             "inverts the meaning of a loss"
         )
