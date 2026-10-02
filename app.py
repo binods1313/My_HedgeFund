@@ -2,16 +2,36 @@ import streamlit as st
 import plotly.graph_objects as go
 from datetime import datetime
 
+import MetaTrader5 as mt5
+
 from data_engine import (
     initialize_mt5,
     get_available_symbols,
     get_market_data,
     get_technical_dataframe,
+    get_symbol_info_safe,
     get_symbol_live_quote,
     get_account_telemetry,
 )
 from ai_brain import get_ai_decision
 from execution import execute_trade, get_open_positions, close_position, close_all_positions
+from formatting import (
+    currency_symbol,
+    format_margin_level,
+    format_money,
+    format_open_risk,
+)
+from metrics import (
+    NO_SCORE,
+    compute_open_risk,
+    format_llm_confidence,
+    format_net_open_pnl,
+    format_risk_colour,
+    gross_exposure,
+    net_open_pnl,
+    net_open_pnl_colour,
+)
+from formatting import mask_account
 
 st.set_page_config(
     page_title="AI Hedge Fund Command Center",
@@ -540,11 +560,21 @@ if "ai_state" not in st.session_state:
 
 # ── HUD BAR ───────────────────────────────────────────────────────────────────
 bal = telemetry["balance"]
-eq = telemetry["equity"]
+eq  = telemetry["equity"]
 pnl = telemetry["profit"]
-ml = telemetry["margin_level"]
-srv = telemetry.get("server", "N/A")
+ml  = telemetry["margin_level"]
+srv   = telemetry.get("server", "N/A")
 login = telemetry.get("login", "N/A")
+
+_currency = telemetry.get("currency", "USD")
+_margin_used = telemetry.get("margin", 0.0)
+
+# Formatting rules live in formatting.py so they are unit-tested rather than
+# inlined here. The margin-level threshold comes from config.yaml.
+_margin_level_str = format_margin_level(_margin_used, ml, _currency)
+_balance_str = format_money(bal, _currency)
+_equity_str = format_money(eq, _currency)
+
 conn_dot = '<span class="status-dot"></span>' if mt5_connected else '<span class="status-dot offline"></span>'
 conn_text = "CONNECTED" if mt5_connected else "OFFLINE"
 conn_pill_color = "" if mt5_connected else "style='background:rgba(244,63,94,0.1);border-color:rgba(244,63,94,0.3);color:#F43F5E;'"
@@ -557,15 +587,15 @@ st.markdown(f"""
   </div>
   <div class="hud-item">
     <span class="hud-label">MT5 Server / Account</span>
-    <span class="hud-value">{srv} ({login})</span>
+    <span class="hud-value">{srv} ({mask_account(login) if login != "N/A" else login})</span>
   </div>
   <div class="hud-item">
     <span class="hud-label">Balance</span>
-    <span class="hud-value">${bal:,.2f} {telemetry['currency']}</span>
+    <span class="hud-value">{_balance_str} {_currency}</span>
   </div>
   <div class="hud-item">
     <span class="hud-label">Floating Equity</span>
-    <span class="hud-value">${eq:,.2f}</span>
+    <span class="hud-value">{_equity_str}</span>
   </div>
   <div class="hud-item">
     <span class="hud-label">Floating P&L</span>
@@ -573,7 +603,7 @@ st.markdown(f"""
   </div>
   <div class="hud-item">
     <span class="hud-label">Margin Level</span>
-    <span class="hud-value cyan">{ml:,.1f}%</span>
+    <span class="hud-value cyan">{_margin_level_str}</span>
   </div>
 </div>
 """, unsafe_allow_html=True)
@@ -581,13 +611,38 @@ st.markdown(f"""
 # ── LIVE INFO STRIP ───────────────────────────────────────────────────────────
 now_str = datetime.now().strftime("%H:%M:%S")
 open_pos = get_open_positions() if mt5_connected else []
-open_risk = sum(abs(p["profit"]) for p in open_pos) if open_pos else 0.0
+# Sum the signed P&L of open positions. Using abs() here discarded the sign, so
+# a portfolio sitting on a EUR 10 loss was reported as "+EUR 10.19" in green.
+# The computation itself lives in metrics.py so it can be tested directly;
+# app.py only supplies data and renders the result.
+open_pnl = net_open_pnl(open_pos)
+gross_exposure_amount = gross_exposure(open_pos)
 margin_used = telemetry.get("margin", 0.0)
 margin_free = telemetry.get("margin_free", 0.0)
 sym_for_strip = st.session_state.ai_state["symbol"]
 strip_quote = get_symbol_live_quote(sym_for_strip) if mt5_connected else {}
 spread_str = f"{strip_quote.get('spread', '--')}" if strip_quote else "--"
 tick_time = strip_quote.get("time", "--") if strip_quote else "--"
+
+# These three previously hardcoded "$", which is wrong on any non-USD account.
+# This account is denominated in EUR, so they read 20.51 EUR, not $20.51.
+_margin_used_str = format_money(margin_used, _currency)
+_margin_free_str = format_money(margin_free, _currency)
+_open_pnl_str = format_net_open_pnl(open_pos, _currency)
+_open_pnl_colour = net_open_pnl_colour(open_pos)
+
+# Risk is entry-to-stop exposure, not P&L. A book showing profit can still
+# carry substantial risk, so the two are displayed as different things.
+_open_risk = compute_open_risk(
+    open_pos,
+    {p["symbol"]: get_symbol_info_safe(p["symbol"]) for p in open_pos},
+    telemetry.get("equity", 0.0),
+    _currency,
+)
+_open_risk_str = _open_risk.risk_pct_display()
+_open_risk_amount_str = _open_risk.total_risk_display()
+_open_risk_colour = format_risk_colour(_open_risk)
+_open_risk_unprotected = _open_risk.unprotected_count
 
 st.markdown(f"""
 <div class="info-strip">
@@ -604,16 +659,22 @@ st.markdown(f"""
   </div>
   <div class="strip-divider"></div>
   <div class="strip-item">
-    <div><div class="strip-label">Margin Used</div><div class="strip-value">${margin_used:,.2f}</div></div>
+    <div><div class="strip-label">Margin Used</div><div class="strip-value">{_margin_used_str}</div></div>
   </div>
   <div class="strip-divider"></div>
   <div class="strip-item">
-    <div><div class="strip-label">Free Margin</div><div class="strip-value">${margin_free:,.2f}</div></div>
+    <div><div class="strip-label">Free Margin</div><div class="strip-value">{_margin_free_str}</div></div>
   </div>
   <div class="strip-divider"></div>
   <div class="strip-item">
-    <div><div class="strip-label">Open Risk $</div>
-    <div class="strip-value" style="color:{'#F43F5E' if open_risk>0 else '#34D399'};">${open_risk:,.2f}</div></div>
+    <div><div class="strip-label">Open P&amp;L ({_currency})</div>
+    <div class="strip-value" style="color:{_open_pnl_colour};">{_open_pnl_str}</div></div>
+  </div>
+  <div class="strip-divider"></div>
+  <div class="strip-item">
+    <div><div class="strip-label">Open Risk ({_currency})</div>
+    <div class="strip-value" style="color:{_open_risk_colour};">{_open_risk_str}</div>
+    <div class="strip-sub">{_open_risk_amount_str} to stop{"" if not _open_risk_unprotected else f" &middot; {_open_risk_unprotected} UNPROTECTED"}</div></div>
   </div>
   <div class="strip-divider"></div>
   <div class="strip-item">
@@ -738,6 +799,9 @@ with col_c:
     badge_cls = {"BUY": "green", "SELL": "red", "HOLD": "amber"}.get(dec, "neutral")
     str_cls = {"VERY STRONG": "cyan", "STRONG": "green", "MODERATE": "amber", "NEUTRAL": "neutral"}.get(strength, "neutral")
 
+    # A safety HOLD produces no confidence at all, so nothing numeric is rendered.
+    conf_display = format_llm_confidence(conf, dec)
+
     st.markdown(f"""
     <div class="reactor-wrap">
       <div class="reactor-outer {dec_class}">
@@ -745,7 +809,10 @@ with col_c:
       </div>
       <div class="badge-row">
         <span class="badge {str_cls}">AI SIGNAL &middot; {strength}</span>
-        <span class="badge cyan">CONFIDENCE {conf}%</span>
+        <span class="badge neutral" title="Asserted by the LLM for display only. This is not a
+              computed confidence score and is never used as an execution gate.
+              A HOLD carries no score at all, shown as n/a.">LLM-ASSERTED
+              (legacy, not an execution gate) {conf_display}</span>
       </div>
       <div class="stat-pills">
         <div class="stat-pill"><div class="stat-pill-label">Target</div><div class="stat-pill-value">{sel_sym}</div></div>
@@ -836,10 +903,12 @@ if scan_btn:
     else:
         with st.status(f"Autonomous cycle running for {sel_sym}...", expanded=True) as status:
             status.update(label=f"1/3 — Data Analyst computing indicators for {sel_sym}...")
-            market_data = get_market_data(sel_sym)
+            df_m15 = get_technical_dataframe(sel_sym, mt5.TIMEFRAME_M15, count=100)
+            df_h4  = get_technical_dataframe(sel_sym, mt5.TIMEFRAME_H4,  count=100)
 
             status.update(label=f"2/3 — Portfolio Manager (LLM) evaluating {sel_sym} setup...")
-            decision_obj = get_ai_decision(market_data)
+            decision_obj = get_ai_decision(df_m15=df_m15, df_h4=df_h4, symbol=sel_sym)
+
 
             status.update(label=f"3/3 — Risk Officer routing {decision_obj['decision']} order to MT5...")
             exec_res = execute_trade(

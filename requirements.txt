@@ -10,3 +10,14 @@ requests==2.34.2
 watchdog==6.0.0
 numpy==2.5.3
 pyarrow==25.0.1
+
+# Configuration and secrets
+# PyYAML: config_loader.py reads config.yaml (LLM hallucination tolerances,
+#          tradable symbol whitelist, display thresholds).
+# python-dotenv: config.py and scripts/demo_verification.py load .env.
+PyYAML==6.0.3
+python-dotenv==1.2.3
+
+# Test-only. Not needed to run the app, but the suite is part of the
+# acceptance criteria for every phase, so a fresh checkout must be able to run it.
+pytest==9.1.1

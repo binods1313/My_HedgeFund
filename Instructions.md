@@ -1,1 +1,0 @@
-I am building an AI Hedge fund. Create a Python file named config.py. It should only contain variables with placeholders for my credentials: MT5_LOGIN, MT5_PASSWORD, MT5_SERVER, MT5_PATH (the path to terminal64.exe), and my GROQ_API_KEY. Do not write any logic, just the config variables.
