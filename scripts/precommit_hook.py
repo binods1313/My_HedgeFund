@@ -69,7 +69,11 @@ def main() -> int:
             for name, pattern in ss.PATTERNS:
                 for m in pattern.finditer(line):
                     value = m.groupdict().get("val") or m.group(0)
-                    if ss.is_placeholder(value) or ss.is_env_reference(value):
+                    # Same decision the scanner makes, including the line-level
+                    # parameter-declaration and dict-lookup exemptions. Calling
+                    # the predicates separately here caused the hook to block on
+                    # the gateway's own function signature.
+                    if ss._is_benign_line(line, value):
                         continue
                     findings.append(
                         f"  {rel}:{n}  [{name}]  value={ss.mask(value)}\n"

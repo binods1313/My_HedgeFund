@@ -543,6 +543,50 @@ class TestSyntheticAllowlistIsSafe:
         assert vh.is_synthetic("NotOnTheList12345") is False
 
 
+class TestDictSubscriptionIsNotASecret:
+    """A dict lookup names a field; it is not a credential.
+
+    The gateway reads credentials["password"], which the scanner initially
+    flagged and blocked the commit on. The fix must not become a hole: a
+    literal inside brackets is still a secret.
+    """
+
+    @pytest.mark.parametrize("value", [
+        'credentials["password"]',
+        'env["OPENROUTER_API_KEY"]',
+        "creds['token']",
+        'cfg["OPENROUTER_API_KEY"]',
+    ])
+    def test_lookup_is_an_env_reference(self, value):
+        assert ss.is_env_reference(value) is True
+
+    @pytest.mark.parametrize("value", [
+        "Xq7SampleNotRealPwd9z",
+        "CorrectHorse7",
+        "sk-or-v1-AAAABBBBCCCCDDDDEEEEFFFF",
+        "AKIAIOSFODNN7EXAMPLE",
+    ])
+    def test_literal_is_still_flagged(self, value):
+        assert ss.is_env_reference(value) is False
+
+    def test_gateway_line_does_not_block_a_commit(self):
+        """The exact line that blocked the engine commit."""
+        source = (Path(__file__).resolve().parent.parent /
+                  "engine" / "__main__.py").read_text(encoding="utf-8")
+        pattern = dict(ss.PATTERNS)["credential_assignment"]
+        offenders = []
+        for line in source.splitlines():
+            for m in pattern.finditer(line):
+                val = m.groupdict()["val"]
+                if ss.is_placeholder(val) or ss.is_env_reference(val):
+                    continue
+                offenders.append(line.strip())
+        assert not offenders, (
+            "engine/__main__.py still trips the scanner on: "
+            f"{offenders}"
+        )
+
+
 class TestThisRepoIsClean:
     """The working tree of this repo must contain no secrets."""
 

@@ -221,10 +221,23 @@ display:
   margin_level_na_below: 1.0
   margin_level_na_below_currency: ACCOUNT
 
-# ── Engine ───────────────────────────────────────────────────────────────────
+# ── Mode ──────────────────────────────────────────────────────────────────────
+# PAPER is the default and the safe choice. LIVE additionally requires the
+# operator to pass --live when starting the engine; either the flag or the
+# confirmation alone is refused.
+mode: PAPER
+live_confirmation_required: true
+
+# ── Engine ────────────────────────────────────────────────────────────────────
 engine:
-  mode: PAPER                       # PAPER (default) | LIVE (requires typed confirmation)
   magic_number: 100100
-  heartbeat_interval_seconds: 5
-  heartbeat_stale_threshold_seconds: 30   # UI shows ENGINE OFFLINE if heartbeat is stale
-  db_path: hedge_fund.db
+  heartbeat_seconds: 5
+  offline_after_seconds: 15      # UI shows ENGINE OFFLINE once a heartbeat is older
+  command_poll_seconds: 1
+  reconcile_on_start: true       # adopt broker positions matching our magic number
+  db_path: data/engine.db       # resolved to an absolute path under the project root
+  backup_dir: backups
+  gateway:
+    call_timeout_seconds: 10
+    reconnect_backoff_seconds: [1, 2, 4, 8, 16, 30]
+    order_lookback_seconds: 120
