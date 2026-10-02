@@ -9,6 +9,7 @@ from data_engine import (
     get_available_symbols,
     get_market_data,
     get_technical_dataframe,
+    get_symbol_info_safe,
     get_symbol_live_quote,
     get_account_telemetry,
 )
