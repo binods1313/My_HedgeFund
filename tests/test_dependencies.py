@@ -149,6 +149,102 @@ class TestAllSourceFilesCompile:
             )
 
 
+class TestAppRunsEndToEnd:
+    """Execute app.py as a script body, not just parse it.
+
+    Both bugs fixed in this session were invisible to a compile check alone:
+
+      1. An IndentationError (caught by compile()).
+      2. A NameError for a function used but never imported. The file compiled
+         cleanly; it only failed when the code path actually ran.
+
+    Streamlit runs in bare mode here, where st.* calls are no-ops, so the module
+    body executes top to bottom and every top-level statement is really
+    evaluated.
+    """
+
+    def test_app_executes_without_raising(self):
+        import contextlib
+        import importlib.util
+        import io
+        import logging
+        import sys
+
+        # app.py pulls in the whole runtime. Skip rather than fail when the
+        # ambient interpreter lacks a dependency: that is an environment
+        # problem, not a code defect, and a spurious failure here would train
+        # people to ignore this test.
+        for module in ("streamlit", "plotly", "pandas", "MetaTrader5"):
+            if importlib.util.find_spec(module) is None:
+                pytest.skip(f"{module} not installed in this interpreter")
+
+        logging.disable(logging.CRITICAL)
+        original_argv = sys.argv
+        sys.argv = ["app.py"]
+        buf = io.StringIO()
+        try:
+            source = (REPO_ROOT / "app.py").read_text(encoding="utf-8")
+            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+                exec(compile(source, "app.py", "exec"),
+                     {"__name__": "__main__", "__file__": "app.py"})
+        except SystemExit as exc:
+            pytest.fail(f"app.py exited during startup: {exc.code}")
+        except Exception as exc:
+            output = buf.getvalue()[-2000:]
+            pytest.fail(
+                f"app.py raised {type(exc).__name__}: {exc}\n"
+                f"--- captured output ---\n{output}"
+            )
+        finally:
+            sys.argv = original_argv
+            logging.disable(logging.NOTSET)
+
+    def test_every_name_app_uses_is_imported(self):
+        """Catch undefined names statically, before they reach the browser.
+
+        Uses the symbol table of the compiled module against names the module
+        body references, so a missing import fails here rather than at runtime.
+        """
+        import ast
+        import builtins
+
+        source = (REPO_ROOT / "app.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+
+        defined: set[str] = set(dir(builtins))
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                for alias in node.names:
+                    defined.add(alias.asname or alias.name.split(".")[0])
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                   ast.ClassDef)):
+                defined.add(node.name)
+            elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+                defined.add(node.id)
+            elif isinstance(node, ast.arg):
+                defined.add(node.arg)
+            elif isinstance(node, ast.ExceptHandler) and node.name:
+                defined.add(node.name)
+            elif isinstance(node, (ast.comprehension,)):
+                pass
+            elif isinstance(node, ast.Global):
+                defined.update(node.names)
+
+        # Names that only exist inside f-strings or nested scopes are excluded by
+        # construction: we walk Store/Import/binding nodes for definitions only.
+        undefined = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+                if node.id not in defined and node.id.islower():
+                    undefined.add(node.id)
+
+        assert not undefined, (
+            "app.py references names that are never imported or assigned: "
+            f"{sorted(undefined)}. A compile check will not catch these; they "
+            f"only fail when the code path runs."
+        )
+
+
 class TestRequirementsAreComplete:
 
     def test_requirements_file_exists(self):
