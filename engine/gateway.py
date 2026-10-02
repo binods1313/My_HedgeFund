@@ -177,7 +177,7 @@ class Gateway:
         # Reconnect before servicing a request, so callers never see a stale
         # failure when the link is simply down.
         if not self.status.connected:
-            if not self._ensure_connected():
+            if not self._owner_ensure_connected():
                 request.reject(NotConnected(self.status.last_error))
                 return
         try:
@@ -190,6 +190,44 @@ class Gateway:
         self.status.consecutive_failures = 0
         self.status.last_error = ""
         request.resolve(result)
+
+    # -- connection, always on the owner thread ---------------------------
+
+    def ensure_connected(self, timeout: float | None = None) -> bool:
+        """Public entry point. Asks the OWNER THREAD to connect.
+
+        A caller must never call _ensure_connected directly: that would run
+        initialize() and login() on the calling thread, and MT5's API is not
+        thread-safe. The original implementation did exactly that from
+        make_gateway(), which is how the single-thread guarantee was broken.
+        """
+        request = _Request("ensure_connected", lambda: True, (), {},
+                           timeout=self.call_timeout if timeout is None else timeout)
+        self._queue.put(request)
+        try:
+            request.wait()
+        except Exception:   # noqa: BLE001 - a failed connect is not an exception
+            return False   # here; it is reported through status.connected.
+        if request.error is not None:
+            return False
+        return self.status.connected
+
+    def _owner_ensure_connected(self) -> bool:
+        """Connect. MUST be called on the owner thread."""
+        if self.status.connected:
+            return True
+        if not self._thread or threading.get_ident() == self._thread.ident:
+            # Already on the owner: run inline.
+            return self._ensure_connected()
+        # Called from elsewhere: hand it to the owner thread.
+        request = _Request("ensure_connected", lambda: True, (), {},
+                           timeout=self.call_timeout)
+        self._queue.put(request)
+        try:
+            request.wait()
+        except Exception:   # noqa: BLE001 - reported via status.connected
+            return False
+        return self.status.connected
 
     # -- the actual call -------------------------------------------------
 
@@ -299,8 +337,14 @@ class Gateway:
                 return False
 
     def _schedule_backoff(self) -> None:
-        """Exponential backoff with a cap. Raises a reconnect deadline."""
-        idx = min(self.status.consecutive_failures, len(self.backoff) - 1)
+        """Exponential backoff with a cap. Raises a reconnect deadline.
+
+        The first failure waits backoff[0]. `consecutive_failures` is incremented
+        before this is called, so index is offset by one; without that the first
+        retry waited twice as long as configured.
+        """
+        idx = max(0, min(self.status.consecutive_failures - 1,
+                         len(self.backoff) - 1))
         delay = float(self.backoff[idx])
         self.status.backoff_seconds = delay
         self.status.next_retry_at = time.monotonic() + delay
@@ -451,8 +495,15 @@ class Gateway:
         return self._reconcile_after_timeout(request)
 
     def _reconcile_positions(self, symbol: str | None, magic: int) -> list[dict]:
+        # No `or []` fallback: an empty result and a failed call are different
+        # facts, and conflating them is how a lost order becomes a duplicate.
         positions = self.call("positions_get", self._mt5.positions_get,
-                              symbol=symbol) or []
+                              symbol=symbol)
+        if positions is None:
+            raise GatewayError(
+                "positions_get returned None during reconciliation; the order's "
+                "fate cannot be determined"
+            )
         out = []
         for p in positions:
             if magic is not None and getattr(p, "magic", None) not in (magic, None):
