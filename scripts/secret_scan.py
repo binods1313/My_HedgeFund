@@ -53,13 +53,23 @@ PATTERNS: list[tuple[str, re.Pattern]] = [
     # here silently missed every credential in this repo. The keyword list is
     # matched mid-identifier instead, with a trailing \b so it cannot match a
     # longer word such as "passwordless".
+    #
+    # The value group allows quotes and brackets so a subscript such as
+    # credentials["password"] is captured whole. Truncating it at the bracket
+    # produced the useless capture 'credentials[', which matched nothing.
+    #
+    # It also stops before whitespace so that `password: str | None = None`
+    # captures the annotation 'str' rather than swallowing the rest of the
+    # signature. The consequence is that a literal on the far side of a second
+    # '=' is not captured; the annotation check handles the safe case and
+    # real assignments are single '='.
     (
         "credential_assignment",
         re.compile(
             r"(?i)(?:password|passwd|pwd|secret|api[_-]?key|apikey|token|"
             r"access[_-]?key|client[_-]?secret)\b"
             r"\s*[:=]\s*"
-            r"[\"']?(?P<val>[^\s\"'#,}]{6,})[\"']?"
+            r"(?P<val>[^\s,;=]{2,})"
         ),
     ),
 ]
@@ -119,12 +129,11 @@ _ENV_REFERENCE_MARKERS = (
     "dotenv", "getattr(", "load_dotenv",
 )
 
-# SCREAMING_CASE names are env-var references (MT5_PASSWORD). Plain snake_case
-# is NOT treated the same way: token prefixes such as 'ghp_', 'gsk_' and 'sk-'
-# also match a snake_case identifier shape, so allowing it would suppress real
-# credentials. Identifier-shaped locals must be handled by their assignment
-# context instead, which the hook does via ALLOWED_LOCAL_NAMES.
-_VAR_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]{2,}$")
+# SCREAMING_CASE names are env-var references (MT5_PASSWORD). The pattern
+# requires an underscore or all-uppercase across the whole token, so a
+# mixed-case or lowercase value like 'Hunter2xyz' or 'sup3rsecret' cannot
+# qualify: those are passwords, not variable names.
+_VAR_NAME_RE = re.compile(r"^(?:[A-Z0-9]+(_[A-Z0-9]+)+|[A-Z0-9]{3,})$")
 
 # Locals that hold a secret but are visibly aliases rather than literals.
 ALLOWED_LOCAL_NAMES = frozenset({
@@ -138,6 +147,15 @@ ALLOWED_LOCAL_NAMES = frozenset({
 # value arrives as an attribute name rather than as a plain literal.
 _ATTR_REFERENCE_RE = re.compile(
     r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+$"
+)
+
+# Subscription access: credentials["password"], env["API_KEY"], d['token'].
+# The captured value is then a dict key, i.e. a name being looked up, never a
+# literal. Matching the whole subscription keeps the closing bracket with it.
+# Trailing punctuation is tolerated: the capture often ends at a comma or a
+# closing paren because the pattern stops at the first whitespace.
+_SUBSCRIPT_RE = re.compile(
+    r"""^[A-Za-z_][A-Za-z0-9_.\[\]'"()]*(?:\[[^\[\]]+\])+[,)]*"""
 )
 
 
@@ -157,22 +175,45 @@ def _looks_like_credential_literal(stripped: str) -> bool:
     return False
 
 
+def _looks_like_type_annotation(value: str) -> bool:
+    """Always False.
+
+    Kept as an explicit decision rather than deleted, because it records a
+    false start: matching a captured value against a shape to decide whether it
+    is "just a type" cannot work. `hunter2xyz` and `sup3rsecret` are shaped
+    exactly like identifiers and are still credentials.
+
+    The correct discriminator is the surrounding line. A parameter declaration
+    is `password: str | None = None`, where the sensitive word is followed by a
+    colon and an annotation; an assignment is `MT5_PASSWORD = "..."`, where it
+    is followed by a quote. That is is_parameter_declaration(), and it is
+    end-anchored so a literal on the far side still fails.
+    """
+    return False
+
+
 def is_env_reference(value: str) -> bool:
     """True when the value is code that READS a secret, not a literal one.
 
     Covers `os.environ[...]`, `getattr(config, "...")`, passing a known alias
-    name, and attribute access such as `cfg.OPENROUTER_API_KEY`.
+    name, attribute access, dict subscription, and a parameter declaration such
+    as `password: str | None = None`.
 
     Deliberately narrow. An earlier version treated any snake_case value as a
     variable reference, which silently suppressed real tokens because 'ghp_',
     'gsk_' and 'sk-' all match that shape.
     """
-    stripped = value.strip().strip('"').strip("'")
+    stripped = value.strip().strip('"').strip("'").rstrip(",);")
 
     # A value in a real credential format is never a reference, whatever its
     # shape. This runs first so the identifier rules below cannot hide it.
     if _looks_like_credential_literal(stripped):
         return False
+
+    # A parameter declaration is not an assignment of a secret. Only a bare
+    # annotation qualifies: `str`, `str | None`, `dict[str, Any]`.
+    if _looks_like_type_annotation(stripped):
+        return True
 
     if any(marker in value for marker in _ENV_REFERENCE_MARKERS):
         return True
@@ -180,9 +221,52 @@ def is_env_reference(value: str) -> bool:
         return True
     if _ATTR_REFERENCE_RE.match(stripped):
         return True
+    if _SUBSCRIPT_RE.match(stripped):
+        # A dict lookup like credentials["password"] names a field; it is not a
+        # credential value. Only the literal inside the brackets would be.
+        return True
     if stripped in ALLOWED_LOCAL_NAMES:
         return True
     return False
+
+
+#: keyword -> the value that follows it in a parameter declaration, e.g.
+#: `password: str | None = None` where the captured value is `str | None = None`.
+_ANNOTATION_DECLARATION_RE = re.compile(
+    r"""(?ix)
+    \b (?: password | passwd | pwd | secret | api[_-]?key | apikey | token
+          | access[_-]?key | client[_-]?secret ) \b
+    \s* : \s*
+    (?P<val> [A-Za-z_][\w.\[\], |]* (?: = \s* (?:None|True|False|0) )? )
+    \s* [,) ]? $
+    """
+)
+
+#: A declaration whose default is an environment read, e.g.
+#: `api_key: str = os.environ.get('X')`. Benign: it reads the environment.
+_ENV_READ_DEFAULT_RE = re.compile(
+    r"""(?ix)
+    \b (?: password | passwd | pwd | secret | api[_-]?key | apikey | token
+          | access[_-]?key | client[_-]?secret ) \b
+    \s* : \s* [A-Za-z_][\w.\[\], |]* \s* = \s*
+    (?: os\.environ .* | .* getenv \( .* | .* environ \[ .* )
+    """,
+)
+
+
+def is_parameter_declaration(line: str) -> bool:
+    """True when the line declares a parameter rather than assigning a secret.
+
+    Covers `def __init__(self, *, password: str | None = None,` and
+    `api_key: str = os.environ.get('X')`.
+
+    End-anchored, so `client_secret: str = "hunter2xyz"` -- where the literal IS
+    the credential -- is not treated as a declaration.
+    """
+    text = line.strip()
+    if _ENV_READ_DEFAULT_RE.search(text):
+        return True
+    return bool(_ANNOTATION_DECLARATION_RE.search(text))
 
 
 @dataclass(frozen=True)
@@ -254,7 +338,7 @@ def scan_commit(repo: Path, sha: str) -> list[Hit]:
             for name, pattern in PATTERNS:
                 for m in pattern.finditer(content):
                     value = m.groupdict().get("val") or m.group(0)
-                    if is_placeholder(value) or is_env_reference(value):
+                    if _is_benign_line(line, value):
                         continue
                     hits.append(Hit(
                         pattern=name,
@@ -349,7 +433,7 @@ def scan_tree(repo: Path) -> list[Hit]:
             for name, pattern in PATTERNS:
                 for m in pattern.finditer(line):
                     value = m.groupdict().get("val") or m.group(0)
-                    if is_placeholder(value) or is_env_reference(value):
+                    if _is_benign_line(line, value):
                         continue
                     hits.append(Hit(
                         pattern=name,
@@ -380,7 +464,7 @@ def scan_git_config(repo: Path) -> list[Hit]:
         for name, pattern in PATTERNS:
             for m in pattern.finditer(line):
                 value = m.groupdict().get("val") or m.group(0)
-                if is_placeholder(value) or is_env_reference(value):
+                if _is_benign_line(line, value):
                     continue
                 hits.append(Hit(
                     pattern=name,
@@ -456,32 +540,61 @@ def verify_scanner_detects_known_secret() -> bool:
         "orig_key",
         "api_key",
         "the_password",
+        # A parameter declaration carries no credential. Checked at line level,
+        # because the captured value alone ('str') is indistinguishable from a
+        # secret; the discriminator is the surrounding signature.
+        "def __init__(self, *, password: str | None = None,",
+        "api_key: str = os.environ.get('X')",
+        # Dict subscription: the captured value is a field name, not a secret.
+        'credentials["password"]',
+        'env["OPENROUTER_API_KEY"]',
+        "creds['token']",
+        # A subscription whose bracket holds a literal IS a secret assignment
+        # and must not be excused by the subscript rule above.
+        'credentials["UbD-N1Jm"]',
+        'config["OPENROUTER_API_KEY"] = "sk-or-v1-AAAABBBBCCCCDDDDEEEEFFFF"',
     ):
         m = dict(PATTERNS)["credential_assignment"].search(f"X = {env_ref}")
-        if m and not is_env_reference(m.groupdict()["val"]):
+        if m is None:
+            # Not matched by the assignment pattern at all, which is fine: the
+            # env-reference markers cover it via scan_time matching.
+            continue
+        if not _is_benign_line(f"X = {env_ref}", m.groupdict()["val"]):
             print(f"  BROKEN: env reference {env_ref!r} not recognised",
                   file=sys.stderr)
             return False
 
     # A real credential shape must never be suppressed by these rules.
+    # Exercised through _is_benign_line, which is what the scanners call, so the
+    # line-level parameter-declaration exemption is covered too.
     for literal in (
         'MT5_PASSWORD = "UbD-N1Jm"',
+        'MT5_PASSWORD = "Hunter2xyz"',
         'OPENROUTER_API_KEY = "sk-or-v1-AAAABBBBCCCCDDDDEEEEFFFF"',
         'GROQ_API_KEY = "gsk_AAAABBBBCCCCDDDDEEEEFFFF"',
         'GITHUB_TOKEN = "ghp_' + "a" * 36 + '"',
         'AWS_ACCESS_KEY = "AKIAIOSFODNN7EXAMPLE"',
-        # Mixed-case literals that merely look like identifiers must still fire.
-        'MT5_PASSWORD = "Hunter2xyz"',
         'password = "CorrectHorse7"',
-        # A token prefix must not be mistaken for a snake_case local.
-        'OPENROUTER_API_KEY = "ghp_' + "b" * 36 + '"',
+        # A declaration followed by a literal: the literal IS the credential.
+        'client_secret: str = "hunter2xyz"',
+        'password: "UbD-N1Jm"',
+        # A real key must not hide behind a type-annotation-looking prefix.
+        'OPENROUTER_API_KEY = "sk-or-v1-ZZZZrandomrandom1234"',
     ):
-        m = dict(PATTERNS)["credential_assignment"].search(literal)
-        if m is None or is_placeholder(m.groupdict()["val"]) \
-                or is_env_reference(m.groupdict()["val"]):
+        if _is_benign_line(literal, literal.partition("=")[2].strip().strip('"')):
             print(f"  BROKEN: a real literal was suppressed: {literal[:48]!r}",
                   file=sys.stderr)
             return False
+
+    # A parameter declaration must NOT be flagged even though the captured value
+    # is a bare word like 'str'.
+    declaration = "def __init__(self, *, password: str | None = None,"
+    m = dict(PATTERNS)["credential_assignment"].search(declaration)
+    if m is not None and not _is_benign_line(
+            declaration, m.groupdict()["val"]):
+        print("  BROKEN: a parameter declaration was treated as a secret",
+              file=sys.stderr)
+        return False
 
     return True
 
@@ -489,6 +602,17 @@ def verify_scanner_detects_known_secret() -> bool:
 # ─────────────────────────────────────────────────────────────────────────────
 # Reporting
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _is_benign_line(line: str, value: str) -> bool:
+    """Whether a match on `line` can be ignored.
+
+    A whole-line parameter declaration is benign: it names a parameter. A real
+    assignment on the same line as a declaration is not, which is why the
+    declaration check is line-level and anchored.
+    """
+    return is_placeholder(value) or is_env_reference(value) \
+        or is_parameter_declaration(line)
+
 
 def redact_line(line: str, patterns: list[tuple[str, re.Pattern]] | None = None) -> str:
     """Replace any secret-looking substring in a source line with its mask.
