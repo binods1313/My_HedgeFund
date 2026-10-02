@@ -46,7 +46,7 @@ class IllegalTransition(RuntimeError):
         super().__init__(
             f"Illegal transition {from_state} -> {to_state} on trigger "
             f"{trigger!r}. Allowed from {from_state}: "
-            f"{sorted(ALLOWED.get(from_state, ())) or ['(none)']}"
+            f"{sorted(allowed_from(from_state)) or ['(none)']}"
         )
 
 
