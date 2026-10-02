@@ -43,11 +43,18 @@ VALID_VERDICTS = ("APPROVE", "REDUCE", "REJECT")
 
 Decision = Literal["TRADE", "NO_TRADE"]
 
+# Fail-safe response template.
+#
+# `confidence` is None, not a number. Every path through _safe_hold() means the
+# model produced nothing usable, so there is no confidence to report. This
+# template previously hardcoded 60, which rendered on the HUD as if it were a
+# measured score and invited the reader to treat a safety refusal as a real
+# 60% signal. None forces callers to distinguish "no score" from "low score".
 _HOLD_RESPONSE = {
     "decision": "HOLD",
-    "confidence": 60,
+    "confidence": None,
     "strength": "NEUTRAL",
-    "reasoning": "Safety HOLD — see reason field.",
+    "reasoning": "Safety HOLD - see reason field.",
     "risk_reward": "N/A",
     "indicator_snapshot": {},
 }

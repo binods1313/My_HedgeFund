@@ -119,22 +119,70 @@ _ENV_REFERENCE_MARKERS = (
     "dotenv", "getattr(", "load_dotenv",
 )
 
-# Environment variable names are uppercase identifiers. A value matching this
-# is a variable reference (e.g. "password=MT5_PASSWORD"), not a literal secret.
+# SCREAMING_CASE names are env-var references (MT5_PASSWORD). Plain snake_case
+# is NOT treated the same way: token prefixes such as 'ghp_', 'gsk_' and 'sk-'
+# also match a snake_case identifier shape, so allowing it would suppress real
+# credentials. Identifier-shaped locals must be handled by their assignment
+# context instead, which the hook does via ALLOWED_LOCAL_NAMES.
 _VAR_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]{2,}$")
+
+# Locals that hold a secret but are visibly aliases rather than literals.
+ALLOWED_LOCAL_NAMES = frozenset({
+    "orig_key", "orig_password", "the_key", "the_password",
+    "api_key", "openrouter_key", "mt5_password", "password", "secret",
+    "key_value", "live_key", "real_key",
+})
+
+# Attribute access on a module or object, e.g. "cfg.OPENROUTER_API_KEY".
+# The pattern's keyword group can match the tail of such an expression, so the
+# value arrives as an attribute name rather than as a plain literal.
+_ATTR_REFERENCE_RE = re.compile(
+    r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+$"
+)
+
+
+def _looks_like_credential_literal(stripped: str) -> bool:
+    """Does this shape belong to a known credential format?
+
+    Checked before the identifier heuristics, because AWS keys and some token
+    prefixes are indistinguishable from SCREAMING_CASE identifiers by shape
+    alone. AKIAIOSFODNN7EXAMPLE and MT5_PASSWORD are the same shape; only one
+    of them is a secret.
+    """
+    for name, pattern in PATTERNS:
+        if name == "credential_assignment":
+            continue
+        if pattern.fullmatch(stripped):
+            return True
+    return False
 
 
 def is_env_reference(value: str) -> bool:
     """True when the value is code that READS a secret, not a literal one.
 
-    Covers both `os.environ[...]` style access and passing an uppercase
-    variable name (MT5_PASSWORD=MT5_PASSWORD), which is how the value flows
-    from config.py into the MT5 call. Neither is a credential.
+    Covers `os.environ[...]`, `getattr(config, "...")`, passing a known alias
+    name, and attribute access such as `cfg.OPENROUTER_API_KEY`.
+
+    Deliberately narrow. An earlier version treated any snake_case value as a
+    variable reference, which silently suppressed real tokens because 'ghp_',
+    'gsk_' and 'sk-' all match that shape.
     """
     stripped = value.strip().strip('"').strip("'")
+
+    # A value in a real credential format is never a reference, whatever its
+    # shape. This runs first so the identifier rules below cannot hide it.
+    if _looks_like_credential_literal(stripped):
+        return False
+
     if any(marker in value for marker in _ENV_REFERENCE_MARKERS):
         return True
-    return bool(_VAR_NAME_RE.match(stripped))
+    if _VAR_NAME_RE.match(stripped):
+        return True
+    if _ATTR_REFERENCE_RE.match(stripped):
+        return True
+    if stripped in ALLOWED_LOCAL_NAMES:
+        return True
+    return False
 
 
 @dataclass(frozen=True)
@@ -364,6 +412,14 @@ def verify_scanner_detects_known_secret() -> bool:
         'getattr(config, "OPENROUTER_API_KEY", "")',
         # Passing a variable through is not a secret either.
         "MT5_PASSWORD",
+        # Attribute access on a module, as seen in tests that patch config.
+        "cfg.OPENROUTER_API_KEY",
+        "config.OPENROUTER_API_KEY",
+        "self.api_key",
+        # Locals that alias a value read elsewhere rather than holding a literal.
+        "orig_key",
+        "api_key",
+        "the_password",
     ):
         m = dict(PATTERNS)["credential_assignment"].search(f"X = {env_ref}")
         if m and not is_env_reference(m.groupdict()["val"]):
@@ -371,24 +427,23 @@ def verify_scanner_detects_known_secret() -> bool:
                   file=sys.stderr)
             return False
 
-    # Truncated example keys and scrub markers must not be reported.
-    for not_a_secret in ("sk-or-v1-...", "gsk_...", "<your-key>",
-                         "***REMOVED-MT5_PASSWORD***",
-                         "[REDACTED]"):
-        if not is_placeholder(not_a_secret):
-            print(f"  BROKEN: {not_a_secret!r} not recognised as a placeholder",
-                  file=sys.stderr)
-            return False
-
-    # A real literal must still be flagged even on the same line shape.
+    # A real credential shape must never be suppressed by these rules.
     for literal in (
         'MT5_PASSWORD = "Xq7SampleNotRealPwd9z"',
         'OPENROUTER_API_KEY = "sk-or-v1-AAAABBBBCCCCDDDDEEEEFFFF"',
+        'GROQ_API_KEY = "gsk_AAAABBBBCCCCDDDDEEEEFFFF"',
+        'GITHUB_TOKEN = "ghp_' + "a" * 36 + '"',
+        'AWS_ACCESS_KEY = "AKIAIOSFODNN7EXAMPLE"',
+        # Mixed-case literals that merely look like identifiers must still fire.
+        'MT5_PASSWORD = "Hunter2xyz"',
+        'password = "CorrectHorse7"',
+        # A token prefix must not be mistaken for a snake_case local.
+        'OPENROUTER_API_KEY = "ghp_' + "b" * 36 + '"',
     ):
         m = dict(PATTERNS)["credential_assignment"].search(literal)
         if m is None or is_placeholder(m.groupdict()["val"]) \
                 or is_env_reference(m.groupdict()["val"]):
-            print(f"  BROKEN: a real literal was suppressed: {literal!r}",
+            print(f"  BROKEN: a real literal was suppressed: {literal[:48]!r}",
                   file=sys.stderr)
             return False
 

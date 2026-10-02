@@ -646,6 +646,138 @@ class TestAccountModeGuard:
         assert len(fake.closed) == 1, "the order must be closed again"
 
 
+class TestHiddenSymbolDiscovery:
+    """F1.1: symbols absent from Market Watch must not be false negatives.
+
+    MT5 reports visible=False for anything not in the user's Market Watch.
+    Such a symbol is still tradable once symbol_select() adds it to the active
+    set. The previous implementation skipped invisible symbols outright, so
+    NAS100 and BTCUSD were reported as unavailable when the broker offered them.
+    """
+
+    def _hidden_fake(self, hidden_name, path, visible_names=()):
+        syms = [FakeSymbolInfo(n, p) for n, p in visible_names]
+        syms.append(FakeSymbolInfo(hidden_name, path, visible=False))
+        fake = _make_fake(syms)
+        # Simulate MT5: no tick for a hidden symbol until symbol_select is called.
+        original_tick = fake.symbol_info_tick
+
+        def gated_tick(name):
+            if not fake.selected.get(name, False) and not fake._vis.get(name, True):
+                return None
+            return original_tick(name)
+
+        fake._vis = {s.name: s.visible for s in syms}
+        fake.selected = {}
+        fake.symbol_info_tick = gated_tick
+
+        original_select = fake.symbol_select
+
+        def select(name, do=True):
+            fake.selected[name] = do
+            return original_select(name, do)
+
+        fake.symbol_select = select
+        return fake
+
+    def test_hidden_forex_symbol_is_activated_and_picked(self):
+        fake = self._hidden_fake("EURUSD", "Forex\\Majors")
+        log = dv.CheckLog()
+        with redirect_stdout(io.StringIO()):
+            symbols = dv.check_symbol_discovery(fake, dv.data_engine_classify, log)
+
+        assert symbols["Forex Currencies"] == "EURUSD", (
+            "a hidden but available forex symbol must still be discovered"
+        )
+        assert fake.selected.get("EURUSD") is True, (
+            "symbol_select must have been called to activate the symbol"
+        )
+        assert log.verdict() != dv.VERDICT_FAIL
+
+    def test_hidden_symbol_unlocks_a_tick(self):
+        """Proof the activation is what makes the tick available."""
+        fake = self._hidden_fake("BTCUSD", "Crypto\\Bitcoin")
+        assert fake.symbol_info_tick("BTCUSD") is None, (
+            "precondition: a hidden symbol has no tick until selected"
+        )
+        with redirect_stdout(io.StringIO()):
+            dv.check_symbol_discovery(fake, dv.data_engine_classify, dv.CheckLog())
+        assert fake.symbol_info_tick("BTCUSD") is not None
+
+    def test_hidden_indices_symbol_is_discovered(self):
+        fake = self._hidden_fake("NAS100", "Indices\\US")
+        with redirect_stdout(io.StringIO()):
+            symbols = dv.check_symbol_discovery(fake, dv.data_engine_classify,
+                                                dv.CheckLog())
+        assert symbols["Indices & Equities"] == "NAS100"
+
+    def test_visible_symbol_is_preferred_over_hidden(self):
+        fake = _make_fake([FakeSymbolInfo("AUDCAD", "Forex\\Majors", visible=True),
+                           FakeSymbolInfo("EURUSD", "Forex\\Majors", visible=False)])
+        groups = dv.classify_all(fake, dv.data_engine_classify)
+        name, _ = dv.resolve_symbol_for_class(fake, groups, "Forex Currencies",
+                                              dv.data_engine_classify)
+        assert name == "AUDCAD"
+        assert fake.calls.count(("symbol_select", "EURUSD", True)) == 0, (
+            "a visible symbol must not need activation"
+        )
+
+    def test_hidden_symbol_selected_only_after_visibles_fail(self):
+        fake = self._hidden_fake("EURUSD", "Forex\\Majors",
+                                 visible_names=(("BROKEN", "Forex\\Majors"),))
+        # Make the visible one unusable.
+        fake._ticks["BROKEN"] = FakeTick(0.0, 0.0)
+        with redirect_stdout(io.StringIO()):
+            dv.check_symbol_discovery(fake, dv.data_engine_classify, dv.CheckLog())
+        assert fake.selected.get("EURUSD") is True
+
+    def test_genuinely_missing_class_still_reports_no_symbol(self):
+        """Activation must not manufacture success for an absent class."""
+        fake = _make_fake([FakeSymbolInfo("EURUSD", "Forex\\Majors")])
+        log = dv.CheckLog()
+        with redirect_stdout(io.StringIO()):
+            symbols = dv.check_symbol_discovery(fake, dv.data_engine_classify, log)
+
+        assert symbols["Crypto Assets"] is None
+        assert symbols["Indices & Equities"] is None
+        assert log.verdict() == dv.VERDICT_INCOMPLETE
+        assert dv.NO_SYMBOL_MESSAGE in log.render()
+
+    def test_hidden_but_unusable_symbol_does_not_become_available(self):
+        """symbol_select fails and still no tick -> genuinely unavailable."""
+        fake = self._hidden_fake("GHOST", "Crypto\\Bitcoin")
+
+        def failing_select(name, do=True):
+            raise RuntimeError("cannot select")
+
+        fake.symbol_select = failing_select
+        log = dv.CheckLog()
+        with redirect_stdout(io.StringIO()):
+            symbols = dv.check_symbol_discovery(fake, dv.data_engine_classify, log)
+
+        assert symbols["Crypto Assets"] is None
+        assert log.verdict() == dv.VERDICT_INCOMPLETE
+
+    def test_all_classes_discovered_and_reported(self):
+        """F1.1 asks which symbol was used per class; assert all four resolve."""
+        fake = self._hidden_fake(
+            "NAS100", "Indices\\US",
+            visible_names=(("EURUSD", "Forex\\Majors"),
+                           ("XAUUSD", "Metals\\Precious"),
+                           ("BTCUSD", "Crypto\\Bitcoin")),
+        )
+        log = dv.CheckLog()
+        with redirect_stdout(io.StringIO()):
+            symbols = dv.check_symbol_discovery(fake, dv.data_engine_classify, log)
+
+        rendered = log.render()
+        for asset_class in ("Forex Currencies", "Metals & Commodities",
+                            "Indices & Equities", "Crypto Assets"):
+            assert asset_class in rendered
+        assert log.verdict() == dv.VERDICT_PASS, log.render()
+        assert all(v is not None for v in symbols.values())
+
+
 class TestModuleImport:
 
     def test_module_imports_without_mt5_installed(self):

@@ -192,21 +192,75 @@ def classify_all(mt5_mod, classify_symbol) -> dict[str, list]:
 
 
 def pick_candidate(mt5_mod, candidates, asset_class: str):
-    """First visible candidate that also returns a sane tick.
+    """First candidate that can actually be queried, activating it if needed.
 
-    Returns (symbol_name, reason). reason is non-empty when nothing qualified,
-    and callers surface NO SYMBOL AVAILABLE ON THIS BROKER in that case.
+    MT5 reports `visible=False` for any symbol absent from the user's Market
+    Watch. Such a symbol is still tradable: it only needs to be added to the
+    active set with symbol_select() before quotes are available for it.
+
+    The previous implementation skipped invisible symbols outright, so NAS100,
+    BTCUSD and any other symbol the user had never watched were reported as
+    NO SYMBOL AVAILABLE ON THIS BROKER. That was a false negative about the
+    scan, not about the broker.
+
+    Selection order: already-visible symbols first, then hidden ones (which we
+    attempt to activate). Within each group the original broker ordering is
+    preserved so results stay deterministic.
+
+    Returns (symbol_name, reason). reason is non-empty when nothing qualified.
     """
+    visible_candidates = []
+    hidden_candidates = []
+
     for sym in candidates:
-        if not getattr(sym, "visible", False):
-            continue
-        info = mt5_mod.symbol_info(sym.name)
-        if info is None:
-            continue
-        tick = mt5_mod.symbol_info_tick(sym.name)
-        if tick is None or tick.bid <= 0 or tick.ask < tick.bid:
-            continue
-        return sym.name, ""
+        if getattr(sym, "visible", False):
+            visible_candidates.append(sym)
+        else:
+            hidden_candidates.append(sym)
+
+    # Try visible symbols first: no activation needed and no side effects.
+    for sym in visible_candidates:
+        name, reason = _probe_symbol(mt5_mod, sym, select=False)
+        if name:
+            return name, ""
+
+    # Then hidden ones, adding each to the active set before probing.
+    for sym in hidden_candidates:
+        name, reason = _probe_symbol(mt5_mod, sym, select=True)
+        if name:
+            return name, ""
+
+    return None, NO_SYMBOL_MESSAGE
+
+
+def _probe_symbol(mt5_mod, sym, select: bool):
+    """Activate (if needed) and probe a symbol for a usable quote."""
+    name = sym.name
+
+    if select:
+        # A hidden symbol returns no tick until it is selected. Failure here is
+        # not fatal: the symbol may be unavailable for another reason, in which
+        # case the tick probe below will reject it anyway.
+        try:
+            mt5_mod.symbol_select(name, True)
+        except Exception:
+            pass
+
+    try:
+        info = mt5_mod.symbol_info(name)
+    except Exception:
+        info = None
+    if info is None:
+        return None, NO_SYMBOL_MESSAGE
+
+    try:
+        tick = mt5_mod.symbol_info_tick(name)
+    except Exception:
+        tick = None
+    if tick is None or tick.bid <= 0 or tick.ask < tick.bid:
+        return None, NO_SYMBOL_MESSAGE
+
+    return name, ""
     return None, NO_SYMBOL_MESSAGE
 
 
