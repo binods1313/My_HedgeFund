@@ -157,6 +157,62 @@ sessions:
   block_friday_after_utc_hour: 20   # No new entries Friday evening
   block_sunday_before_utc_hour: 21  # No entries until Sunday NY open
 
+# ── Asset Class Requirements ──────────────────────────────────────────────────
+# Which asset classes this broker is expected to provide, and which are optional.
+#
+# `required: true`  -> the class must yield a usable, live, quotable symbol, or
+#                      verification reports INCOMPLETE.
+# `required: false` -> the class is probed and reported, but an absent symbol
+#                      does not block the verdict.
+#
+# Rationale: a demo broker without crypto liquidity cannot supply crypto
+# symbols. Requiring them would mean INCOMPLETE forever, which erodes the
+# signal a verdict is supposed to carry. Optional classes are still probed and
+# reported, so their absence stays visible.
+#
+# `allow_stale_feed: true` relaxes the LIVE-QUOTE staleness threshold for that
+# class during verification only. It does NOT relax the trading path: execution
+# still refuses to trade any symbol whose quote is stale. See the note in
+# data_engine.get_symbol_live_quote.
+verification:
+  # Which asset classes this broker is expected to provide, and which are optional.
+  #
+  # `required: true`  -> the class must yield a usable, live, quotable symbol, or
+  #                      verification reports INCOMPLETE.
+  # `required: false` -> the class is probed and reported, but an absent symbol
+  #                      does not block the verdict.
+  #
+  # Rationale: a demo broker without crypto liquidity cannot supply crypto
+  # symbols. Requiring them would mean INCOMPLETE forever, which erodes the
+  # signal a verdict is meant to carry. Optional classes are still probed and
+  # reported, so their absence stays visible.
+  #
+  # `allow_stale_feed: true` relaxes the LIVE-QUOTE staleness threshold for that
+  # class during VERIFICATION ONLY. It does NOT relax the trading path: execution
+  # still refuses to trade any symbol whose quote is stale. See the note in
+  # data_engine.get_symbol_live_quote.
+  asset_classes:
+    Forex Currencies:
+      required: true
+      allow_stale_feed: false
+      max_tick_age_seconds: 60
+    Metals & Commodities:
+      required: true
+      allow_stale_feed: false
+      max_tick_age_seconds: 60
+    Indices & Equities:
+      required: true
+      # This broker lists index symbols but serves no live feed for some of them
+      # (UK100 quotes are ~140 days old). Discovery succeeds, quoting does not.
+      # Non-blocking for verification; still refused by the trading path.
+      allow_stale_feed: true
+      max_tick_age_seconds: 60
+    Crypto Assets:
+      # Not offered on this broker account.
+      required: false
+      allow_stale_feed: false
+      max_tick_age_seconds: 60
+
 # ── Display / Formatting ─────────────────────────────────────────────────────
 display:
   # Margin level is equity/margin. With little or no margin in use the ratio is

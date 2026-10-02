@@ -200,8 +200,8 @@ class TestVerdictNeverPassesWithSkips:
         log = dv.CheckLog()
         log.skip("a", "no symbol")
         out = log.render()
-        assert "FINAL VERDICT : INCOMPLETE" in out
-        assert "Skipped       : 1" in out
+        assert "FINAL VERDICT    : INCOMPLETE" in out
+        assert "Skipped          : 1" in out
 
     def test_summary_line_never_says_all_passed_on_skip(self):
         """The user-facing text must not claim success when anything skipped."""
@@ -317,7 +317,7 @@ class TestSymbolDiscovery:
 
         rendered = log.render()
         assert dv.NO_SYMBOL_MESSAGE in rendered
-        assert "FINAL VERDICT : INCOMPLETE" in rendered
+        assert "FINAL VERDICT    : INCOMPLETE" in rendered
 
     def test_broker_named_nas100_discovered(self):
         """Discovery adapts to the broker's actual symbol name."""
@@ -495,7 +495,7 @@ class TestReportFile:
         log.skip("a", dv.NO_SYMBOL_MESSAGE)
         path = dv.write_report(tmp_path / "reports", dv.build_report(log))
         text = path.read_text(encoding="utf-8")
-        assert "FINAL VERDICT : INCOMPLETE" in text
+        assert "FINAL VERDICT    : INCOMPLETE" in text
         assert dv.NO_SYMBOL_MESSAGE in text
 
     def test_reports_dir_is_gitignored(self):
@@ -776,6 +776,209 @@ class TestHiddenSymbolDiscovery:
             assert asset_class in rendered
         assert log.verdict() == dv.VERDICT_PASS, log.render()
         assert all(v is not None for v in symbols.values())
+
+
+class TestAssetClassPolicy:
+    """T1/T2: optional classes and permitted stale feeds must not block, but
+    real defects still must."""
+
+    @staticmethod
+    def _policy(required_classes, stale_classes=()):
+        from config_loader import VerificationSettings
+        return VerificationSettings(asset_classes={
+            cls: {"required": cls in required_classes,
+                  "allow_stale_feed": cls in stale_classes,
+                  "max_tick_age_seconds": 60}
+            for cls in ("Forex Currencies", "Metals & Commodities",
+                        "Indices & Equities", "Crypto Assets")
+        })
+
+    def test_config_marks_crypto_optional(self):
+        """This broker has no crypto, so requiring it would never PASS."""
+        from config_loader import load_config
+        policy = load_config().verification
+        assert policy.is_required("Crypto Assets") is False
+        assert policy.is_required("Forex Currencies") is True
+        assert policy.is_required("Metals & Commodities") is True
+
+    def test_config_permits_stale_feed_for_indices_only(self):
+        from config_loader import load_config
+        policy = load_config().verification
+        assert policy.allows_stale_feed("Indices & Equities") is True
+        assert policy.allows_stale_feed("Forex Currencies") is False
+        assert policy.allows_stale_feed("Metals & Commodities") is False
+
+    def test_unconfigured_class_is_treated_as_required(self):
+        """Fails closed: adding a class must not quietly stop being verified."""
+        from config_loader import VerificationSettings
+        policy = VerificationSettings(asset_classes={})
+        assert policy.is_required("Something New") is True
+        assert policy.allows_stale_feed("Something New") is False
+
+    def test_all_optional_is_rejected_by_the_schema(self):
+        """With nothing required, no check could ever hold the verdict."""
+        from config_loader import VerificationSettings
+        with pytest.raises(Exception):
+            VerificationSettings(asset_classes={
+                "Crypto Assets": {"required": False, "allow_stale_feed": False,
+                                  "max_tick_age_seconds": 60}})
+
+    def test_missing_optional_class_yields_pass(self):
+        fake = _make_fake([
+            FakeSymbolInfo("EURUSD", "Forex\\Majors"),
+            FakeSymbolInfo("XAUUSD", "Metals\\Precious"),
+            FakeSymbolInfo("UK100", "Indices\\US"),
+        ])
+        log = dv.CheckLog()
+        with redirect_stdout(io.StringIO()):
+            symbols = dv.check_symbol_discovery(
+                fake, dv.data_engine_classify, log,
+                self._policy({"Forex Currencies", "Metals & Commodities",
+                              "Indices & Equities"}))
+
+        assert symbols["Crypto Assets"] is None
+        assert log.verdict() == dv.VERDICT_PASS, log.render()
+        assert dv.NO_SYMBOL_MESSAGE in log.render(), (
+            "an absent optional class must still be reported"
+        )
+
+    def test_missing_required_class_still_blocks(self):
+        fake = _make_fake([FakeSymbolInfo("EURUSD", "Forex\\Majors")])
+        log = dv.CheckLog()
+        with redirect_stdout(io.StringIO()):
+            dv.check_symbol_discovery(
+                fake, dv.data_engine_classify, log,
+                self._policy({"Forex Currencies", "Metals & Commodities"}))
+
+        assert log.verdict() == dv.VERDICT_INCOMPLETE
+        assert "Metals & Commodities" in log.render()
+
+    def test_stale_feed_on_permitted_class_is_non_blocking(self):
+        """UK100 quotes ~140 days stale: reported, not disqualifying."""
+        fake = _make_fake([FakeSymbolInfo("UK100", "Indices\\US")])
+
+        def stale_quote(symbol, max_tick_age_seconds=30):
+            return {"bid": 100.0, "ask": 100.5, "valid": False,
+                    "reason": "Stale tick: age 12107178s > 60s"}
+
+        log = dv.CheckLog()
+        policy = self._policy({"Indices & Equities"},
+                              stale_classes={"Indices & Equities"})
+        with redirect_stdout(io.StringIO()):
+            symbols = dv.check_symbol_discovery(fake, dv.data_engine_classify,
+                                                log, policy)
+            dv.check_spread(fake, stale_quote, symbols, log, policy)
+
+        # Discovery passed (blocking OK); the stale quote is informational only.
+        assert log.verdict() == dv.VERDICT_PASS, log.render()
+        assert "stale feed permitted" in log.render()
+
+    def test_stale_feed_on_non_permitted_class_still_blocks(self):
+        """A stale forex feed is disqualifying; the relaxation is per class."""
+        fake = _make_fake([FakeSymbolInfo("EURUSD", "Forex\\Majors")])
+
+        def stale_quote(symbol, max_tick_age_seconds=30):
+            return {"bid": 1.0, "ask": 1.1, "valid": False,
+                    "reason": "Stale tick: age 999999s > 60s"}
+
+        log = dv.CheckLog()
+        with redirect_stdout(io.StringIO()):
+            dv.check_spread(fake, stale_quote, {"Forex Currencies": "EURUSD"},
+                            log, self._policy({"Forex Currencies"},
+                                              stale_classes={"Indices & Equities"}))
+
+        assert log.verdict() == dv.VERDICT_INCOMPLETE
+
+    def test_wrong_spread_fails_even_on_an_optional_class(self):
+        """A real defect is never excused by class optionality."""
+        fake = _make_fake([FakeSymbolInfo("BTCUSD", "Crypto\\Bitcoin")])
+
+        def wrong_quote(symbol, max_tick_age_seconds=30):
+            return {"bid": 1.0, "ask": 1.1, "valid": True, "spread": 999.0}
+
+        log = dv.CheckLog()
+        with redirect_stdout(io.StringIO()):
+            dv.check_spread(fake, wrong_quote, {"Crypto Assets": "BTCUSD"},
+                            log, self._policy({"Forex Currencies"}))
+
+        assert log.verdict() == dv.VERDICT_FAIL, (
+            "a wrong spread on an optional class must still fail"
+        )
+
+    def test_informational_checks_are_labelled_in_the_report(self):
+        log = dv.CheckLog()
+        log.ok("a")
+        log.skip("optional thing", "not on this broker", blocking=False)
+        rendered = log.render()
+        assert "(informational)" in rendered
+        assert "of which informational (non-blocking): 1" in rendered
+
+    def test_no_policy_behaves_as_all_required(self):
+        """Without a policy every class blocks, preserving the old behaviour."""
+        fake = _make_fake([FakeSymbolInfo("EURUSD", "Forex\\Majors")])
+        log = dv.CheckLog()
+        with redirect_stdout(io.StringIO()):
+            dv.check_symbol_discovery(fake, dv.data_engine_classify, log, None)
+        assert log.verdict() == dv.VERDICT_INCOMPLETE
+
+
+class TestTradingPathStalenessUnaffected:
+    """The verification relaxation must never reach the trading path.
+
+    A stale quote is refused for trading no matter what config says. Only the
+    verification verdict treats it as informational.
+    """
+
+    def test_live_quote_rejects_a_stale_tick(self):
+        """The guard that matters: a stale price cannot be traded."""
+        import time as _t
+        import data_engine
+
+        class _Info:
+            name = "STALE"
+            digits = 2
+            point = 0.01
+            path = "Indices\\US"
+            description = ""
+
+        class _Tick:
+            bid = 100.0
+            ask = 100.5
+            time = _t.time() - 10_000   # ~3 hours old
+
+        class _FakeMT5:
+            def symbol_info(self, s):
+                return _Info()
+
+            def symbol_info_tick(self, s):
+                return _Tick()
+
+            def symbol_select(self, s, do=True):
+                return True
+
+        original = data_engine.mt5
+        data_engine.mt5 = _FakeMT5()
+        try:
+            result = data_engine.get_symbol_live_quote("STALE",
+                                                       max_tick_age_seconds=60)
+        finally:
+            data_engine.mt5 = original
+
+        assert result["valid"] is False, "a stale quote must not be valid"
+        assert "Stale tick" in result["reason"]
+
+    def test_stale_relaxation_is_not_wired_into_data_engine(self):
+        """config must not be consulted for trading-time staleness."""
+        import inspect
+        import data_engine
+        src = inspect.getsource(data_engine.get_symbol_live_quote)
+        assert "allow_stale_feed" not in src, (
+            "get_symbol_live_quote must not honour the verification-only "
+            "stale-feed relaxation"
+        )
+        assert "load_config" not in src, (
+            "the trading quote path must not depend on verification policy"
+        )
 
 
 class TestModuleImport:
