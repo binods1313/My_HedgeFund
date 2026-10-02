@@ -437,7 +437,7 @@ MUTATIONS: list[Mutation] = [
     if True:
         return True""",
         expect_fail=[
-            "tests/test_secret_scan.py::TestSyntheticValueAllowlist::test_real_values_are_not_synthetic",
+            "tests/test_secret_scan.py::TestSyntheticValueAllowlist::test_values_not_on_the_allowlist_are_not_synthetic[AKIAIOSFODNN7NOTLISTED]",
             "tests/test_secret_scan.py::TestSyntheticValueAllowlist::test_real_secret_in_a_test_file_is_still_a_leak",
         ],
     ),
@@ -451,8 +451,8 @@ MUTATIONS: list[Mutation] = [
 
 def _unused_is_synthetic(value: str) -> bool:""",
         expect_fail=[
-            "tests/test_secret_scan.py::TestSyntheticValueAllowlist::test_real_values_are_not_synthetic",
-            "tests/test_secret_scan.py::TestSyntheticValueAllowlist::test_synthetic_check_short_circuits_search",
+            "tests/test_secret_scan.py::TestSyntheticValueAllowlist::test_values_not_on_the_allowlist_are_not_synthetic[AKIAIOSFODNN7NOTLISTED]",
+            "tests/test_secret_scan.py::TestSyntheticAllowlistIsSafe::test_allowlist_entries_are_declared_canaries_or_placeholders",
         ],
     ),
     Mutation(
