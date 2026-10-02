@@ -225,29 +225,28 @@ class FakeMT5:
 
         if self.behaviour in (BEHAVIOUR_HANG,
                               BEHAVIOUR_HANG_THEN_RECONCILE_FAILS):
-            # Blocks well past any sane deadline. The gateway must give up and
-            # reconcile, which then fails when reads also fail.
+            # Blocks past any sane deadline. The owner thread is stuck, so the
+            # terminal cannot be read for reconciliation either: the correct
+            # outcome is UNKNOWN + HALT, not a guess.
             time_module.sleep(30)
             return FakeSendResult()
 
         if self.behaviour == BEHAVIOUR_TIMEOUT_THEN_EXECUTE:
-            # Sleep past the deadline, then create the position anyway: the order
-            # really was processed even though the caller never saw the reply.
-            def _later():
-                time_module.sleep(1.5)
-                self._next_ticket += 1
-                self.add_position(FakePosition(
-                    ticket=self._next_ticket,
-                    symbol=request.get("symbol", "EURUSD"),
-                    magic=request.get("magic", 100100),
-                ))
-            threading.Thread(target=_later, daemon=True).start()
-            time_module.sleep(30)
-            return FakeSendResult()
+            # The order IS processed, but the reply never arrives: order_send
+            # returns None. This is the ghost-order case reconciliation exists
+            # for, and testing it via a returned ambiguity rather than a hang
+            # keeps the owner thread free to serve the reconciliation reads.
+            self._next_ticket += 1
+            self.add_position(FakePosition(
+                ticket=self._next_ticket,
+                symbol=request.get("symbol", "EURUSD"),
+                magic=request.get("magic", 100100),
+            ))
+            return None
 
         if self.behaviour == BEHAVIOUR_TIMEOUT_NO_TRACE:
-            time_module.sleep(30)
-            return FakeSendResult()
+            # Processed nowhere: no position, no history, and the reply is lost.
+            return None
 
         if self.behaviour == BEHAVIOUR_RETURN_NONE:
             return None

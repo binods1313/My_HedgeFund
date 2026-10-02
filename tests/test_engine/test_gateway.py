@@ -1,4 +1,4 @@
-﻿"""Gateway tests.
+"""Gateway tests.
 
 The behaviours under test are the ones that exist because of specific failure
 modes:
@@ -43,6 +43,13 @@ from tests.test_engine.fake_mt5 import (
 )
 
 SHORT_TIMEOUT = 0.4
+
+
+def _raise(message: str):
+    """Build a stand-in for a FakeMT5 method that always raises."""
+    def _raiser(*args, **kwargs):
+        raise RuntimeError(message)
+    return _raiser
 
 
 @pytest.fixture
@@ -291,29 +298,28 @@ class TestOrderReconciliation:
     def test_timeout_that_executed_is_recovered_not_resent(self, journal):
         """The ghost-order case.
 
-        The order DID fill; the caller just never saw the reply. Retrying would
-        open a second position. Reconciliation must find the fill and report
-        EXECUTED without sending again.
+        The order DID fill; the reply was lost. Retrying would open a second
+        position. Reconciliation must find the fill and report EXECUTED
+        without sending again.
         """
         mt5 = FakeMT5(behaviour=BEHAVIOUR_TIMEOUT_THEN_EXECUTE)
         gw = make_gateway(mt5, journal)
         try:
             result = gw.send_order({"symbol": "EURUSD", "volume": 0.01,
                                     "type": "BUY", "magic": 100100})
-            # Give the simulated broker thread time to record the fill.
-            time.sleep(2.0)
 
             assert result.outcome is OrderOutcome.EXECUTED, (
-                "a timed-out order that actually filled must be recovered"
+                "a lost reply for an order that filled must be recovered"
             )
             assert result.should_retry is False, (
                 "retrying a recovered fill would duplicate the position"
             )
             sends = [n for n in mt5.call_names() if n == "order_send"]
             assert len(sends) == 1, (
-                f"order_send called {len(sends)} times; a timeout must not "
+                f"order_send called {len(sends)} times; a lost reply must not "
                 f"trigger an automatic resend"
             )
+            assert result.ticket, "the recovered ticket must be reported"
         finally:
             gw.stop()
 
@@ -331,12 +337,14 @@ class TestOrderReconciliation:
     def test_failed_reconciliation_yields_unknown(self, journal):
         """If we cannot tell, we must not guess.
 
-        The order timed out AND the reads needed to reconcile also failed. The
+        The reply was lost AND the reads needed to reconcile also failed. The
         only honest answer is UNKNOWN with HALT, because both 'executed' and
-        'not executed' remain possible and either assumption could create or
-        lose a position.
+        'not executed' remain possible.
         """
-        mt5 = FakeMT5(behaviour=BEHAVIOUR_HANG_THEN_RECONCILE_FAILS)
+        mt5 = FakeMT5(behaviour=BEHAVIOUR_TIMEOUT_THEN_EXECUTE)
+        mt5.positions_get = _raise("terminal disconnected mid-reconcile")
+        mt5.history_orders_get = _raise("history unavailable")
+
         gw = make_gateway(mt5, journal)
         try:
             result = gw.send_order({"symbol": "EURUSD", "volume": 0.01,
@@ -405,7 +413,10 @@ class TestHaltAlerting:
 
     def test_unknown_outcome_writes_an_error_event(self, journal):
         """A halt needs manual intervention, so it must be loud in the log."""
-        mt5 = FakeMT5(behaviour=BEHAVIOUR_HANG_THEN_RECONCILE_FAILS)
+        mt5 = FakeMT5(behaviour=BEHAVIOUR_TIMEOUT_THEN_EXECUTE)
+        mt5.positions_get = _raise("terminal disconnected mid-reconcile")
+        mt5.history_orders_get = _raise("history unavailable")
+
         gw = make_gateway(mt5, journal)
         try:
             result = gw.send_order({"symbol": "EURUSD", "volume": 0.01,
@@ -423,26 +434,39 @@ class TestHaltAlerting:
 
     def test_halt_event_names_the_symbol_and_the_problem(self, journal):
         """The alert has to be actionable, not just present."""
-        mt5 = FakeMT5(behaviour=BEHAVIOUR_HANG_THEN_RECONCILE_FAILS)
+        mt5 = FakeMT5(behaviour=BEHAVIOUR_TIMEOUT_THEN_EXECUTE)
+        # The order fills but the reply is lost, and both reconciliation reads
+        # fail: the outcome is genuinely unknown, so it must halt and say why.
+        mt5.positions_get = _raise("terminal disconnected mid-reconcile")
+        mt5.history_orders_get = _raise("history unavailable")
+
         gw = make_gateway(mt5, journal)
         try:
-            gw.send_order({"symbol": "EURUSD", "volume": 0.01,
-                           "type": "BUY", "magic": 100100})
+            result = gw.send_order({"symbol": "EURUSD", "volume": 0.01,
+                                    "type": "BUY", "magic": 100100})
+            assert result.must_halt, (
+                f"precondition: expected a halt, got {result.outcome}"
+            )
             errors = [e for e in journal.recent_events(100)
                       if e["severity"] == "ERROR"]
             assert errors
-            import json
-            contexts = " ".join(str(e.get("context_json", "")) for e in errors)
-            assert "UNKNOWN" in " ".join(e["message"] for e in errors)
-            assert "disconnected" in contexts.lower(), (
-                f"the alert must include the underlying error; got {contexts}"
+            blob = " ".join(
+                f"{e['message']} {e.get('context_json', '')}" for e in errors)
+            assert "UNKNOWN" in blob, (
+                f"the alert must name the UNKNOWN outcome; got {blob[:200]}"
+            )
+            assert "disconnected" in blob.lower(), (
+                f"the alert must include the underlying error; got {blob[:200]}"
             )
         finally:
             gw.stop()
 
     def test_halt_event_is_written_before_returning(self, journal):
         """The alert must land before the caller acts on the result."""
-        mt5 = FakeMT5(behaviour=BEHAVIOUR_HANG_THEN_RECONCILE_FAILS)
+        mt5 = FakeMT5(behaviour=BEHAVIOUR_TIMEOUT_THEN_EXECUTE)
+        mt5.positions_get = _raise("terminal disconnected mid-reconcile")
+        mt5.history_orders_get = _raise("history unavailable")
+
         gw = make_gateway(mt5, journal)
         try:
             result = gw.send_order({"symbol": "EURUSD", "volume": 0.01,
