@@ -28,6 +28,8 @@ try:
 except Exception:
     pass
 
+from scripts.secret_scan import DECLARED_CANARIES
+
 # Keys whose values are genuine secrets. MT5_LOGIN is an account number, not a
 # credential: it appears in test fixtures by design, and treating it as a secret
 # would report the repo as never clean.
@@ -48,6 +50,7 @@ SYNTHETIC_TEST_VALUES = frozenset({
     "YOUR_MT5_PASSWORD",
     "your_password",
     "YOUR_OPENROUTER_KEY",
+    "YOUR_KEY_HERE",
     "changeme",
     # Scrub markers left by a secret-removal rewrite.
     "***REMOVED-MT5_PASSWORD***",
@@ -58,6 +61,17 @@ SYNTHETIC_TEST_VALUES = frozenset({
     "000000000",
     "123456789",
 })
+
+# Canaries are imported from the scanner rather than duplicated here, so the
+# audit, the allowlist and the scanner's self-test cannot disagree.
+_CANARY_VALUES = set(DECLARED_CANARIES)
+
+# Union of the shapes we can justify: declared canaries, documented
+# placeholders, scrub markers and fixed-width dummy account numbers.
+# Anything outside this set is treated as a real credential.
+SYNTHETIC_TEST_VALUES = frozenset(
+    set(SYNTHETIC_TEST_VALUES) | set(_CANARY_VALUES)
+)
 
 # Synthetic values that must never be treated as safe regardless of where they
 # appear. This is the escape hatch, not the rule: a real credential is a leak
