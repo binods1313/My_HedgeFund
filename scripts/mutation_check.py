@@ -191,12 +191,13 @@ MUTATIONS: list[Mutation] = [
         ],
     ),
     Mutation(
+        # These two originally disabled the blocking-skip branch. That branch
+        # moved into CheckLog.blocking_checks, so they now target the property
+        # that decides which skips count.
         name="M13: a skipped check counts as a pass",
         target="scripts/demo_verification.py",
-        old="""        if self.has_skips or not self.checks:
-            return VERDICT_INCOMPLETE""",
-        new="""        if False:
-            return VERDICT_INCOMPLETE""",
+        old="""        return [c for c in self.checks if c.blocking]""",
+        new="""        return list(self.checks)""",
         expect_fail=[
             "tests/test_demo_verification.py::TestVerdictNeverPassesWithSkips::test_one_skip_gives_incomplete",
             "tests/test_demo_verification.py::TestSymbolDiscovery::test_missing_class_makes_verdict_incomplete",
@@ -205,7 +206,7 @@ MUTATIONS: list[Mutation] = [
     Mutation(
         name="M14: empty check log counts as a pass",
         target="scripts/demo_verification.py",
-        old="""        if self.has_skips or not self.checks:
+        old="""        if self.has_skips or not self.blocking_checks:
             return VERDICT_INCOMPLETE""",
         new="""        if self.has_skips:
             return VERDICT_INCOMPLETE""",
