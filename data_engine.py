@@ -60,6 +60,39 @@ def _classify_symbol(sym_info) -> str:
     return "Unclassified"
 
 
+def get_symbol_info_safe(symbol) -> dict | None:
+    """Fetch a symbol's trade specification as a plain dict.
+
+    Returns None when the symbol is unknown or MT5 is unavailable, so callers
+    can treat "no spec" as unknown rather than substituting defaults. The tick
+    value and tick size come from here: they are needed to convert a
+    price distance into account currency, and guessing them would produce a
+    risk figure that looks computed but is invented.
+    """
+    if not symbol:
+        return None
+    try:
+        if not initialize_mt5():
+            return None
+        info = mt5.symbol_info(symbol)
+    except Exception:
+        return None
+
+    if info is None:
+        return None
+
+    return {
+        "name": getattr(info, "name", symbol),
+        "digits": getattr(info, "digits", None),
+        "point": getattr(info, "point", None),
+        "trade_tick_value": getattr(info, "trade_tick_value", None),
+        "trade_tick_size": getattr(info, "trade_tick_size", None),
+        "volume_min": getattr(info, "volume_min", None),
+        "volume_max": getattr(info, "volume_max", None),
+        "volume_step": getattr(info, "volume_step", None),
+    }
+
+
 def get_available_symbols() -> dict:
     """Dynamically fetches and categorises available instruments from MT5.
 

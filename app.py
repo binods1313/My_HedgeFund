@@ -19,8 +19,18 @@ from formatting import (
     format_margin_level,
     format_money,
     format_open_risk,
-    mask_account,
 )
+from metrics import (
+    NO_SCORE,
+    compute_open_risk,
+    format_llm_confidence,
+    format_net_open_pnl,
+    format_risk_colour,
+    gross_exposure,
+    net_open_pnl,
+    net_open_pnl_colour,
+)
+from formatting import mask_account
 
 st.set_page_config(
     page_title="AI Hedge Fund Command Center",
@@ -602,10 +612,10 @@ now_str = datetime.now().strftime("%H:%M:%S")
 open_pos = get_open_positions() if mt5_connected else []
 # Sum the signed P&L of open positions. Using abs() here discarded the sign, so
 # a portfolio sitting on a EUR 10 loss was reported as "+EUR 10.19" in green.
-open_pnl = sum(p["profit"] for p in open_pos) if open_pos else 0.0
-# Gross exposure is the magnitude regardless of direction: what the account is
-# exposed to if every open position moved against it by this much.
-open_risk = sum(abs(p["profit"]) for p in open_pos) if open_pos else 0.0
+# The computation itself lives in metrics.py so it can be tested directly;
+# app.py only supplies data and renders the result.
+open_pnl = net_open_pnl(open_pos)
+gross_exposure_amount = gross_exposure(open_pos)
 margin_used = telemetry.get("margin", 0.0)
 margin_free = telemetry.get("margin_free", 0.0)
 sym_for_strip = st.session_state.ai_state["symbol"]
@@ -617,7 +627,21 @@ tick_time = strip_quote.get("time", "--") if strip_quote else "--"
 # This account is denominated in EUR, so they read 20.51 EUR, not $20.51.
 _margin_used_str = format_money(margin_used, _currency)
 _margin_free_str = format_money(margin_free, _currency)
-_open_pnl_str = format_open_risk(open_pnl, _currency)
+_open_pnl_str = format_net_open_pnl(open_pos, _currency)
+_open_pnl_colour = net_open_pnl_colour(open_pos)
+
+# Risk is entry-to-stop exposure, not P&L. A book showing profit can still
+# carry substantial risk, so the two are displayed as different things.
+_open_risk = compute_open_risk(
+    open_pos,
+    {p["symbol"]: get_symbol_info_safe(p["symbol"]) for p in open_pos},
+    telemetry.get("equity", 0.0),
+    _currency,
+)
+_open_risk_str = _open_risk.risk_pct_display()
+_open_risk_amount_str = _open_risk.total_risk_display()
+_open_risk_colour = format_risk_colour(_open_risk)
+_open_risk_unprotected = _open_risk.unprotected_count
 
 st.markdown(f"""
 <div class="info-strip">
@@ -643,7 +667,13 @@ st.markdown(f"""
   <div class="strip-divider"></div>
   <div class="strip-item">
     <div><div class="strip-label">Open P&amp;L ({_currency})</div>
-    <div class="strip-value" style="color:{'#F43F5E' if open_pnl<0 else '#34D399'};">{_open_pnl_str}</div></div>
+    <div class="strip-value" style="color:{_open_pnl_colour};">{_open_pnl_str}</div></div>
+  </div>
+  <div class="strip-divider"></div>
+  <div class="strip-item">
+    <div><div class="strip-label">Open Risk ({_currency})</div>
+    <div class="strip-value" style="color:{_open_risk_colour};">{_open_risk_str}</div>
+    <div class="strip-sub">{_open_risk_amount_str} to stop{"" if not _open_risk_unprotected else f" &middot; {_open_risk_unprotected} UNPROTECTED"}</div></div>
   </div>
   <div class="strip-divider"></div>
   <div class="strip-item">
@@ -764,9 +794,12 @@ with col_c:
     rr = st.session_state.ai_state["risk_reward"]
     rationale = st.session_state.ai_state["reasoning"]
 
-    dec_class = dec.lower()
-    badge_cls = {"BUY": "green", "SELL": "red", "HOLD": "amber"}.get(dec, "neutral")
-    str_cls = {"VERY STRONG": "cyan", "STRONG": "green", "MODERATE": "amber", "NEUTRAL": "neutral"}.get(strength, "neutral")
+dec_class = dec.lower()
+badge_cls = {"BUY": "green", "SELL": "red", "HOLD": "amber"}.get(dec, "neutral")
+str_cls = {"VERY STRONG": "cyan", "STRONG": "green", "MODERATE": "amber", "NEUTRAL": "neutral"}.get(strength, "neutral")
+
+# A safety HOLD produces no confidence at all, so nothing numeric is rendered.
+conf_display = format_llm_confidence(conf, dec)
 
     st.markdown(f"""
     <div class="reactor-wrap">
@@ -776,8 +809,9 @@ with col_c:
       <div class="badge-row">
         <span class="badge {str_cls}">AI SIGNAL &middot; {strength}</span>
         <span class="badge neutral" title="Asserted by the LLM for display only. This is not a
-              computed confidence score and is never used as an execution gate.">LLM-ASSERTED
-              (legacy, not an execution gate) {conf}%</span>
+              computed confidence score and is never used as an execution gate.
+              A HOLD carries no score at all, shown as n/a.">LLM-ASSERTED
+              (legacy, not an execution gate) {conf_display}</span>
       </div>
       <div class="stat-pills">
         <div class="stat-pill"><div class="stat-pill-label">Target</div><div class="stat-pill-value">{sel_sym}</div></div>

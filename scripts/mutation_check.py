@@ -487,32 +487,132 @@ def _unused_is_synthetic(value: str) -> bool:""",
         ],
     ),
     Mutation(
+        # F1.3: these three originally mutated inline code in app.py and were
+        # checked by tests that read app.py's source text. The computations now
+        # live in metrics.py and are tested by calling them, so the mutations
+        # target metrics.py and the behaviour tests.
         name="M35: open P&L sign discarded (loss shown as gain)",
-        target="app.py",
-        old="""open_pnl = sum(p["profit"] for p in open_pos) if open_pos else 0.0""",
-        new="""open_pnl = sum(abs(p["profit"]) for p in open_pos) if open_pos else 0.0""",
+        target="metrics.py",
+        old="""    return sum(_finite(p.get("profit"), 0.0) for p in positions or [])""",
+        new="""    return sum(abs(_finite(p.get("profit"), 0.0)) for p in positions or [])""",
         expect_fail=[
-            # Must target the test that reads app.py's source. The earlier test
-            # recomputed the sum locally and passed regardless of app.py.
-            "tests/test_formatting_and_mode.py::TestOpenPnlSignPreservation::test_app_sums_signed_profit_not_absolute",
+            "tests/test_metrics.py::TestNetOpenPnl::test_losses_sum_to_a_negative_total",
         ],
     ),
     Mutation(
-        name="M36: signed P&L relabelled as 'Open Risk'",
-        target="app.py",
-        old="""Open P&amp;L ({_currency})""",
-        new="""Open Risk ({_currency})""",
+        name="M36: P&L colour logic inverted (profit renders red)",
+        target="metrics.py",
+        old="""    return "#F43F5E" if net_open_pnl(positions) < 0 else "#34D399\"""",
+        new="""    return "#F43F5E" if net_open_pnl(positions) > 0 else "#34D399\"""",
         expect_fail=[
-            "tests/test_formatting_and_mode.py::TestOpenPnlSignPreservation::test_app_does_not_label_the_signed_value_as_risk",
+            "tests/test_metrics.py::TestNetOpenPnl::test_loss_colour_is_red",
         ],
     ),
     Mutation(
         name="M37: open P&L colour inverts the risk signal",
-        target="app.py",
-        old="""{'#F43F5E' if open_pnl<0 else '#34D399'}""",
-        new="""{'#F43F5E' if open_pnl>0 else '#34D399'}""",
+        target="metrics.py",
+        old="""    return "#F43F5E" if net_open_pnl(positions) < 0 else "#34D399\"""",
+        new="""    return "#F43F5E" if net_open_pnl(positions) > 0 else "#34D399\"""",
         expect_fail=[
-            "tests/test_formatting_and_mode.py::TestOpenPnlSignPreservation::test_app_colours_a_loss_red",
+            "tests/test_metrics.py::TestNetOpenPnl::test_profit_colour_is_green",
+        ],
+    ),
+    Mutation(
+        name="M38: hidden symbols skipped again (no symbol_select activation)",
+        target="scripts/demo_verification.py",
+        old="""    for sym in hidden_candidates:
+        name, reason = _probe_symbol(mt5_mod, sym, select=True)
+        if name:
+            return name, \"\"""",
+        new="""    for sym in hidden_candidates:
+        continue""",
+        expect_fail=[
+            "tests/test_demo_verification.py::TestHiddenSymbolDiscovery::test_hidden_forex_symbol_is_activated_and_picked",
+            "tests/test_demo_verification.py::TestHiddenSymbolDiscovery::test_hidden_indices_symbol_is_discovered",
+        ],
+    ),
+    Mutation(
+        name="M39: symbol_select never called when probing a hidden symbol",
+        target="scripts/demo_verification.py",
+        old="""        try:
+            mt5_mod.symbol_select(name, True)
+        except Exception:
+            pass""",
+        new="""        pass""",
+        expect_fail=[
+            "tests/test_demo_verification.py::TestHiddenSymbolDiscovery::test_hidden_symbol_unlocks_a_tick",
+        ],
+    ),
+    Mutation(
+        name="M40: HOLD confidence restored to a fabricated 60",
+        target="ai_brain.py",
+        old="""    "decision": "HOLD",
+    "confidence": None,""",
+        new="""    "decision": "HOLD",
+    "confidence": 60,""",
+        expect_fail=[
+            "tests/test_metrics.py::TestSafeHoldCarriesNoConfidence::test_safe_hold_confidence_is_none",
+            "tests/test_metrics.py::TestSafeHoldCarriesNoConfidence::test_every_fail_safe_path_has_no_confidence",
+        ],
+    ),
+    Mutation(
+        name="M41: HOLD badge renders a numeric confidence",
+        target="metrics.py",
+        old="""    if decision and str(decision).upper() == "HOLD":
+        return NO_SCORE""",
+        new="""    if False:
+        return NO_SCORE""",
+        expect_fail=[
+            "tests/test_metrics.py::TestFormatLlmConfidence::test_hold_shows_no_score",
+            "tests/test_metrics.py::TestFormatLlmConfidence::test_hold_ignores_any_numeric_value",
+        ],
+    ),
+    Mutation(
+        name="M42: open risk computed from P&L instead of entry-to-stop",
+        target="metrics.py",
+        old="""            if tick_value > 0 and tick_size > 0:
+                ticks = abs(entry - sl) / tick_size
+                risk_amount = ticks * tick_value * volume
+                protected = True""",
+        new="""            if tick_value > 0 and tick_size > 0:
+                risk_amount = abs(_finite(pos.get("profit"), 0.0))
+                protected = True""",
+        expect_fail=[
+            "tests/test_metrics.py::TestComputeOpenRisk::test_risk_is_distance_from_entry_to_stop",
+            "tests/test_metrics.py::TestComputeOpenRisk::test_risk_is_independent_of_profit",
+        ],
+    ),
+    Mutation(
+        name="M43: unprotected position folded in as zero risk",
+        target="metrics.py",
+        old="""        if not protected:
+            unprotected.append(row)""",
+        new="""        if False:
+            unprotected.append(row)""",
+        expect_fail=[
+            "tests/test_metrics.py::TestUnprotectedPositions::test_position_without_sl_is_unprotected",
+            "tests/test_metrics.py::TestUnprotectedPositions::test_unprotected_is_counted_separately_not_as_zero_risk",
+        ],
+    ),
+    Mutation(
+        name="M44: unknown risk shown as calm green instead of amber",
+        target="metrics.py",
+        old="""    if summary.has_unprotected:
+        return "#F59E0B"   # amber""",
+        new="""    if False:
+        return "#F59E0B"   # amber""",
+        expect_fail=[
+            "tests/test_metrics.py::TestRiskColour::test_unprotected_positions_are_amber",
+        ],
+    ),
+    Mutation(
+        name="M45: net open P&L sums magnitudes again",
+        target="metrics.py",
+        old="""    return sum(_finite(p.get("profit"), 0.0) for p in positions or [])""",
+        new="""    return sum(abs(_finite(p.get("profit"), 0.0)) for p in positions or [])""",
+        expect_fail=[
+            "tests/test_metrics.py::TestNetOpenPnl::test_a_loss_is_never_rendered_as_a_gain",
+            "tests/test_metrics.py::TestNetOpenPnl::test_losses_sum_to_a_negative_total",
         ],
     ),
 ]
