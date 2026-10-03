@@ -47,10 +47,25 @@ from engine.journal import (
     STATE_PAUSED,
     Journal,
 )
-from engine.risk import RiskEngine
+from engine.risk import AccountState, OrderIntent, RiskEngine, RiskLimits
 from engine.state import StateMachine
 
 REPO_ROOT = __import__("pathlib").Path(__file__).resolve().parent.parent.parent
+
+
+def order_intent(volume=0.10, entry=1.10000, sl=1.09500, spread=None):
+    """A minimal valid intent. 0.10 lots at 50 pips is 50 of risk on 100k."""
+    return OrderIntent(symbol="EURUSD", side="BUY", volume=volume,
+                       entry_price=entry, stop_loss=sl,
+                       tick_value=1.0, tick_size=0.00001, spread_points=spread)
+
+
+def account_state(**overrides):
+    data = dict(equity=100_000.0, start_of_day_equity=100_000.0,
+                peak_equity=100_000.0, open_trade_count=0,
+                total_open_risk=0.0, unprotected_positions=0)
+    data.update(overrides)
+    return AccountState(**data)
 
 
 class StubTick:
@@ -80,33 +95,56 @@ def ticks(symbol):
 # Risk gate
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestPhase1RiskGate:
-    """Phase 1 blocks everything. That is the safe default, not an omission."""
+class TestRiskGateIsNowReal:
+    """Phase 2 replaced the stub with real limits.
 
-    def test_approves_nothing(self, journal):
+    The Phase 1 stub rejected everything, which was correct for a phase with no
+    strategies. It asserted that behaviour deliberately; these tests replace it
+    now that the gate has a purpose.
+
+    The full limit coverage lives in tests/test_engine/test_risk.py. This module
+    checks only that the executor and the gate are wired together, so a
+    disconnected risk check cannot slip through unnoticed.
+    """
+
+    def test_risk_engine_is_implemented(self, journal):
         risk = RiskEngine(journal)
-        decision = risk.evaluate(symbol="EURUSD", side="BUY", volume=0.01,
-                                 sl=1.09500)
+        assert risk.status()["phase1_stub"] is False
+        assert risk.status()["blocks_all_orders"] is False
+
+    def test_approves_a_trade_inside_the_limits(self, journal):
+        risk = RiskEngine(journal)
+        decision = risk.evaluate(
+            order_intent(),
+            account_state(),
+        )
+        assert decision.approved is True, f"violations: {decision.violations}"
+
+    def test_blocks_a_trade_outside_the_limits(self, journal):
+        risk = RiskEngine(journal)
+        decision = risk.evaluate(
+            order_intent(volume=5.0),   # 5x the base risk
+            account_state(),
+        )
         assert decision.approved is False
-        assert decision.reasons, "a rejection must state why"
-        assert bool(decision) is False
+        assert decision.violations
 
-    def test_can_submit_is_false(self, journal):
+    def test_executor_refuses_an_unapproved_order(self, journal):
+        """The executor must still consult the gate, not just hold a reference."""
+        ex = PaperExecutor(journal=journal, tick_provider=ticks)
+        request = ex.prepare_order("EURUSD", "BUY", 0.10, 1.09500)
+        with pytest.raises(ExecutionRejected) as excinfo:
+            ex.submit(request, risk_approved=False)
+        assert "risk gate" in str(excinfo.value)
+
+    def test_limits_come_from_config(self, journal):
         risk = RiskEngine(journal)
-        assert risk.can_submit(symbol="EURUSD", side="BUY", volume=0.01,
-                               sl=1.09500) is False
-
-    def test_status_reports_the_stub(self, journal):
-        status = RiskEngine(journal).status()
-        assert status["phase1_stub"] is True
-        assert status["blocks_all_orders"] is True
-
-    def test_every_rejection_is_recorded(self, journal):
-        risk = RiskEngine(journal)
-        risk.evaluate(symbol="EURUSD", side="BUY", volume=0.01, sl=1.09500)
-        rows = journal.query("SELECT * FROM risk_decisions")
-        assert rows, "risk decisions must be journaled"
-        assert rows[-1]["approved"] == 0
+        status = risk.status()
+        assert status["limits"]["risk_per_trade_pct"] == 1.0
+        assert status["limits"]["daily_loss_limit_pct"] == 3.0
+        assert status["limits"]["max_drawdown_pct"] == 10.0
+        assert status["limits"]["max_open_trades"] == 5
+        assert status["limits"]["max_total_exposure_pct"] == 10.0
 
 
 # ─────────────────────────────────────────────────────────────────────────────

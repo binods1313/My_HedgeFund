@@ -861,6 +861,121 @@ from engine.gateway import Gateway, OrderOutcome, OrderResult""",
             "tests/test_engine/test_gateway.py::TestUninjectedGatewayResolvesMt5::test_read_helpers_do_not_touch_a_none_module",
         ],
     ),
+    # ─────────────────────────────────────────────────────────────────────────
+    # Phase 2: risk engine limits. Each limit must prove its test can fail.
+    # ─────────────────────────────────────────────────────────────────────────
+    Mutation(
+        name="M65: per-trade risk limit not enforced",
+        target="engine/risk.py",
+        old="""            check(within(risk_amount, equity * self.limits.risk_per_trade),""",
+        new="""            check(True,  # MUTATION: per-trade limit removed""",
+        expect_fail=[
+            "tests/test_engine/test_risk.py::TestPerTradeRisk::test_above_limit_is_blocked",
+            "tests/test_engine/test_risk.py::TestPerTradeRisk::test_a_hair_over_the_limit_is_still_refused",
+        ],
+    ),
+    Mutation(
+        name="M66: total exposure limit not enforced",
+        target="engine/risk.py",
+        old="""                check(within(projected, equity * self.limits.max_total_exposure),""",
+        new="""                check(True,  # MUTATION: exposure limit removed""",
+        expect_fail=[
+            "tests/test_engine/test_risk.py::TestTotalExposure::test_projected_over_limit_blocks",
+        ],
+    ),
+    Mutation(
+        name="M67: daily loss limit not enforced",
+        target="engine/risk.py",
+        old="""                check(within(loss_pct, self.limits.daily_loss_limit_pct),""",
+        new="""                check(True,  # MUTATION: daily loss limit removed""",
+        expect_fail=[
+            "tests/test_engine/test_risk.py::TestDailyLoss::test_beyond_limit_blocks",
+        ],
+    ),
+    Mutation(
+        name="M68: drawdown limit not enforced",
+        target="engine/risk.py",
+        old="""                check(within(drawdown_pct, self.limits.max_drawdown_pct),""",
+        new="""                check(True,  # MUTATION: drawdown limit removed""",
+        expect_fail=[
+            "tests/test_engine/test_risk.py::TestDrawdown::test_beyond_limit_blocks",
+        ],
+    ),
+    Mutation(
+        name="M69: open trade count limit not enforced",
+        target="engine/risk.py",
+        old="""        check(account.open_trade_count < self.limits.max_open_trades,""",
+        new="""        check(True,  # MUTATION: open trade limit removed""",
+        expect_fail=[
+            "tests/test_engine/test_risk.py::TestOpenTradeCount::test_at_limit_blocks",
+        ],
+    ),
+    Mutation(
+        name="M70: missing equity fails open instead of closed",
+        target="engine/risk.py",
+        old="""        check(has_equity,
+              "equity is unknown; percentages cannot be computed, so the "
+              "order is blocked rather than sized against an assumption")""",
+        new="""        check(True,  # MUTATION: unknown equity no longer blocks""",
+        expect_fail=[
+            "tests/test_engine/test_risk.py::TestFailClosed::test_missing_equity_blocks",
+            "tests/test_engine/test_risk.py::TestFailClosed::test_missing_equity_names_equity_and_its_consequences",
+        ],
+    ),
+    Mutation(
+        name="M71: unprotected positions no longer block",
+        target="engine/risk.py",
+        old="""        if account.unprotected_positions > 0:""",
+        new="""        if False:  # MUTATION: unprotected positions excused""",
+        expect_fail=[
+            "tests/test_engine/test_risk.py::TestUnprotectedPositions::test_any_unprotected_position_blocks",
+        ],
+    ),
+    Mutation(
+        name="M72: order without a stop loss is permitted",
+        target="engine/risk.py",
+        old="""        check(intent.has_stop,
+              "order has no stop loss, so its worst case is undefined")""",
+        new="""        check(True,  # MUTATION: missing stop permitted""",
+        expect_fail=[
+            "tests/test_engine/test_risk.py::TestFailClosed::test_order_without_stop_blocks",
+        ],
+    ),
+    Mutation(
+        name="M73: drawdown halt clears on the daily-loss path",
+        target="engine/risk.py",
+        old="""        if self.halt_kind != "daily_loss":
+            return""",
+        new="""        if False:
+            return""",
+        expect_fail=[
+            "tests/test_engine/test_risk.py::TestHalts::test_drawdown_halt_does_not_clear_automatically",
+            "tests/test_engine/test_risk.py::TestHalts::test_manual_halt_is_not_cleared_by_the_daily_path",
+        ],
+    ),
+    Mutation(
+        name="M74: spread limit not enforced",
+        target="engine/risk.py",
+        old="""            check(intent.spread_points <= cap,""",
+        new="""            check(True,  # MUTATION: spread limit removed""",
+        expect_fail=[
+            "tests/test_engine/test_risk.py::TestSpreadLimit::test_above_limit_blocks",
+            "tests/test_engine/test_risk.py::TestSpreadLimit::test_per_symbol_override_can_be_tighter",
+        ],
+    ),
+    Mutation(
+        name="M75: risk amount computed without tick conversion",
+        target="engine/risk.py",
+        old="""        return (abs(self.entry_price - self.stop_loss)
+                / self.tick_size
+                * self.tick_value
+                * self.volume)""",
+        new="""        return abs(self.entry_price - self.stop_loss) * self.volume""",
+        expect_fail=[
+            "tests/test_engine/test_risk.py::TestRiskAmount::test_risk_is_entry_to_stop_distance",
+            "tests/test_engine/test_risk.py::TestPerTradeRisk::test_base_risk_amount",
+        ],
+    ),
 ]
 
 
