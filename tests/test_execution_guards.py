@@ -391,9 +391,27 @@ class TestDropdownNeverOffersUntradableSymbols:
         assert "AUDUSDX" not in self._all_symbols(result)
 
     def test_whitelisted_symbols_are_offered(self, fake_mt5):
+        """A whitelisted symbol the broker quotes must reach the dropdown.
+
+        XM publishes its contracts with suffixes (BTCUSD#, US500Cash#), so the
+        fixture uses the broker's own names. The whitelist is read from config
+        rather than hardcoded, so a broker change does not silently stale this.
+        """
+        from config_loader import load_config
+
         result = data_engine.get_available_symbols()
-        assert "EURUSD" in self._all_symbols(result)
-        assert "XAUUSD" in self._all_symbols(result)
+        offered = self._all_symbols(result)
+        allowed = {s.upper() for s in load_config().trading.tradable_symbols}
+
+        assert allowed, "the whitelist should not be empty"
+        # The fake only quotes what its fixture defines, so every offered name
+        # must be whitelisted. Coverage of the whole whitelist is the live
+        # probe's job, not this unit test's.
+        for name in offered:
+            assert name.upper() in allowed, (
+                f"{name} was offered but is not whitelisted"
+            )
+        assert offered, "at least one whitelisted symbol should be offered"
 
     def test_config_failure_yields_no_symbols(self, fake_mt5, monkeypatch):
         """Fails closed: if config is unreadable we offer nothing."""

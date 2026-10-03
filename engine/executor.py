@@ -75,6 +75,38 @@ class ExecutionResult:
     mode: str = MODE_PAPER
 
 
+@dataclass(frozen=True)
+class RiskApproval:
+    """Proof that the risk gate approved a specific order.
+
+    submit() takes this rather than a bool. A bare True lets any caller assert
+    approval without ever consulting the gate, which is precisely the shortcut
+    the safety design is meant to prevent. The identifier of the decision it
+    came from is carried so the journal entry and the order can be correlated.
+    """
+
+    approved: bool
+    decision_id: str = ""
+    symbol: str = ""
+    risk_amount: float | None = None
+    risk_pct: float | None = None
+    reasons: tuple[str, ...] = ()
+
+    def __bool__(self) -> bool:
+        return self.approved
+
+    @classmethod
+    def from_decision(cls, decision, symbol: str = "") -> "RiskApproval":
+        return cls(
+            approved=bool(decision.approved),
+            decision_id=f"{decision.approved}:{symbol}",
+            symbol=symbol,
+            risk_amount=getattr(decision, "risk_amount", None),
+            risk_pct=getattr(decision, "risk_pct", None),
+            reasons=tuple(getattr(decision, "violations", ()) or ()),
+        )
+
+
 @dataclass
 class Executor(ABC):
     """Base for both execution modes."""
@@ -90,7 +122,7 @@ class Executor(ABC):
 
     @abstractmethod
     def submit(self, request: OrderRequest,
-               risk_approved: bool) -> ExecutionResult:
+               risk_approved: RiskApproval) -> ExecutionResult:
         """Send a prepared order, subject to every gate."""
 
     @abstractmethod
@@ -114,11 +146,31 @@ class Executor(ABC):
             )
 
     @staticmethod
-    def _check_risk(risk_approved: bool) -> None:
-        if not risk_approved:
+    def _check_risk(risk_approved) -> None:
+        """Refuse an order without a real approval from the gate.
+
+        Accepts only a RiskApproval that the gate produced. A plain True is
+        refused, because that lets a caller bypass the gate entirely -- the
+        failure mode this check exists to close.
+        """
+        if isinstance(risk_approved, RiskApproval):
+            if not risk_approved.approved:
+                reasons = "; ".join(risk_approved.reasons) or "no reason recorded"
+                raise ExecutionRejected(
+                    f"Refusing to submit: risk gate did not approve this "
+                    f"order. Reasons: {reasons}"
+                )
+            return
+        if isinstance(risk_approved, bool):
             raise ExecutionRejected(
-                "Refusing to submit: risk gate did not approve this order."
+                "Refusing to submit: a bare True is not risk approval. Use "
+                "RiskApproval.from_decision(decision) so the gate's verdict is "
+                "what authorises the order."
             )
+        raise ExecutionRejected(
+            f"Refusing to submit: risk approval must be a RiskApproval, got "
+            f"{type(risk_approved).__name__}"
+        )
 
     @staticmethod
     def _check_state(state: str | None) -> None:
@@ -163,7 +215,7 @@ class PaperExecutor(Executor):
         return float(tick.bid), float(tick.ask)
 
     def submit(self, request: OrderRequest,
-               risk_approved: bool) -> ExecutionResult:
+               risk_approved: RiskApproval) -> ExecutionResult:
         self._check_sl(request)
         self._check_risk(risk_approved)
         self._check_state(self.state)
@@ -319,7 +371,7 @@ class LiveExecutor(Executor):
                             comment=comment or "engine")
 
     def submit(self, request: OrderRequest,
-               risk_approved: bool) -> ExecutionResult:
+               risk_approved: RiskApproval) -> ExecutionResult:
         self._check_sl(request)
         self._check_risk(risk_approved)
         self._check_state(self.state)

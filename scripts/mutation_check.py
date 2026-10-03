@@ -180,12 +180,12 @@ MUTATIONS: list[Mutation] = [
         ],
     ),
     Mutation(
-        name="M12: dropdown offers Unclassified / non-whitelisted symbols",
+name="M12: dropdown offers Unclassified / non-whitelisted symbols",
         target="data_engine.py",
-        old="""        if sym.name.upper() not in allowed:
-            continue""",
-        new="""        if False:
-            continue""",
+        old="""            if sym.name.upper() not in allowed:
+                continue""",
+        new="""            if False:  # MUTATION: whitelist no longer applied
+                continue""",
         expect_fail=[
             "tests/test_execution_guards.py::TestDropdownNeverOffersUntradableSymbols::test_non_whitelisted_is_never_offered",
         ],
@@ -725,31 +725,36 @@ def _unused_is_synthetic(value: str) -> bool:""",
         ],
     ),
     Mutation(
-        name="M55: orders permitted without risk approval",
+name="M55: stop-loss check removed from the executor",
         target="engine/executor.py",
-        old="""        if not risk_approved:
+        old="""        if request.sl is None or request.sl <= 0:
             raise ExecutionRejected(
-                "Refusing to submit: risk gate did not approve this order."
+                f"Refusing to submit {request.side} {request.symbol}: no stop "
+                f"loss. Every order requires a broker-side SL."
             )""",
         new="""        if False:
-            raise ExecutionRejected(
-                "Refusing to submit: risk gate did not approve this order."
-            )""",
+            raise ExecutionRejected("unreachable in this mutation")""",
         expect_fail=[
-            "tests/test_engine/test_executor_commands.py::TestExecutorSafetyGates::test_unapproved_order_is_rejected",
+            "tests/test_engine/test_executor_commands.py::TestExecutorSafetyGates::test_order_without_sl_is_rejected[0]",
+            "tests/test_engine/test_executor_commands.py::TestExecutorSafetyGates::test_order_without_sl_is_rejected[None]",
         ],
     ),
     Mutation(
-        name="M56: Phase 1 risk stub approves everything",
+        # Originally disabled the Phase 1 stub that approved nothing. The stub
+        # is gone in Phase 2, so this now targets the property it stood in for:
+        # an order inside every limit must actually be approved. Without this,
+        # a gate that blocked everything would still satisfy the limit tests.
+        name="M56: gate refuses orders that are inside every limit",
         target="engine/risk.py",
-        old="""        if self.phase1_stub:
-            reasons.extend(PHASE1_BLOCK_REASONS)
-
-        decision = RiskDecision(approved=False, reasons=reasons)""",
-        new="""        decision = RiskDecision(approved=True, reasons=reasons)""",
+        old="""        return self._finish(intent, account, not violations, violations, reasons,
+                            risk_amount, risk_pct, projected_pct)""",
+        new="""        violations.append("MUTATION: refuse everything")
+        return self._finish(intent, account, False, violations, reasons,
+                            risk_amount, risk_pct, projected_pct)""",
         expect_fail=[
-            "tests/test_engine/test_executor_commands.py::TestPhase1RiskGate::test_approves_nothing",
-            "tests/test_engine/test_executor_commands.py::TestPhase1RiskGate::test_can_submit_is_false",
+            "tests/test_engine/test_risk.py::TestPerTradeRisk::test_within_limit_is_approved",
+            "tests/test_engine/test_risk.py::TestTotalExposure::test_within_limit_allows",
+            "tests/test_engine/test_executor_commands.py::TestRiskGateIsNowReal::test_approves_a_trade_inside_the_limits",
         ],
     ),
     Mutation(
@@ -859,6 +864,196 @@ from engine.gateway import Gateway, OrderOutcome, OrderResult""",
         return self.call("account_info", self._mt5.account_info)""",
         expect_fail=[
             "tests/test_engine/test_gateway.py::TestUninjectedGatewayResolvesMt5::test_read_helpers_do_not_touch_a_none_module",
+        ],
+    ),
+    # ─────────────────────────────────────────────────────────────────────────
+    # Phase 2: risk engine limits. Each limit must prove its test can fail.
+    # ─────────────────────────────────────────────────────────────────────────
+    Mutation(
+        name="M65: per-trade risk limit not enforced",
+        target="engine/risk.py",
+        old="""            check(within(risk_amount, equity * self.limits.risk_per_trade),""",
+        new="""            check(True,  # MUTATION: per-trade limit removed""",
+        expect_fail=[
+            "tests/test_engine/test_risk.py::TestPerTradeRisk::test_above_limit_is_blocked",
+            "tests/test_engine/test_risk.py::TestPerTradeRisk::test_a_hair_over_the_limit_is_still_refused",
+        ],
+    ),
+    Mutation(
+        name="M66: total exposure limit not enforced",
+        target="engine/risk.py",
+        old="""                check(within(projected, equity * self.limits.max_total_exposure),""",
+        new="""                check(True,  # MUTATION: exposure limit removed""",
+        expect_fail=[
+            "tests/test_engine/test_risk.py::TestTotalExposure::test_projected_over_limit_blocks",
+        ],
+    ),
+    Mutation(
+        name="M67: daily loss limit not enforced",
+        target="engine/risk.py",
+        old="""                check(within(loss_pct, self.limits.daily_loss_limit_pct),""",
+        new="""                check(True,  # MUTATION: daily loss limit removed""",
+        expect_fail=[
+            "tests/test_engine/test_risk.py::TestDailyLoss::test_beyond_limit_blocks",
+        ],
+    ),
+    Mutation(
+        name="M68: drawdown limit not enforced",
+        target="engine/risk.py",
+        old="""                check(within(drawdown_pct, self.limits.max_drawdown_pct),""",
+        new="""                check(True,  # MUTATION: drawdown limit removed""",
+        expect_fail=[
+            "tests/test_engine/test_risk.py::TestDrawdown::test_beyond_limit_blocks",
+        ],
+    ),
+    Mutation(
+        name="M69: open trade count limit not enforced",
+        target="engine/risk.py",
+        old="""        check(account.open_trade_count < self.limits.max_open_trades,""",
+        new="""        check(True,  # MUTATION: open trade limit removed""",
+        expect_fail=[
+            "tests/test_engine/test_risk.py::TestOpenTradeCount::test_at_limit_blocks",
+        ],
+    ),
+    Mutation(
+        name="M70: missing equity fails open instead of closed",
+        target="engine/risk.py",
+        old="""        check(has_equity,
+              "equity is unknown; percentages cannot be computed, so the "
+              "order is blocked rather than sized against an assumption")""",
+        new="""        check(True, "MUTATION: unknown equity no longer blocks")""",
+        expect_fail=[
+            "tests/test_engine/test_risk.py::TestFailClosed::test_missing_equity_blocks",
+            "tests/test_engine/test_risk.py::TestFailClosed::test_missing_equity_names_equity_and_its_consequences",
+        ],
+    ),
+    Mutation(
+        name="M71: unprotected positions no longer block",
+        target="engine/risk.py",
+        old="""        if account.unprotected_positions > 0:""",
+        new="""        if False:  # MUTATION: unprotected positions excused""",
+        expect_fail=[
+            "tests/test_engine/test_risk.py::TestUnprotectedPositions::test_any_unprotected_position_blocks",
+        ],
+    ),
+    Mutation(
+        name="M72: order without a stop loss is permitted",
+        target="engine/risk.py",
+        old="""        check(intent.has_stop,
+              "order has no stop loss, so its worst case is undefined")""",
+        new="""        check(True, "MUTATION: missing stop permitted")""",
+        expect_fail=[
+            "tests/test_engine/test_risk.py::TestFailClosed::test_order_without_stop_blocks",
+        ],
+    ),
+    Mutation(
+        name="M73: drawdown halt clears on the daily-loss path",
+        target="engine/risk.py",
+        old="""        if self.halt_kind != "daily_loss":
+            return""",
+        new="""        if False:
+            return""",
+        expect_fail=[
+            "tests/test_engine/test_risk.py::TestHalts::test_drawdown_halt_does_not_clear_automatically",
+            "tests/test_engine/test_risk.py::TestHalts::test_manual_halt_is_not_cleared_by_the_daily_path",
+        ],
+    ),
+    Mutation(
+        name="M74: spread limit not enforced",
+        target="engine/risk.py",
+        old="""            check(intent.spread_points <= cap,""",
+        new="""            check(True,  # MUTATION: spread limit removed""",
+        expect_fail=[
+            "tests/test_engine/test_risk.py::TestSpreadLimit::test_above_limit_blocks",
+            "tests/test_engine/test_risk.py::TestSpreadLimit::test_per_symbol_override_can_be_tighter",
+        ],
+    ),
+    Mutation(
+        name="M75: risk amount computed without tick conversion",
+        target="engine/risk.py",
+        old="""        return (abs(self.entry_price - self.stop_loss)
+                / self.tick_size
+                * self.tick_value
+                * self.volume)""",
+        new="""        return abs(self.entry_price - self.stop_loss) * self.volume""",
+        expect_fail=[
+            "tests/test_engine/test_risk.py::TestRiskAmount::test_risk_is_entry_to_stop_distance",
+            "tests/test_engine/test_risk.py::TestPerTradeRisk::test_base_risk_amount",
+        ],
+    ),
+    # ─────────────────────────────────────────────────────────────────────────
+    # Phase 2: gate wiring. These prove the executor cannot bypass the gate.
+    # ─────────────────────────────────────────────────────────────────────────
+    Mutation(
+        name="M76: executor accepts a bare True as risk approval",
+        target="engine/executor.py",
+        old="""        if isinstance(risk_approved, bool):
+            raise ExecutionRejected(
+                "Refusing to submit: a bare True is not risk approval. Use "
+                "RiskApproval.from_decision(decision) so the gate's verdict is "
+                "what authorises the order."
+            )""",
+        new="""        if isinstance(risk_approved, bool):
+            if risk_approved:
+                return
+            raise ExecutionRejected(
+                "Refusing to submit: the risk gate did not approve this order."
+            )""",
+        expect_fail=[
+            "tests/test_engine/test_risk_wiring.py::TestApprovalMustComeFromTheGate::test_bare_true_is_refused",
+            "tests/test_engine/test_risk_wiring.py::TestApprovalMustComeFromTheGate::test_other_truthy_values_are_refused[1]",
+        ],
+    ),
+    Mutation(
+        name="M77: risk approval check removed entirely",
+        target="engine/executor.py",
+        old="""        if isinstance(risk_approved, RiskApproval):
+            if not risk_approved.approved:""",
+        new="""        if False:
+            if not risk_approved.approved:""",
+        expect_fail=[
+            "tests/test_engine/test_risk_wiring.py::TestApprovalMustComeFromTheGate::test_a_refusal_object_blocks",
+        ],
+    ),
+    Mutation(
+        name="M78: a position without a stop counted as zero risk",
+        target="engine/risk.py",
+        old="""            if stop <= 0 or entry <= 0 or not tick_value or not tick_size:
+                unprotected += 1
+                continue""",
+        new="""            if stop <= 0 or entry <= 0 or not tick_value or not tick_size:
+                continue""",
+        expect_fail=[
+            "tests/test_engine/test_risk_wiring.py::TestAccountStateFromPositions::test_position_without_a_stop_is_unprotected",
+            "tests/test_engine/test_risk_wiring.py::TestUnprotectedBlocksEverything::test_the_live_situation_would_block",
+        ],
+    ),
+    Mutation(
+        name="M79: another magic number's position assumed measurable",
+        target="engine/risk.py",
+        old="""            if magic is not None and int(magic) != self.magic:
+                unprotected += 1
+                continue""",
+        new="""            if False:
+                unprotected += 1
+                continue""",
+        expect_fail=[
+            "tests/test_engine/test_risk_wiring.py::TestAccountStateFromPositions::test_another_magic_number_is_unprotected",
+        ],
+    ),
+    Mutation(
+        name="M80: intent built without the broker tick spec",
+        target="engine/risk.py",
+        old="""        spec = self._spec_for(symbol)
+        if not spec:
+            raise RiskConfigError(
+                f"{symbol}: no trade specification known for this symbol; "
+                f"run probe_tick_specs.py before sizing it"
+            )""",
+        new="""        spec = self._spec_for(symbol) or {"trade_tick_value": 1.0,
+                                          "trade_tick_size": 0.00001}""",
+        expect_fail=[
+            "tests/test_engine/test_risk_wiring.py::TestBuildOrderIntent::test_unknown_symbol_is_refused",
         ],
     ),
 ]
