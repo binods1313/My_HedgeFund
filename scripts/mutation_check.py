@@ -676,26 +676,38 @@ def _unused_is_synthetic(value: str) -> bool:""",
     # Phase 1 engine safety rules (design doc section 9)
     # ─────────────────────────────────────────────────────────────────────────
     Mutation(
-        name="M52: PAPER no longer the default mode",
+        # Mutating this repo's own config.yaml proves nothing: the guard is that
+        # an ABSENT mode falls back to PAPER. An earlier version flipped the
+        # literal to LIVE and no test failed, which showed the test was not
+        # guarding the default at all.
+        name="M52: absent mode defaults to LIVE instead of PAPER",
+        target="engine/config.py",
+        old="""    mode = str(raw.get("mode", MODE_PAPER)).upper()""",
+        new="""    mode = str(raw.get("mode", MODE_LIVE)).upper()""",
+        expect_fail=[
+            "tests/test_engine/test_executor_commands.py::TestEngineConfig::test_mode_defaults_to_paper_when_absent",
+        ],
+    ),
+    Mutation(
+        name="M52b: repo config.yaml declares LIVE",
         target="config.yaml",
         old="""mode: PAPER""",
         new="""mode: LIVE""",
         expect_fail=[
-            "tests/test_engine/test_executor_commands.py::TestEngineConfig::test_mode_defaults_to_paper_when_absent",
-            "tests/test_engine/test_executor_commands.py::TestModeSelection::test_paper_is_the_default",
+            "tests/test_engine/test_executor_commands.py::TestEngineConfig::test_loads_the_real_config_is_paper",
         ],
     ),
     Mutation(
         name="M53: LIVE constructible from the config flag alone",
         target="engine/executor.py",
-        old="""        if mode == MODE_LIVE:
+        old="""    if mode == MODE_LIVE:
         if not live_confirmed:
-                raise ExecutionRejected(
-                    "Refusing to construct a LiveExecutor: live confirmation has "
-                    "not been supplied."
-                )""",
-        new="""        if mode == MODE_LIVE:
-            pass""",
+            raise ExecutionRejected(
+                "Refusing to construct a LiveExecutor: live confirmation has "
+                "not been supplied."
+            )""",
+        new="""    if mode == MODE_LIVE:
+        pass""",
         expect_fail=[
             "tests/test_engine/test_executor_commands.py::TestModeSelection::test_live_requires_confirmation",
         ],

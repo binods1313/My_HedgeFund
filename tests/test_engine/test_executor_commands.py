@@ -430,6 +430,19 @@ class TestEngineConfig:
         cfg = load_engine_config(root=REPO_ROOT)
         assert cfg.mode in (MODE_PAPER, MODE_LIVE)
 
+    def test_loads_the_real_config_is_paper(self):
+        """The shipped config must be PAPER.
+
+        Phase 1 is PAPER-only in practice. A config.yaml that declared LIVE
+        would mean live trading was one edit away without the confirmation
+        gate being exercised, so it is pinned here.
+        """
+        cfg = load_engine_config(root=REPO_ROOT)
+        assert cfg.mode == MODE_PAPER, (
+            "config.yaml must declare PAPER; LIVE requires both the flag and "
+            "an operator confirmation, and Phase 1 has no strategies to trade"
+        )
+
     def test_db_path_is_absolute(self):
         cfg = load_engine_config(root=REPO_ROOT)
         assert cfg.db_path.is_absolute(), (
