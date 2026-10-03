@@ -27,12 +27,22 @@ sys.path.insert(0, str(_REPO_ROOT))
 
 from engine.config import read_mt5_credentials
 
-# The primary symbols the Risk Engine will size against, grouped by asset class.
-# These are the whitelist entries that actually quote on this broker.
+# Every symbol in trading.tradable_symbols, so a whitelist entry is never left
+# unverified. Names the broker does not offer are reported as unavailable,
+# which is itself the answer: those must be corrected or removed from the
+# whitelist before they can be sized.
+#
+# Keep in step with config.yaml; a test fails if the two drift apart.
 DEFAULT_SYMBOLS = [
-    "EURUSD", "GBPUSD", "USDJPY", "USDCAD", "USDCHF", "AUDUSD",
-    "XAUUSD", "XAGUSD",
-    "US30", "USTEC", "US500",
+    # Forex majors and crosses
+    "EURUSD", "GBPUSD", "USDJPY", "USDCAD", "USDCHF",
+    "AUDUSD", "NZDUSD", "EURGBP", "EURJPY", "GBPJPY",
+    # Metals and energy
+    "XAUUSD", "XAGUSD", "XTIUSD", "XBRUSD",
+    # Indices
+    "US30", "USTEC", "US500", "NAS100", "GER40", "UK100",
+    # Crypto
+    "BTCUSD", "ETHUSD",
 ]
 
 # Fields the engine needs, and what each is used for.
@@ -177,8 +187,23 @@ def main(argv: list[str] | None = None) -> int:
         print("          whitelist or find the correct broker symbol name.")
         return 1
 
-    print("  RESULT: OK - every available symbol reports both tick fields,")
-    print("          so the Risk Engine can size an order against them.")
+    if missing_symbol:
+        # A whitelisted symbol the broker does not offer cannot be traded. It
+        # would fail at order time with an opaque error, so it is reported as a
+        # configuration problem rather than a pass.
+        print(f"  RESULT: FAIL - {len(missing_symbol)} whitelisted symbol(s) are")
+        print("          not offered by this broker:")
+        for name in missing_symbol:
+            print(f"            {name}")
+        print()
+        print("          The Risk Engine cannot size these, and an order for one")
+        print("          would fail at the broker. Correct the name to the broker's")
+        print("          own symbol, or remove it from trading.tradable_symbols in")
+        print("          config.yaml.")
+        return 1
+
+    print("  RESULT: OK - every whitelisted symbol reports both tick fields,")
+    print("          so the Risk Engine can size an order against all of them.")
     return 0
 
 

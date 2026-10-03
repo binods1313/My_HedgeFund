@@ -38,6 +38,7 @@ from engine.executor import (
     LiveExecutor,
     OrderRequest,
     PaperExecutor,
+    RiskApproval,
     build_executor,
 )
 from engine.journal import (
@@ -66,6 +67,24 @@ def account_state(**overrides):
                 total_open_risk=0.0, unprotected_positions=0)
     data.update(overrides)
     return AccountState(**data)
+
+
+def approve(intent=None, journal=None, **account_overrides):
+    """Run the real risk gate and return its approval.
+
+    Tests go through the gate rather than asserting a boolean, so a change to
+    the limits cannot leave the executor tests passing against a fabricated
+    approval.
+    """
+    risk = RiskEngine(journal)
+    target = intent or order_intent()
+    decision = risk.evaluate(target, account_state(**account_overrides))
+    return RiskApproval.from_decision(decision, target.symbol)
+
+
+def refuse(**account_overrides):
+    """An approval object carrying a refusal, as the gate would produce."""
+    return RiskApproval(approved=False, reasons=("test refusal",))
 
 
 class StubTick:
@@ -134,7 +153,7 @@ class TestRiskGateIsNowReal:
         ex = PaperExecutor(journal=journal, tick_provider=ticks)
         request = ex.prepare_order("EURUSD", "BUY", 0.10, 1.09500)
         with pytest.raises(ExecutionRejected) as excinfo:
-            ex.submit(request, risk_approved=False)
+            ex.submit(request, risk_approved=refuse())
         assert "risk gate" in str(excinfo.value)
 
     def test_limits_come_from_config(self, journal):
@@ -161,7 +180,7 @@ class TestPaperExecutor:
         ex = self._executor(journal)
         result = ex.submit(
             ex.prepare_order("EURUSD", "BUY", 0.01, 1.09500),
-            risk_approved=True)
+            risk_approved=approve())
         assert result.ok is True
         assert result.ticket is not None
         assert result.price == pytest.approx(1.10002)   # ask for a BUY
@@ -171,13 +190,13 @@ class TestPaperExecutor:
         ex = self._executor(journal)
         result = ex.submit(
             ex.prepare_order("EURUSD", "SELL", 0.01, 1.10500),
-            risk_approved=True)
+            risk_approved=approve())
         assert result.price == pytest.approx(1.10000)   # bid for a SELL
 
     def test_close_reduces_to_zero_positions(self, journal):
         ex = self._executor(journal)
         fill = ex.submit(ex.prepare_order("EURUSD", "BUY", 0.01, 1.09500),
-                         risk_approved=True)
+                         risk_approved=approve())
         closed = ex.close(fill.ticket)
         assert closed.ok is True
         assert journal.open_position_count() == 0
@@ -191,7 +210,7 @@ class TestPaperExecutor:
     def test_stop_loss_closes_the_position(self, journal):
         ex = self._executor(journal)
         fill = ex.submit(ex.prepare_order("EURUSD", "BUY", 0.01, 1.10500),
-                         risk_approved=True)
+                         risk_approved=approve())
         # Price falls through the stop.
         ex.tick_provider = lambda s: StubTick(bid=1.09000, ask=1.09002)
         closed = ex.on_tick("EURUSD")
@@ -201,7 +220,7 @@ class TestPaperExecutor:
     def test_take_profit_closes_the_position(self, journal):
         ex = self._executor(journal)
         fill = ex.submit(ex.prepare_order("EURUSD", "BUY", 0.01, 1.09500, tp=1.10500),
-                         risk_approved=True)
+                         risk_approved=approve())
         ex.tick_provider = lambda s: StubTick(bid=1.11000, ask=1.11002)
         closed = ex.on_tick("EURUSD")
         assert closed, "a take-profit hit must close the position"
@@ -210,7 +229,7 @@ class TestPaperExecutor:
     def test_mark_to_market_updates_profit(self, journal):
         ex = self._executor(journal)
         ex.submit(ex.prepare_order("EURUSD", "BUY", 0.01, 1.09000),
-                  risk_approved=True)
+                  risk_approved=approve())
         ex.tick_provider = lambda s: StubTick(bid=1.11000, ask=1.11002)
         ex.on_tick("EURUSD")
         rows = journal.query("SELECT * FROM positions")
@@ -225,7 +244,7 @@ class TestExecutorSafetyGates:
         ex = PaperExecutor(journal=journal, tick_provider=ticks)
         request = OrderRequest(symbol="EURUSD", side="BUY", volume=0.01, sl=sl)
         with pytest.raises(ExecutionRejected) as excinfo:
-            ex.submit(request, risk_approved=True)
+            ex.submit(request, risk_approved=approve())
         assert "stop loss" in str(excinfo.value).lower()
         assert journal.open_position_count() == 0
 
@@ -233,7 +252,7 @@ class TestExecutorSafetyGates:
         ex = PaperExecutor(journal=journal, tick_provider=ticks)
         request = ex.prepare_order("EURUSD", "BUY", 0.01, 1.09500)
         with pytest.raises(ExecutionRejected) as excinfo:
-            ex.submit(request, risk_approved=False)
+            ex.submit(request, risk_approved=refuse())
         assert "risk gate" in str(excinfo.value)
         assert journal.open_position_count() == 0
 
@@ -242,7 +261,7 @@ class TestExecutorSafetyGates:
                            state=STATE_PAUSED)
         with pytest.raises(ExecutionRejected) as excinfo:
             ex.submit(ex.prepare_order("EURUSD", "BUY", 0.01, 1.09500),
-                      risk_approved=True)
+                      risk_approved=approve())
         assert "PAUSED" in str(excinfo.value)
 
     def test_emergency_blocks_submission(self, journal):
@@ -250,14 +269,14 @@ class TestExecutorSafetyGates:
                            state=STATE_EMERGENCY_STOP)
         with pytest.raises(ExecutionRejected) as excinfo:
             ex.submit(ex.prepare_order("EURUSD", "BUY", 0.01, 1.09500),
-                      risk_approved=True)
+                      risk_approved=approve())
         assert "EMERGENCY_STOP" in str(excinfo.value)
 
     def test_closing_is_allowed_while_emergency(self, journal):
         """Closing reduces risk; it must never be gated by a halt."""
         ex = PaperExecutor(journal=journal, tick_provider=ticks)
         fill = ex.submit(ex.prepare_order("EURUSD", "BUY", 0.01, 1.09500),
-                         risk_approved=True)
+                         risk_approved=approve())
         ex.state = STATE_EMERGENCY_STOP
         result = ex.close(fill.ticket)
         assert result.ok is True, "a halt must not prevent closing a position"
@@ -295,7 +314,7 @@ class TestModeSelection:
         ex = build_executor(MODE_LIVE, journal=journal, live_confirmed=True)
         request = ex.prepare_order("EURUSD", "BUY", 0.01, 0.0)
         with pytest.raises(ExecutionRejected):
-            ex.submit(request, risk_approved=True)
+            ex.submit(request, risk_approved=approve())
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -366,7 +385,7 @@ class TestCommandChannel:
         ex = PaperExecutor(journal=journal, tick_provider=ticks)
         proc = self._processor(journal, sm, ex)
         fill = ex.submit(ex.prepare_order("EURUSD", "BUY", 0.01, 1.09500),
-                         risk_approved=True)
+                         risk_approved=approve())
         journal.enqueue_command(COMMAND_CLOSE_POSITION,
                                 {"ticket": fill.ticket})
         proc.poll_once()
@@ -377,7 +396,7 @@ class TestCommandChannel:
         proc = self._processor(journal, sm, ex)
         for _ in range(3):
             ex.submit(ex.prepare_order("EURUSD", "BUY", 0.01, 1.09500),
-                      risk_approved=True)
+                      risk_approved=approve())
         assert journal.open_position_count() == 3
         journal.enqueue_command(COMMAND_CLOSE_ALL)
         proc.poll_once()
@@ -389,7 +408,7 @@ class TestCommandChannel:
         proc = self._processor(journal, sm, ex)
         for _ in range(2):
             ex.submit(ex.prepare_order("EURUSD", "BUY", 0.01, 1.09500),
-                      risk_approved=True)
+                      risk_approved=approve())
 
         real_close = ex.close
 

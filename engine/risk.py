@@ -261,7 +261,109 @@ class RiskEngine:
         #: day; drawdown and manual halts do not clear automatically.
         self.halted = False
         self.halt_reason = ""
-        self.halt_kind: str = ""
+        self.halt_kind = ""
+        self._specs: dict[str, dict] = {}
+        self._magic = 100100
+
+    # -- account state ---------------------------------------------------
+
+    def account_state_from_positions(
+        self, *, equity: float | None, start_of_day_equity: float | None,
+        peak_equity: float | None, open_positions: Sequence[Any] = (),
+    ) -> AccountState:
+        """Build the AccountState the gate needs from live broker data.
+
+        Total open risk is the sum of each position's entry-to-stop distance.
+        A position with no stop contributes no measurable risk, so it is counted
+        in `unprotected_positions` instead. That is deliberate: folding it in as
+        zero would understate exposure, which is the dangerous direction of
+        error, so it becomes a separate count that blocks new trades outright.
+
+        open_positions accepts plain dicts with volume, price_open and sl, which
+        is the shape the positions table stores.
+        """
+        total_risk = 0.0
+        unprotected = 0
+        for position in open_positions or ():
+            volume = float(position.get("volume", 0.0) or 0.0)
+            entry = float(position.get("price_open", 0.0) or 0.0)
+            stop = float(position.get("sl", 0.0) or 0.0)
+
+            # A position opened by anything other than this engine cannot have
+            # its risk measured from our spec, so it counts as unprotected.
+            magic = position.get("magic")
+            if magic is not None and int(magic) != self.magic:
+                unprotected += 1
+                continue
+
+            spec = self._spec_for(position.get("symbol")) or {}
+            tick_value = float(spec.get("trade_tick_value", 0.0) or 0.0)
+            tick_size = float(spec.get("trade_tick_size", 0.0) or 0.0)
+
+            if stop <= 0 or entry <= 0 or not tick_value or not tick_size:
+                unprotected += 1
+                continue
+
+            total_risk += abs(entry - stop) / tick_size * tick_value * volume
+
+        return AccountState(
+            equity=equity,
+            start_of_day_equity=start_of_day_equity,
+            peak_equity=peak_equity,
+            open_trade_count=len(open_positions or ()),
+            total_open_risk=total_risk,
+            unprotected_positions=unprotected,
+            trading_halted=self.halted,
+            halt_reason=self.halt_reason,
+        )
+
+    def set_symbol_specs(self, specs: dict[str, dict]) -> None:
+        """Supply the broker's trade specification per symbol.
+
+        Positions opened by another EA, or on a symbol we have no spec for,
+        cannot have their risk measured, so they are counted as unprotected
+        rather than assumed to be zero risk.
+        """
+        self._specs = {k.upper(): v for k, v in (specs or {}).items()}
+
+    def _spec_for(self, symbol: str | None) -> dict | None:
+        if not symbol:
+            return None
+        return getattr(self, "_specs", {}).get(str(symbol).upper())
+
+    @property
+    def magic(self) -> int:
+        return getattr(self, "_magic", 100100)
+
+    def set_magic(self, magic: int) -> None:
+        self._magic = magic
+
+    # -- intent construction ---------------------------------------------
+
+    def build_order_intent(
+        self, *, symbol: str, side: str, volume: float, entry_price: float,
+        stop_loss: float, spread_points: float | None = None,
+        max_spread_points: float | None = None,
+    ) -> OrderIntent:
+        """Build an intent using the broker's tick spec for `symbol`.
+
+        Refuses when the spec is missing, because risk would be unknown and the
+        gate must not approve what it cannot measure.
+        """
+        spec = self._spec_for(symbol)
+        if not spec:
+            raise RiskConfigError(
+                f"{symbol}: no trade specification known for this symbol; "
+                f"run probe_tick_specs.py before sizing it"
+            )
+        return OrderIntent.from_symbol_spec(
+            symbol=symbol, side=side, volume=volume,
+            entry_price=entry_price, stop_loss=stop_loss,
+            tick_value=float(spec.get("trade_tick_value", 0.0) or 0.0),
+            tick_size=float(spec.get("trade_tick_size", 0.0) or 0.0),
+            spread_points=spread_points,
+            max_spread_points=max_spread_points,
+        )
 
     # -- public API ------------------------------------------------------
 

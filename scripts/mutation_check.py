@@ -981,6 +981,81 @@ from engine.gateway import Gateway, OrderOutcome, OrderResult""",
             "tests/test_engine/test_risk.py::TestPerTradeRisk::test_base_risk_amount",
         ],
     ),
+    # ─────────────────────────────────────────────────────────────────────────
+    # Phase 2: gate wiring. These prove the executor cannot bypass the gate.
+    # ─────────────────────────────────────────────────────────────────────────
+    Mutation(
+        name="M76: executor accepts a bare True as risk approval",
+        target="engine/executor.py",
+        old="""        if isinstance(risk_approved, bool):
+            raise ExecutionRejected(
+                "Refusing to submit: a bare True is not risk approval. Use "
+                "RiskApproval.from_decision(decision) so the gate's verdict is "
+                "what authorises the order."
+            )""",
+        new="""        if isinstance(risk_approved, bool):
+            if risk_approved:
+                return
+            raise ExecutionRejected(
+                "Refusing to submit: the risk gate did not approve this order."
+            )""",
+        expect_fail=[
+            "tests/test_engine/test_risk_wiring.py::TestApprovalMustComeFromTheGate::test_bare_true_is_refused",
+            "tests/test_engine/test_risk_wiring.py::TestApprovalMustComeFromTheGate::test_other_truthy_values_are_refused[1]",
+        ],
+    ),
+    Mutation(
+        name="M77: risk approval check removed entirely",
+        target="engine/executor.py",
+        old="""        if isinstance(risk_approved, RiskApproval):
+            if not risk_approved.approved:""",
+        new="""        if False:
+            if not risk_approved.approved:""",
+        expect_fail=[
+            "tests/test_engine/test_risk_wiring.py::TestApprovalMustComeFromTheGate::test_a_refusal_object_blocks",
+        ],
+    ),
+    Mutation(
+        name="M78: a position without a stop counted as zero risk",
+        target="engine/risk.py",
+        old="""            if stop <= 0 or entry <= 0 or not tick_value or not tick_size:
+                unprotected += 1
+                continue""",
+        new="""            if stop <= 0 or entry <= 0 or not tick_value or not tick_size:
+                continue""",
+        expect_fail=[
+            "tests/test_engine/test_risk_wiring.py::TestAccountStateFromPositions::test_position_without_a_stop_is_unprotected",
+            "tests/test_engine/test_risk_wiring.py::TestUnprotectedBlocksEverything::test_the_live_situation_would_block",
+        ],
+    ),
+    Mutation(
+        name="M79: another magic number's position assumed measurable",
+        target="engine/risk.py",
+        old="""            if magic is not None and int(magic) != self.magic:
+                unprotected += 1
+                continue""",
+        new="""            if False:
+                unprotected += 1
+                continue""",
+        expect_fail=[
+            "tests/test_engine/test_risk_wiring.py::TestAccountStateFromPositions::test_another_magic_number_is_unprotected",
+        ],
+    ),
+    Mutation(
+        name="M80: intent built without the broker tick spec",
+        target="engine/risk.py",
+        old="""        spec = self._spec_for(symbol)
+        if not spec:
+            raise RiskConfigError(
+                f"{symbol}: no trade specification known for this symbol; "
+                f"run probe_tick_specs.py before sizing it"
+            )""",
+        new="""        spec = self._spec_for(symbol) or {"trade_tick_value": 1.0,
+                                          "trade_tick_size": 0.00001}""",
+        expect_fail=[
+            "tests/test_engine/test_risk_wiring.py::TestBuildOrderIntent::test_unknown_symbol_is_refused",
+        ],
+    ),
 ]
 
 
