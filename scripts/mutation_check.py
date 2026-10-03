@@ -740,16 +740,21 @@ def _unused_is_synthetic(value: str) -> bool:""",
         ],
     ),
     Mutation(
-        name="M56: Phase 1 risk stub approves everything",
+        # Originally disabled the Phase 1 stub that approved nothing. The stub
+        # is gone in Phase 2, so this now targets the property it stood in for:
+        # an order inside every limit must actually be approved. Without this,
+        # a gate that blocked everything would still satisfy the limit tests.
+        name="M56: gate refuses orders that are inside every limit",
         target="engine/risk.py",
-        old="""        if self.phase1_stub:
-            reasons.extend(PHASE1_BLOCK_REASONS)
-
-        decision = RiskDecision(approved=False, reasons=reasons)""",
-        new="""        decision = RiskDecision(approved=True, reasons=reasons)""",
+        old="""        return self._finish(intent, account, not violations, violations, reasons,
+                            risk_amount, risk_pct, projected_pct)""",
+        new="""        violations.append("MUTATION: refuse everything")
+        return self._finish(intent, account, False, violations, reasons,
+                            risk_amount, risk_pct, projected_pct)""",
         expect_fail=[
-            "tests/test_engine/test_executor_commands.py::TestPhase1RiskGate::test_approves_nothing",
-            "tests/test_engine/test_executor_commands.py::TestPhase1RiskGate::test_can_submit_is_false",
+            "tests/test_engine/test_risk.py::TestPerTradeRisk::test_within_limit_is_approved",
+            "tests/test_engine/test_risk.py::TestTotalExposure::test_within_limit_allows",
+            "tests/test_engine/test_executor_commands.py::TestRiskGateIsNowReal::test_approves_a_trade_inside_the_limits",
         ],
     ),
     Mutation(
@@ -916,7 +921,7 @@ from engine.gateway import Gateway, OrderOutcome, OrderResult""",
         old="""        check(has_equity,
               "equity is unknown; percentages cannot be computed, so the "
               "order is blocked rather than sized against an assumption")""",
-        new="""        check(True,  # MUTATION: unknown equity no longer blocks""",
+        new="""        check(True, "MUTATION: unknown equity no longer blocks")""",
         expect_fail=[
             "tests/test_engine/test_risk.py::TestFailClosed::test_missing_equity_blocks",
             "tests/test_engine/test_risk.py::TestFailClosed::test_missing_equity_names_equity_and_its_consequences",
@@ -936,7 +941,7 @@ from engine.gateway import Gateway, OrderOutcome, OrderResult""",
         target="engine/risk.py",
         old="""        check(intent.has_stop,
               "order has no stop loss, so its worst case is undefined")""",
-        new="""        check(True,  # MUTATION: missing stop permitted""",
+        new="""        check(True, "MUTATION: missing stop permitted")""",
         expect_fail=[
             "tests/test_engine/test_risk.py::TestFailClosed::test_order_without_stop_blocks",
         ],
