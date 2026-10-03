@@ -171,8 +171,11 @@ class FakeMT5:
         self._history.append(order)
         return order
 
-    def _log(self, name, *args):
-        self.calls.append((name, args if len(args) > 1 else args[0] if args else None))
+    def _log(self, name, *args, **kwargs):
+        # Real MT5 accepts keyword arguments such as terminal_path on
+        # initialize(); record the call so it stays visible in the log.
+        self.calls.append((name, args if len(args) > 1
+                           else (args[0] if args else None)))
 
     # -- lifecycle -------------------------------------------------------
 

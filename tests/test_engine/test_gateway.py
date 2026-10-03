@@ -9,12 +9,15 @@ modes:
   - An UNKNOWN outcome must halt and raise a high-priority alert, because it
     needs manual intervention.
   - Disconnection must block trading and back off exponentially.
+  - Startup must connect before reading broker state, and reconciliation must
+    be idempotent.
 
 No real terminal: FakeMT5 is injected.
 
-Run: python -m pytest tests/engine/test_gateway.py -v
+Run: python -m pytest tests/test_engine/test_gateway.py -v
 """
 import time
+from pathlib import Path
 
 import pytest
 
@@ -643,6 +646,117 @@ class TestPositionsGetArgumentQuirk:
             assert tickets == {10726505976, 10745483547}
         finally:
             gw.stop()
+
+
+class TestStartupOrdering:
+    """Startup must connect before anything reads broker state.
+
+    reconcile_on_start ran before the gateway had been asked to connect, and
+    every run logged 'could not read broker positions: not connected'. Positions
+    were never adopted, so the engine was blind to real exposure.
+    """
+
+    def test_build_engine_connects_during_startup(self, tmp_path):
+        from engine.__main__ import build_engine
+        from tests.test_engine.fake_mt5 import FakeMT5
+
+        mt5 = FakeMT5(positions=[FakePosition(ticket=777, magic=100100)])
+        engine = build_engine(
+            root=Path(__file__).resolve().parent.parent.parent,
+            journal_path=tmp_path / "startup.db",
+            mt5_module=mt5,
+        )
+        try:
+            assert engine.gateway.connected is True, (
+                "build_engine must connect before returning; reconciliation "
+                "runs immediately afterwards and needs a live read"
+            )
+        finally:
+            engine.gateway.shutdown_terminal()
+            engine.gateway.stop()
+            engine.journal.close()
+
+    def test_reconcile_adopts_our_positions(self, tmp_path):
+        from engine.__main__ import build_engine
+        from tests.test_engine.fake_mt5 import FakeMT5, FakePosition
+
+        mt5 = FakeMT5(positions=[
+            FakePosition(ticket=10726505976, symbol="USDCAD", type_=1,
+                         magic=100100),
+            FakePosition(ticket=10745483547, symbol="GBPUSD", type_=0,
+                         magic=100100),
+            # Another EA's position: must not be adopted.
+            FakePosition(ticket=555, symbol="OTHER", magic=999999),
+        ])
+        engine = build_engine(
+            root=Path(__file__).resolve().parent.parent.parent,
+            journal_path=tmp_path / "recon.db",
+            mt5_module=mt5,
+        )
+        try:
+            result = engine.reconcile_positions()
+            assert len(result["adopted"]) == 2, (
+                f"expected 2 adoptions, got {result['adopted']}"
+            )
+            tickets = {p["ticket"] for p in engine.journal.positions()}
+            assert tickets == {10726505976, 10745483547}, (
+                "only positions carrying our magic number may be adopted"
+            )
+        finally:
+            engine.gateway.shutdown_terminal()
+            engine.gateway.stop()
+            engine.journal.close()
+
+    def test_reconcile_is_idempotent(self, tmp_path):
+        """A second reconcile must not re-adopt or duplicate."""
+        from engine.__main__ import build_engine
+        from tests.test_engine.fake_mt5 import FakeMT5, FakePosition
+
+        mt5 = FakeMT5(positions=[FakePosition(ticket=777, magic=100100)])
+        engine = build_engine(
+            root=Path(__file__).resolve().parent.parent.parent,
+            journal_path=tmp_path / "idem.db",
+            mt5_module=mt5,
+        )
+        try:
+            first = engine.reconcile_positions()
+            second = engine.reconcile_positions()
+            assert len(first["adopted"]) == 1
+            assert second["adopted"] == [], (
+                "a position already in the journal must not be re-adopted"
+            )
+            assert engine.journal.open_position_count() == 1, (
+                "reconciliation must not duplicate a mirrored position"
+            )
+        finally:
+            engine.gateway.shutdown_terminal()
+            engine.gateway.stop()
+            engine.journal.close()
+
+    def test_reconcile_skips_cleanly_when_disconnected(self, tmp_path):
+        """Disconnected is reported, not raised, and never counts as zero exposure."""
+        from engine.__main__ import build_engine
+        from tests.test_engine.fake_mt5 import FakeMT5, BEHAVIOUR_INITIALIZE_FAILS
+
+        mt5 = FakeMT5(behaviour=BEHAVIOUR_INITIALIZE_FAILS, fail_times=99)
+        engine = build_engine(
+            root=Path(__file__).resolve().parent.parent.parent,
+            journal_path=tmp_path / "disc.db",
+            mt5_module=mt5,
+        )
+        try:
+            result = engine.reconcile_positions()
+            assert result["error"] == "not connected", (
+                "a disconnected reconcile must say so rather than silently "
+                "reporting no positions"
+            )
+            events = [e["message"] for e in engine.journal.recent_events(50)]
+            assert any("not connected" in m for m in events), (
+                "the skipped reconcile must be recorded"
+            )
+        finally:
+            engine.gateway.stop()
+            engine.journal.close()
 
 
 class TestClosePosition:
