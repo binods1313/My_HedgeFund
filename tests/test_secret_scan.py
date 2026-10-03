@@ -543,6 +543,136 @@ class TestSyntheticAllowlistIsSafe:
         assert vh.is_synthetic("NotOnTheList12345") is False
 
 
+class TestDictSubscriptionIsNotASecret:
+    """A dict lookup names a field; it is not a credential.
+
+    The gateway reads credentials["password"], which the scanner initially
+    flagged and blocked the commit on. The fix must not become a hole: a
+    literal inside brackets is still a secret.
+    """
+
+    @pytest.mark.parametrize("value", [
+        'credentials["password"]',
+        'env["OPENROUTER_API_KEY"]',
+        "creds['token']",
+        'cfg["OPENROUTER_API_KEY"]',
+    ])
+    def test_lookup_is_an_env_reference(self, value):
+        assert ss.is_env_reference(value) is True
+
+    @pytest.mark.parametrize("value", [
+        "Xq7SampleNotRealPwd9z",
+        "CorrectHorse7",
+        "sk-or-v1-AAAABBBBCCCCDDDDEEEEFFFF",
+        "AKIAIOSFODNN7EXAMPLE",
+    ])
+    def test_literal_is_still_flagged(self, value):
+        assert ss.is_env_reference(value) is False
+
+    def test_gateway_line_does_not_block_a_commit(self):
+        """The exact line that blocked the engine commit."""
+        source = (Path(__file__).resolve().parent.parent /
+                  "engine" / "__main__.py").read_text(encoding="utf-8")
+        pattern = dict(ss.PATTERNS)["credential_assignment"]
+        offenders = []
+        for line in source.splitlines():
+            for m in pattern.finditer(line):
+                val = m.groupdict()["val"]
+                if ss.is_placeholder(val) or ss.is_env_reference(val):
+                    continue
+                offenders.append(line.strip())
+        assert not offenders, (
+            "engine/__main__.py still trips the scanner on: "
+            f"{offenders}"
+        )
+
+
+class TestProseNamingACredentialIsNotACredential:
+    """A docstring or comment that NAMES a key is not a key.
+
+    Two failed attempts are recorded here. Keying on the captured value's shape
+    (a short alphabetic token) excused `client_secret: str = "hunter2xyz"`,
+    because the capture `str` looks like an English word. The discriminator
+    that works is the shape of the LINE: a comment or a docstring is prose, an
+    assignment is not.
+    """
+
+    @pytest.mark.parametrize("line", [
+        '"""Check the XAI_API_KEY: is it picked up, and does it work?"""',
+        "# The XAI_API_KEY must never be logged",
+        '"""Document the MT5_PASSWORD handling here."""',
+    ])
+    def test_prose_naming_a_credential_is_benign(self, line):
+        pattern = dict(ss.PATTERNS)["credential_assignment"]
+        for m in pattern.finditer(line):
+            assert ss._is_benign_line(line, m.groupdict()["val"]) is True, (
+                f"prose naming a credential was reported as a secret: {line!r}"
+            )
+
+    @pytest.mark.parametrize("line,value", [
+        ('XAI_API_KEY = "xai-realkeyvalue123"', '"xai-realkeyvalue123"'),
+        ('MT5_PASSWORD = "Xq7SampleNotRealPwd9z"', '"Xq7SampleNotRealPwd9z"'),
+        ('OPENROUTER_API_KEY = "sk-or-v1-AAAABBBBCCCCDDDDEEEEFFFF"',
+         '"sk-or-v1-AAAABBBBCCCCDDDDEEEEFFFF"'),
+        ('GITHUB_TOKEN = "ghp_' + "a" * 36 + '"', '"ghp_' + "a" * 36 + '"'),
+        ('AWS_ACCESS_KEY = "AKIAIOSFODNN7EXAMPLE"', '"AKIAIOSFODNN7EXAMPLE"'),
+        # The case a shape-based rule got wrong.
+        ('client_secret: str = "hunter2xyz"', '"hunter2xyz"'),
+        ('password = "CorrectHorse7"', '"CorrectHorse7"'),
+    ])
+    def test_real_credentials_are_still_reported(self, line, value):
+        """Every real shape must survive the prose exemption."""
+        pattern = dict(ss.PATTERNS)["credential_assignment"]
+        matches = list(pattern.finditer(line))
+        assert matches, f"pattern stopped matching {line!r}"
+        for m in matches:
+            assert ss._is_benign_line(line, m.groupdict()["val"]) is False, (
+                f"a real credential was excused: {line!r}"
+            )
+
+    def test_prose_exemption_does_not_depend_on_value_shape(self):
+        """A shape-based rule would pass the prose cases and fail this one."""
+        pattern = dict(ss.PATTERNS)["credential_assignment"]
+        doc = '"""Check the XAI_API_KEY: is it picked up?"""'
+        assignment = 'XAI_API_KEY = "is"'
+        # Same captured value shape, different line kinds.
+        for m in pattern.finditer(doc):
+            assert ss._is_benign_line(doc, m.groupdict()["val"]) is True
+        for m in pattern.finditer(assignment):
+            assert ss._is_benign_line(assignment, m.groupdict()["val"]) is False, (
+                "the prose exemption must depend on the line, not the value"
+            )
+
+
+class TestHistoryCleanReporting:
+    """A bare run must not claim OK while a secret is present."""
+
+    def test_leak_is_reported_even_without_expect_clean(self, tmp_path, capsys):
+        from scripts import verify_history_clean as vh
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        secret = "Zx9RotationUnlisted77"
+        assert secret not in vh.SYNTHETIC_TEST_VALUES
+        (repo / "leak.py").write_text(
+            f'MT5_PASSWORD = "{secret}"\n', encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t",
+             "commit", "-q", "-m", "leak"], check=True)
+
+        env = tmp_path / ".env"
+        env.write_text(f"MT5_PASSWORD={secret}\n", encoding="utf-8")
+
+        code = vh.main(["--repo", str(repo), "--env", str(env)])
+        out = capsys.readouterr().out
+        assert code == 1, "a leak must exit non-zero"
+        assert "LEAKS FOUND" in out, out
+        assert "RESULT: OK" not in out, (
+            "the summary must not claim OK while a secret is present"
+        )
+
+
 class TestThisRepoIsClean:
     """The working tree of this repo must contain no secrets."""
 

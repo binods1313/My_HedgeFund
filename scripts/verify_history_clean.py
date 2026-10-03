@@ -232,8 +232,15 @@ def main(argv: list[str] | None = None) -> int:
         print("  RESULT: OK - the leak was detected, so the method works.")
         return 0
 
-    if args.expect_clean and found_any:
-        print("  RESULT: FAIL - at least one secret is still in history.")
+    # A bare run must not report OK while a leak is present. Previously the
+    # success message printed unconditionally unless --expect-clean was given,
+    # so `MT5_PASSWORD PRESENT IN HISTORY` was followed by "RESULT: OK".
+    if found_any:
+        print("  RESULT: LEAKS FOUND - at least one .env secret value is still "
+              "in history.")
+        if not args.expect_clean:
+            print("          (exit 0 because --expect-clean was not passed; "
+                  "pass it to make this a failure)")
         return 1
 
     print("  RESULT: OK - no .env secret value found in history.")

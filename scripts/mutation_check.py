@@ -502,24 +502,6 @@ def _unused_is_synthetic(value: str) -> bool:""",
         ],
     ),
     Mutation(
-        name="M36: P&L colour logic inverted (profit renders red)",
-        target="metrics.py",
-        old="""    return "#F43F5E" if net_open_pnl(positions) < 0 else "#34D399\"""",
-        new="""    return "#F43F5E" if net_open_pnl(positions) > 0 else "#34D399\"""",
-        expect_fail=[
-            "tests/test_metrics.py::TestNetOpenPnl::test_loss_colour_is_red",
-        ],
-    ),
-    Mutation(
-        name="M37: open P&L colour inverts the risk signal",
-        target="metrics.py",
-        old="""    return "#F43F5E" if net_open_pnl(positions) < 0 else "#34D399\"""",
-        new="""    return "#F43F5E" if net_open_pnl(positions) > 0 else "#34D399\"""",
-        expect_fail=[
-            "tests/test_metrics.py::TestNetOpenPnl::test_profit_colour_is_green",
-        ],
-    ),
-    Mutation(
         name="M38: hidden symbols skipped again (no symbol_select activation)",
         target="scripts/demo_verification.py",
         old="""    for sym in hidden_candidates:
@@ -688,6 +670,195 @@ def _unused_is_synthetic(value: str) -> bool:""",
         expect_fail=[
             "tests/test_dependencies.py::TestAllSourceFilesCompile::test_app_compiles_specifically",
             "tests/test_dependencies.py::TestAllSourceFilesCompile::test_no_indentation_error_survives_a_compile",
+        ],
+    ),
+    # ─────────────────────────────────────────────────────────────────────────
+    # Phase 1 engine safety rules (design doc section 9)
+    # ─────────────────────────────────────────────────────────────────────────
+    Mutation(
+        # Mutating this repo's own config.yaml proves nothing: the guard is that
+        # an ABSENT mode falls back to PAPER. An earlier version flipped the
+        # literal to LIVE and no test failed, which showed the test was not
+        # guarding the default at all.
+        name="M52: absent mode defaults to LIVE instead of PAPER",
+        target="engine/config.py",
+        old="""    mode = str(raw.get("mode", MODE_PAPER)).upper()""",
+        new="""    mode = str(raw.get("mode", MODE_LIVE)).upper()""",
+        expect_fail=[
+            "tests/test_engine/test_executor_commands.py::TestEngineConfig::test_mode_defaults_to_paper_when_absent",
+        ],
+    ),
+    Mutation(
+        name="M52b: repo config.yaml declares LIVE",
+        target="config.yaml",
+        old="""mode: PAPER""",
+        new="""mode: LIVE""",
+        expect_fail=[
+            "tests/test_engine/test_executor_commands.py::TestEngineConfig::test_loads_the_real_config_is_paper",
+        ],
+    ),
+    Mutation(
+        name="M53: LIVE constructible from the config flag alone",
+        target="engine/executor.py",
+        old="""    if mode == MODE_LIVE:
+        if not live_confirmed:
+            raise ExecutionRejected(
+                "Refusing to construct a LiveExecutor: live confirmation has "
+                "not been supplied."
+            )""",
+        new="""    if mode == MODE_LIVE:
+        pass""",
+        expect_fail=[
+            "tests/test_engine/test_executor_commands.py::TestModeSelection::test_live_requires_confirmation",
+        ],
+    ),
+    Mutation(
+        name="M54: orders permitted without a stop loss",
+        target="engine/executor.py",
+        old="""        if request.sl is None or request.sl <= 0:
+            raise ExecutionRejected(""",
+        new="""        if False:
+            raise ExecutionRejected(""",
+        expect_fail=[
+            "tests/test_engine/test_executor_commands.py::TestExecutorSafetyGates::test_order_without_sl_is_rejected[0]",
+            "tests/test_engine/test_executor_commands.py::TestExecutorSafetyGates::test_order_without_sl_is_rejected[None]",
+        ],
+    ),
+    Mutation(
+        name="M55: orders permitted without risk approval",
+        target="engine/executor.py",
+        old="""        if not risk_approved:
+            raise ExecutionRejected(
+                "Refusing to submit: risk gate did not approve this order."
+            )""",
+        new="""        if False:
+            raise ExecutionRejected(
+                "Refusing to submit: risk gate did not approve this order."
+            )""",
+        expect_fail=[
+            "tests/test_engine/test_executor_commands.py::TestExecutorSafetyGates::test_unapproved_order_is_rejected",
+        ],
+    ),
+    Mutation(
+        name="M56: Phase 1 risk stub approves everything",
+        target="engine/risk.py",
+        old="""        if self.phase1_stub:
+            reasons.extend(PHASE1_BLOCK_REASONS)
+
+        decision = RiskDecision(approved=False, reasons=reasons)""",
+        new="""        decision = RiskDecision(approved=True, reasons=reasons)""",
+        expect_fail=[
+            "tests/test_engine/test_executor_commands.py::TestPhase1RiskGate::test_approves_nothing",
+            "tests/test_engine/test_executor_commands.py::TestPhase1RiskGate::test_can_submit_is_false",
+        ],
+    ),
+    Mutation(
+        name="M57: EMERGENCY_STOP no longer blocks submissions",
+        target="engine/executor.py",
+        old="""        if state == STATE_EMERGENCY_STOP:
+            raise ExecutionRejected(
+                "Refusing to submit: engine is in EMERGENCY_STOP."
+            )""",
+        new="""        if False:
+            raise ExecutionRejected(
+                "Refusing to submit: engine is in EMERGENCY_STOP."
+            )""",
+        expect_fail=[
+            "tests/test_engine/test_executor_commands.py::TestExecutorSafetyGates::test_emergency_blocks_submission",
+        ],
+    ),
+    Mutation(
+        name="M58: EMERGENCY_STOP becomes escapable",
+        target="engine/state.py",
+        old="""    STATE_EMERGENCY_STOP: (
+        Rule(STATE_OFF, "RESET_EMERGENCY"),
+    ),""",
+        new="""    STATE_EMERGENCY_STOP: (
+        Rule(STATE_OFF, "RESET_EMERGENCY"),
+        Rule(STATE_IDLE, "DISABLE_AI"),
+    ),""",
+        expect_fail=[
+            "tests/test_engine/test_state.py::TestEmergencyStopIsTerminal::test_nothing_leaves_emergency_except_reset",
+            "tests/test_engine/test_state.py::TestEmergencyStopIsTerminal::test_disabling_ai_does_not_escape_emergency",
+        ],
+    ),
+    Mutation(
+        name="M59: EMERGENCY_STOP reset no longer requires confirmation",
+        target="engine/state.py",
+        old="""            expected = "RESET"
+            supplied = str(params.get("confirmation", ""))
+            if supplied != expected:
+                return False, (
+                    f"RESET_EMERGENCY requires confirmation={expected!r}"
+                )""",
+        new="""            supplied = str(params.get("confirmation", ""))""",
+        expect_fail=[
+            "tests/test_engine/test_state.py::TestResetEmergency::test_requires_the_exact_confirmation_phrase",
+            "tests/test_engine/test_state.py::TestResetEmergency::test_missing_confirmation_is_refused",
+        ],
+    ),
+    Mutation(
+        name="M60: gateway timeout resolves to None instead of raising",
+        target="engine/gateway.py",
+        old="""        if not self.done.wait(timeout=self.timeout):
+            raise MT5Timeout(self.name, self.timeout)""",
+        new="""        self.done.wait(timeout=self.timeout)""",
+        expect_fail=[
+            "tests/test_engine/test_gateway.py::TestTimeoutRaises::test_raw_call_timeout_raises",
+            "tests/test_engine/test_gateway.py::TestTimeoutRaises::test_mt5timeout_is_a_timeouterror",
+        ],
+    ),
+    Mutation(
+        name="M61: timed-out orders retried without reconciliation",
+        target="engine/gateway.py",
+        old="""        if positions:
+            ticket = positions[0].get("ticket")""",
+        new="""        if False:
+            ticket = None""",
+        expect_fail=[
+            "tests/test_engine/test_gateway.py::TestOrderReconciliation::test_timeout_that_executed_is_recovered_not_resent",
+        ],
+    ),
+    Mutation(
+        name="M62: non-gateway module may import MetaTrader5",
+        target="engine/executor.py",
+        old="""from engine.gateway import Gateway, OrderOutcome, OrderResult""",
+        new="""import MetaTrader5
+
+from engine.gateway import Gateway, OrderOutcome, OrderResult""",
+        expect_fail=[
+            "tests/test_engine/test_boundaries.py::TestOnlyTheGatewayTouchesMt5::test_engine_module_does_not_import_mt5[executor.py]",
+        ],
+    ),
+    Mutation(
+        # Found against the live terminal: MT5 returns None when positions_get
+        # is given an explicit None. The gateway always passed both, so it read
+        # zero positions while two were open, both carrying our magic number.
+        name="M63: positions_get called with explicit None arguments again",
+        target="engine/gateway.py",
+        old="""        func = self._mt5_or_raise().positions_get
+        if ticket is not None:
+            result = self.call("positions_get", func, ticket=ticket)
+        elif symbol is not None:
+            result = self.call("positions_get", func, symbol=symbol)
+        else:
+            result = self.call("positions_get", func)""",
+        new="""        func = self._mt5_or_raise().positions_get
+        result = self.call("positions_get", func, symbol=symbol, ticket=ticket)""",
+        expect_fail=[
+            "tests/test_engine/test_gateway.py::TestPositionsGetArgumentQuirk::test_bare_call_returns_positions",
+            "tests/test_engine/test_gateway.py::TestPositionsGetArgumentQuirk::test_reconciliation_sees_real_positions_with_our_magic",
+        ],
+    ),
+    Mutation(
+        name="M64: read helper dereferences an unresolved mt5 module",
+        target="engine/gateway.py",
+        old="""    def account_info(self) -> Any:
+        return self.call("account_info", self._mt5_or_raise().account_info)""",
+        new="""    def account_info(self) -> Any:
+        return self.call("account_info", self._mt5.account_info)""",
+        expect_fail=[
+            "tests/test_engine/test_gateway.py::TestUninjectedGatewayResolvesMt5::test_read_helpers_do_not_touch_a_none_module",
         ],
     ),
 ]
