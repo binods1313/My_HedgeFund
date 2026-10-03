@@ -180,12 +180,12 @@ MUTATIONS: list[Mutation] = [
         ],
     ),
     Mutation(
-        name="M12: dropdown offers Unclassified / non-whitelisted symbols",
+name="M12: dropdown offers Unclassified / non-whitelisted symbols",
         target="data_engine.py",
-        old="""        if sym.name.upper() not in allowed:
-            continue""",
-        new="""        if False:
-            continue""",
+        old="""            if sym.name.upper() not in allowed:
+                continue""",
+        new="""            if False:  # MUTATION: whitelist no longer applied
+                continue""",
         expect_fail=[
             "tests/test_execution_guards.py::TestDropdownNeverOffersUntradableSymbols::test_non_whitelisted_is_never_offered",
         ],
