@@ -80,6 +80,10 @@ PLACEHOLDER_VALUES = {
     "your_mt5_account_number", "your_broker_server", "your_token", "your_secret",
     "yourkeyhere", "your_key_here", "changeme", "placeholder", "example",
     "your_openrouter_api_key", "none", "null", "true", "false", "xxxxx",
+    # Values that announce themselves as not real. Used by test fixtures that
+    # must name a credential without supplying one.
+    "synthetic", "dummy", "fake", "stub", "redacted", "test",
+    "test-value", "test-only", "not-a-secret", "notarealkey", "unused",
 }
 
 
