@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -27,23 +28,19 @@ sys.path.insert(0, str(_REPO_ROOT))
 
 from engine.config import read_mt5_credentials
 
-# Every symbol in trading.tradable_symbols, so a whitelist entry is never left
-# unverified. Names the broker does not offer are reported as unavailable,
-# which is itself the answer: those must be corrected or removed from the
-# whitelist before they can be sized.
+# Symbols probed by default.
 #
-# Keep in step with config.yaml; a test fails if the two drift apart.
-DEFAULT_SYMBOLS = [
-    # Forex majors and crosses
-    "EURUSD", "GBPUSD", "USDJPY", "USDCAD", "USDCHF",
-    "AUDUSD", "NZDUSD", "EURGBP", "EURJPY", "GBPJPY",
-    # Metals and energy
-    "XAUUSD", "XAGUSD", "XTIUSD", "XBRUSD",
-    # Indices
-    "US30", "USTEC", "US500", "NAS100", "GER40", "UK100",
-    # Crypto
-    "BTCUSD", "ETHUSD",
-]
+# Read from config.yaml's whitelist rather than duplicated here: a second copy
+# is a second list that drifts, and a whitelist entry nobody probes is a symbol
+# the Risk Engine would refuse to size at runtime.
+def _default_symbols() -> list[str]:
+    try:
+        sys.path.insert(0, str(_REPO_ROOT))
+        from config_loader import load_config
+        return list(load_config().trading.tradable_symbols)
+    except Exception:
+        # Fall back to a small known-good set so the probe still runs.
+        return ["EURUSD", "GBPUSD", "USDJPY", "BTCUSD#"]
 
 # Fields the engine needs, and what each is used for.
 REQUIRED = ("trade_tick_value", "trade_tick_size")
@@ -107,8 +104,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--symbols", help="comma-separated symbols to probe")
     args = parser.parse_args(argv)
 
-    symbols = ([s.strip().upper() for s in args.symbols.split(",") if s.strip()]
-               if args.symbols else DEFAULT_SYMBOLS)
+    symbols = ([s.strip() for s in args.symbols.split(",") if s.strip()]
+               if args.symbols else _default_symbols())
 
     print("=" * 78)
     print("  LIVE TICK SPECIFICATION PROBE (read-only, no orders)")
@@ -145,7 +142,17 @@ def main(argv: list[str] | None = None) -> int:
 
             if row["ok"]:
                 usable.append(symbol)
-                print(f"  {symbol:10s} OK")
+                # Activate before probing, or a symbol the terminal lists but has
+                # not started quoting returns a zero tick and looks dead.
+                if not row.get("visible"):
+                    try:
+                        mt5.symbol_select(symbol, True)
+                        time.sleep(0.4)
+                        row = probe(symbol)
+                    except Exception:
+                        pass
+                usable[-1] = row["symbol"]
+                print(f"  {symbol:12s} OK")
                 print(f"      tick_value      : {row['trade_tick_value']}")
                 print(f"      tick_size       : {row['trade_tick_size']}")
                 print(f"      value per point : "

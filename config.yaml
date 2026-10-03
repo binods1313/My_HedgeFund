@@ -16,6 +16,17 @@ feed:
 # class for UI presentation. config_loader.py FAILS LOUDLY if the two disagree,
 # so neither list can drift from the other unnoticed.
 trading:
+  # Authoritative list of symbols the system may trade.
+  #
+  # Names are the BROKER's, not ours. XM publishes non-standard contracts with a
+  # trailing '#' (BTCUSD#, EURGBP#) and its indices as '*Cash#'
+  # (US500Cash#, US30Cash#). A plain 'BTCUSD' or 'US500' does not exist on this
+  # account. All 16 below were verified live: selectable, quoting, and carrying
+  # both trade_tick_value and trade_tick_size so the Risk Engine can size them.
+  #
+  # Category comes from each symbol's own path, never from its name. On the
+  # previous broker 'COIN' was Coinbase Global Inc, an equity, purely by ticker.
+  # Bitcoin therefore sits under crypto, not metals.
   tradable_symbols:
     - EURUSD
     - GBPUSD
@@ -24,21 +35,15 @@ trading:
     - USDCHF
     - AUDUSD
     - NZDUSD
-    - EURGBP
-    - EURJPY
-    - GBPJPY
-    - XAUUSD
-    - XAGUSD
-    - XTIUSD      # WTI Oil
-    - XBRUSD      # Brent
-    - BTCUSD
-    - ETHUSD
-    - US500       # S&P 500
-    - USTEC       # Nasdaq 100
-    - NAS100
-    - US30        # Dow Jones
-    - GER40       # DAX
-    - UK100       # FTSE
+    - EURGBP#      # broker name carries a '#' suffix
+    - EURJPY#
+    - GBPJPY#
+    - BTCUSD#      # Bitcoin. NOT a metal: classified from path
+    - ETHUSD#      # Ethereum.
+    - US500Cash#   # S&P 500
+    - US30Cash#    # Dow 30
+    - US100Cash#   # Nasdaq 100
+    - UK100Cash#   # FTSE 100
 
 symbols:
   whitelist:
@@ -50,34 +55,37 @@ symbols:
       - USDCHF
       - AUDUSD
       - NZDUSD
-      - EURGBP
-      - EURJPY
-      - GBPJPY
+      - EURGBP#     # broker name carries a '#' suffix
+      - EURJPY#
+      - GBPJPY#
     metals_commodities:
-      - XAUUSD
-      - XAGUSD
-      - XTIUSD      # WTI Oil
-      - XBRUSD      # Brent
+      # Empty on the XM account: XAUUSD/XAGUSD/XTIUSD/XBRUSD are not offered.
+      # Left empty rather than listed, because a whitelisted symbol the broker
+      # cannot quote fails at order time with an opaque error.
+      []
     crypto:
-      - BTCUSD
-      - ETHUSD
+      - BTCUSD#      # Bitcoin. Broker name carries a '#' suffix.
+      - ETHUSD#      # Ethereum.
     indices:
-      - US500       # S&P 500
-      - USTEC       # Nasdaq 100
-      - NAS100
-      - US30        # Dow Jones
-      - GER40       # DAX
-      - UK100       # FTSE
+      - US500Cash#  # S&P 500, broker contract name
+      - US30Cash#   # Dow 30
+      - US100Cash#  # Nasdaq 100
+      - UK100Cash#  # FTSE 100
 
-  # Per-symbol overrides (max spread in points; omit to use risk.default_max_spread_points)
+  # Per-symbol overrides (max spread in points; omit to use
+  # risk.default_max_spread_points). Keys must match the broker names above.
   overrides:
-    BTCUSD:
+    BTCUSD#:
       max_spread_points: 500
-    XAUUSD:
-      max_spread_points: 80
-    NAS100:
+    ETHUSD#:
+      max_spread_points: 500
+    US500Cash#:
       max_spread_points: 30
-    US30:
+    US30Cash#:
+      max_spread_points: 30
+    US100Cash#:
+      max_spread_points: 30
+    UK100Cash#:
       max_spread_points: 30
 
 # ── Risk Limits ──────────────────────────────────────────────────────────────

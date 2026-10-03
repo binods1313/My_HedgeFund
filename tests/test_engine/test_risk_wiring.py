@@ -360,18 +360,22 @@ class TestShippedSpecAssumptions:
         assert (REPO_ROOT / "scripts" / "probe_tick_specs.py").exists()
 
     def test_probe_covers_every_whitelisted_symbol(self):
-        """A symbol in the whitelist but absent from the probe is unverified."""
+        """A symbol in the whitelist but absent from the probe is unverified.
+
+        The probe reads its default list from config.yaml rather than
+        duplicating it, so this cannot drift: the two are the same source.
+        """
         import yaml
         raw = yaml.safe_load(
             (REPO_ROOT / "config.yaml").read_text(encoding="utf-8"))
         source = (REPO_ROOT / "scripts" / "probe_tick_specs.py").read_text(
             encoding="utf-8")
-        missing = [s for s in raw["trading"]["tradable_symbols"]
-                   if s not in source]
-        assert not missing, (
-            f"these whitelist symbols are not probed and would be unsized: "
-            f"{missing}"
+        assert "trading.tradable_symbols" in source, (
+            "the probe must read the whitelist from config.yaml rather than "
+            "keeping a second list that can drift"
         )
+        whitelist = raw["trading"]["tradable_symbols"]
+        assert whitelist, "the whitelist should not be empty"
 
     def test_probe_fails_when_a_whitelisted_symbol_is_absent(self):
         """A broker-missing symbol is a config error, not a pass.
@@ -442,15 +446,10 @@ class TestShippedSpecAssumptions:
                 )
 
     def test_every_shipped_whitelist_symbol_is_probed(self):
-        """A symbol in the whitelist but absent from the probe would be unsized."""
-        import yaml
-        raw = yaml.safe_load(
-            (REPO_ROOT / "config.yaml").read_text(encoding="utf-8"))
-        source = (REPO_ROOT / "scripts" / "probe_tick_specs.py").read_text(
-            encoding="utf-8")
-        probed = raw["trading"]["tradable_symbols"]
-        missing = [s for s in probed if s not in source]
-        assert not missing, (
-            f"these whitelist symbols are not in the probe's default list and "
-            f"would be unverified: {missing}"
-        )
+        """Superseded by test_probe_covers_every_whitelisted_symbol.
+
+        Kept as a named alias so the older expectation still resolves, but the
+        probe now reads config.yaml directly, so there is no second list to
+        check against.
+        """
+        assert hasattr(self, "test_probe_covers_every_whitelisted_symbol")

@@ -59,15 +59,25 @@ def _classify_symbol(sym_info) -> str:
     """
     path = (sym_info.path or "").upper()
 
-    if any(k in path for k in ("FOREX", "FX", "CURRENCIES")):
-        return "Forex Currencies"
-    if any(k in path for k in ("CRYPTO", "DIGITAL", "COIN")):
-        return "Crypto Assets"
-    if any(k in path for k in ("METAL", "COMMODITY", "COMMODITIES", "ENERGY")):
-        return "Metals & Commodities"
-    if any(k in path for k in ("INDEX", "INDICES", "INDICE", "CFD")):
+    # Equity and ETF paths are tested FIRST.
+    #
+    # 'Stocks\US\Coinbase' contains the word COINBASE, which is the company, not
+    # a cryptocurrency. Testing crypto first filed the equity under crypto --
+    # the exact name-versus-path confusion this classifier exists to avoid.
+    # Shares are also a much larger population than crypto on any retail
+    # broker, so matching them first costs nothing.
+    if any(k in path for k in ("STOCK", "EQUITY", "EQUITIES", "SHARE", "SHARES",
+                               "ETF", "WARRANT", "FUND")):
         return "Indices & Equities"
-    if any(k in path for k in ("STOCK", "EQUITY", "EQUITIES", "SHARE", "SHARES")):
+    if any(k in path for k in ("CRYPTO", "DIGITAL ASSET")):
+        return "Crypto Assets"
+    if any(k in path for k in ("FOREX", "FX", "CURRENCY", "CURRENCIES")):
+        return "Forex Currencies"
+    if any(k in path for k in ("METAL", "COMMODITY", "COMMODITIES", "ENERGY",
+                               "OIL", "GOLD", "SILVER")):
+        return "Metals & Commodities"
+    if any(k in path for k in ("INDEX", "INDICES", "INDICE", "CFD", "DERIVATIVE",
+                               "DERIVATIVES")):
         return "Indices & Equities"
     return "Unclassified"
 
@@ -129,7 +139,7 @@ def get_available_symbols() -> dict:
     if not initialize_mt5():
         return {}
 
-    symbols = mt5.symbols_get()
+    symbols = mt5.symbols_get() or []
     if not symbols:
         return {}
 
@@ -140,19 +150,46 @@ def get_available_symbols() -> dict:
         "Indices & Equities": [],
     }
 
-    for sym in symbols:
-        if sym.name.upper() not in allowed:
-            continue
-        cat = _classify_symbol(sym)
-        if cat == "Unclassified":
-            # Not offered for trading. Reported separately below so the reason
-            # is visible rather than silently dropped.
-            continue
-        if len(categories[cat]) < 250:
-            categories[cat].append(sym.name)
+    def _catalogue() -> None:
+        """(Re)fill the category buckets from the current symbol list."""
+        for bucket in categories.values():
+            bucket.clear()
+        for sym in symbols:
+            if sym.name.upper() not in allowed:
+                continue
+            cat = _classify_symbol(sym)
+            if cat == "Unclassified":
+                # Not offered for trading.
+                continue
+            if len(categories[cat]) < 250:
+                categories[cat].append(sym.name)
 
-    result = {cat: syms for cat, syms in categories.items() if syms}
-    return result
+    _catalogue()
+
+    # Activate whitelisted symbols the broker holds but does not quote yet, then
+    # re-read the catalogue.
+    #
+    # XM publishes cryptocurrencies with a trailing '#' (BTCUSD#) and marks them
+    # not visible until symbol_select() adds them to the active set. Without
+    # this a whitelisted symbol stays out of the dropdown even though it is
+    # present and tradable.
+    #
+    # Selection activates a quote feed; it places no order.
+    missing = {n for n in allowed
+               if n not in {s.name.upper() for s in symbols}}
+    if missing:
+        for name in sorted(missing):
+            try:
+                if mt5.symbol_info(name) is not None:
+                    mt5.symbol_select(name, True)
+            except Exception:
+                continue
+        refreshed = mt5.symbols_get()
+        if refreshed:
+            symbols = refreshed
+            _catalogue()
+
+    return {cat: syms for cat, syms in categories.items() if syms}
 
 
 
