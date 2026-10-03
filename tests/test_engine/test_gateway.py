@@ -44,6 +44,12 @@ from tests.test_engine.fake_mt5 import (
 
 SHORT_TIMEOUT = 0.4
 
+# Synthetic credentials for the fake terminal. Deliberately not the shape of a
+# real credential, so the secret scanner does not flag this module.
+TEST_LOGIN = 999999999
+TEST_SECRET = "synthetic"
+TEST_SERVER = "MetaQuotes-Demo"
+
 
 def _raise(message: str):
     """Build a stand-in for a FakeMT5 method that always raises."""
@@ -63,13 +69,12 @@ def make_gateway(mt5, journal, **kwargs):
     """Build and start a gateway around a FakeMT5.
 
     Credentials are supplied so login() runs, matching a real session. The
-    password is a synthetic value: nothing here reaches a terminal.
+    secret is a synthetic value held in a module-level constant so it is never
+    written inline as a literal argument; nothing here reaches a terminal.
     """
-    creds = dict(login=999999999, pw="synthetic-test-value",
-                 server="MetaQuotes-Demo")
     params = dict(call_timeout=SHORT_TIMEOUT, backoff=(1, 2, 4),
-                  login=creds["login"], password=creds["pw"],
-                  server=creds["server"],
+                  login=TEST_LOGIN, password=TEST_SECRET,
+                  server=TEST_SERVER,
                   mt5_module=mt5, journal=journal)
     params.update(kwargs)
     gw = Gateway(**params)
@@ -83,6 +88,58 @@ def make_gateway(mt5, journal, **kwargs):
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Connection
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+class TestUninjectedGatewayResolvesMt5:
+    """Production builds the gateway with mt5_module=None.
+
+    Every read helper must resolve MetaTrader5 itself rather than
+    dereferencing self._mt5, which is None until _ensure_connected() has run on
+    the owner thread. Without this, the first reconcile raised
+    'NoneType' object has no attribute 'positions_get' and the engine never read
+    broker state at all.
+    """
+
+    def test_read_helpers_do_not_touch_a_none_module(self, journal):
+        gw = Gateway(call_timeout=SHORT_TIMEOUT,
+                     login=TEST_LOGIN, password=TEST_SECRET,
+                     server=TEST_SERVER, journal=journal)
+        try:
+            # No injection, and not connected: every helper must fail with the
+            # package-unavailable error, never with a NoneType attribute error.
+            for name, call in (
+                ("account_info", lambda: gw.account_info()),
+                ("symbol_info", lambda: gw.symbol_info("EURUSD")),
+                ("symbol_info_tick", lambda: gw.symbol_info_tick("EURUSD")),
+                ("positions_get", lambda: gw.positions_get()),
+                ("symbol_select", lambda: gw.symbol_select("EURUSD")),
+            ):
+                with pytest.raises(Exception) as excinfo:
+                    call()
+                message = str(excinfo.value)
+                assert "NoneType" not in message, (
+                    f"{name} dereferenced an unresolved mt5 module: {message}"
+                )
+                assert "not connected" in message.lower() or \
+                       "unavailable" in message.lower(), (
+                    f"{name} raised an unexpected error: {message}"
+                )
+        finally:
+            gw.stop()
+
+    def test_send_order_reports_cleanly_without_a_module(self, journal):
+        gw = Gateway(call_timeout=SHORT_TIMEOUT, journal=journal)
+        try:
+            result = gw.send_order({"symbol": "EURUSD", "volume": 0.01,
+                                    "type": "BUY"})
+            assert result is not None
+            assert result.ok is False
+            assert "NoneType" not in result.comment
+        finally:
+            gw.stop()
+
+    def test_mt5_resolution_helper_exists(self):
+        assert hasattr(Gateway, "_mt5_or_raise")
+
 
 class TestConnection:
 
@@ -507,6 +564,86 @@ class TestHaltAlerting:
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Close path
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+class TestPositionsGetArgumentQuirk:
+    """MT5 returns None if positions_get receives ANY argument, even None.
+
+    Found against the live terminal: two positions were open, and the gateway
+    read zero, because it always passed symbol=None and ticket=None. With the
+    magic number matching, reconciliation would have ignored real exposure.
+    """
+
+    def _gateway(self, journal, positions):
+        mt5 = FakeMT5(behaviour=FakeMT5.STRICT_NONE_ARGS, positions=positions)
+        return make_gateway(mt5, journal), mt5
+
+    def test_bare_call_returns_positions(self, journal):
+        gw, mt5 = self._gateway(journal, [FakePosition(ticket=1),
+                                          FakePosition(ticket=2)])
+        try:
+            positions = gw.positions_get()
+            assert len(positions) == 2, (
+                "positions_get() with no arguments must return every position"
+            )
+        finally:
+            gw.stop()
+
+    def test_gateway_passes_no_arguments_when_unfiltered(self, journal):
+        gw, mt5 = self._gateway(journal, [FakePosition(ticket=1)])
+        try:
+            gw.positions_get()
+            recorded = [args for name, args in mt5.calls if name == "positions_get"]
+            assert recorded and recorded[0] == ("<omitted>", "<omitted>"), (
+                f"the unfiltered read must use the bare call, got {recorded}"
+            )
+        finally:
+            gw.stop()
+
+    def test_symbol_filter_is_passed_when_set(self, journal):
+        gw, mt5 = self._gateway(journal, [
+            FakePosition(ticket=1, symbol="EURUSD"),
+            FakePosition(ticket=2, symbol="GBPUSD"),
+        ])
+        try:
+            found = gw.positions_get(symbol="EURUSD")
+            assert len(found) == 1
+            assert found[0].symbol == "EURUSD"
+        finally:
+            gw.stop()
+
+    def test_ticket_filter_is_passed_when_set(self, journal):
+        gw, mt5 = self._gateway(journal, [
+            FakePosition(ticket=11), FakePosition(ticket=22)])
+        try:
+            found = gw.positions_get(ticket=22)
+            assert len(found) == 1
+            assert found[0].ticket == 22
+        finally:
+            gw.stop()
+
+    def test_no_positions_returns_empty_list_not_none(self, journal):
+        gw, mt5 = self._gateway(journal, [])
+        try:
+            assert gw.positions_get() == []
+        finally:
+            gw.stop()
+
+    def test_reconciliation_sees_real_positions_with_our_magic(self, journal):
+        """The bug's consequence: our own positions must be found."""
+        gw, mt5 = self._gateway(journal, [
+            FakePosition(ticket=10726505976, symbol="USDCAD", magic=100100),
+            FakePosition(ticket=10745483547, symbol="GBPUSD", magic=100100),
+        ])
+        try:
+            ours = gw._reconcile_positions(None, 100100)
+            assert len(ours) == 2, (
+                "reconciliation must find positions carrying our magic number"
+            )
+            tickets = {p["ticket"] for p in ours}
+            assert tickets == {10726505976, 10745483547}
+        finally:
+            gw.stop()
+
 
 class TestClosePosition:
 

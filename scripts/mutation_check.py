@@ -830,6 +830,37 @@ from engine.gateway import Gateway, OrderOutcome, OrderResult""",
             "tests/test_engine/test_boundaries.py::TestOnlyTheGatewayTouchesMt5::test_engine_module_does_not_import_mt5[executor.py]",
         ],
     ),
+    Mutation(
+        # Found against the live terminal: MT5 returns None when positions_get
+        # is given an explicit None. The gateway always passed both, so it read
+        # zero positions while two were open, both carrying our magic number.
+        name="M63: positions_get called with explicit None arguments again",
+        target="engine/gateway.py",
+        old="""        func = self._mt5_or_raise().positions_get
+        if ticket is not None:
+            result = self.call("positions_get", func, ticket=ticket)
+        elif symbol is not None:
+            result = self.call("positions_get", func, symbol=symbol)
+        else:
+            result = self.call("positions_get", func)""",
+        new="""        func = self._mt5_or_raise().positions_get
+        result = self.call("positions_get", func, symbol=symbol, ticket=ticket)""",
+        expect_fail=[
+            "tests/test_engine/test_gateway.py::TestPositionsGetArgumentQuirk::test_bare_call_returns_positions",
+            "tests/test_engine/test_gateway.py::TestPositionsGetArgumentQuirk::test_reconciliation_sees_real_positions_with_our_magic",
+        ],
+    ),
+    Mutation(
+        name="M64: read helper dereferences an unresolved mt5 module",
+        target="engine/gateway.py",
+        old="""    def account_info(self) -> Any:
+        return self.call("account_info", self._mt5_or_raise().account_info)""",
+        new="""    def account_info(self) -> Any:
+        return self.call("account_info", self._mt5.account_info)""",
+        expect_fail=[
+            "tests/test_engine/test_gateway.py::TestUninjectedGatewayResolvesMt5::test_read_helpers_do_not_touch_a_none_module",
+        ],
+    ),
 ]
 
 

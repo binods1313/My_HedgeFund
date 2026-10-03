@@ -109,7 +109,15 @@ class FakeMT5:
 
     Records every call so tests can assert on ordering and on whether a call was
     attempted at all.
+
+    `strict_none_args` reproduces a real MT5 quirk discovered against the live
+    terminal: positions_get() with NO arguments returns the positions, but
+    passing either argument explicitly, even as None, returns None. The gateway
+    always passed both, so it read zero positions while two were open.
     """
+
+    #: Return None when positions_get is called with any explicit argument.
+    STRICT_NONE_ARGS = "strict_none_args"
 
     ORDER_TYPE_BUY = 0
     ORDER_TYPE_SELL = 1
@@ -147,6 +155,8 @@ class FakeMT5:
         self._init_calls = 0
         self._next_ticket = 700_000
         self.connected = False
+        #: When true, reproduce MT5 returning None if any argument is passed.
+        self.strict_none_args = behaviour == self.STRICT_NONE_ARGS
 
     # -- helpers ---------------------------------------------------------
 
@@ -269,11 +279,31 @@ class FakeMT5:
             ))
         return FakeSendResult(retcode=self.TRADE_RETCODE_DONE, order=ticket)
 
-    def positions_get(self, symbol=None, ticket=None):
-        self._log("positions_get", symbol, ticket)
+    def positions_get(self, *args, **kwargs):
+        # Record whether the caller passed anything at all. MT5's behaviour
+        # depends on the call being made with zero arguments versus one that
+        # carries an explicit value or an explicit None.
+        passed = bool(args or kwargs)
+        symbol = kwargs.get("symbol", args[0] if len(args) > 0 else None)
+        ticket = kwargs.get("ticket", args[1] if len(args) > 1 else None)
+        self._log("positions_get", symbol if passed else "<omitted>",
+                  ticket if passed else "<omitted>")
+
         if self.behaviour in (BEHAVIOUR_RECONCILE_FAILS,
                               BEHAVIOUR_HANG_THEN_RECONCILE_FAILS):
             raise RuntimeError("terminal disconnected mid-reconcile")
+
+        if self.strict_none_args:
+            # Measured against the live terminal:
+            #   positions_get()                    -> all positions
+            #   positions_get(symbol=None)         -> None
+            #   positions_get(ticket=None)         -> None
+            #   positions_get(symbol='USDCAD')     -> correctly filtered
+            if not passed:
+                return list(self._positions)
+            if symbol is None and ticket is None:
+                return None
+
         if ticket is not None:
             return [p for p in self._positions if p.ticket == ticket]
         if symbol is not None:

@@ -372,7 +372,7 @@ class Gateway:
         request.setdefault("magic", self.magic)
 
         try:
-            result = self._submit("order_send", self._mt5.order_send, request,
+            result = self._submit("order_send", self._mt5_or_raise().order_send, request,
                                   timeout=self.call_timeout)
         except MT5Timeout:
             return self._reconcile_after_timeout(request)
@@ -485,8 +485,8 @@ class Gateway:
     def _reconcile_positions(self, symbol: str | None, magic: int) -> list[dict]:
         # No `or []` fallback: an empty result and a failed call are different
         # facts, and conflating them is how a lost order becomes a duplicate.
-        positions = self.call("positions_get", self._mt5.positions_get,
-                              symbol=symbol)
+        # positions_get() omits None arguments deliberately; see its docstring.
+        positions = self.positions_get(symbol=symbol)
         if positions is None:
             raise GatewayError(
                 "positions_get returned None during reconciliation; the order's "
@@ -509,7 +509,7 @@ class Gateway:
     def _reconcile_history(self, symbol: str | None, magic: int) -> list[dict]:
         try:
             orders = self.call("history_orders_get",
-                               self._mt5.history_orders_get,
+                               self._mt5_or_raise().history_orders_get,
                                int(time.time()) - self.order_lookback,
                                int(time.time())) or []
         except Exception:
@@ -530,24 +530,62 @@ class Gateway:
             })
         return out
 
+    def _mt5_or_raise(self):
+        """Resolve the MT5 module, or raise if it is unavailable.
+
+        Every read helper must go through this. They used to dereference
+        self._mt5 directly, which is None until _ensure_connected() has run on
+        the owner thread. The result was
+        `'NoneType' object has no attribute 'positions_get'` on the very first
+        reconcile, so the engine never read broker state at all.
+        """
+        mt5 = self._resolve_mt5()
+        if mt5 is None:
+            raise GatewayError(
+                "MetaTrader5 package is unavailable; the gateway cannot read "
+                "or write terminal state"
+            )
+        return mt5
+
     # -- read helpers ----------------------------------------------------
 
     def account_info(self) -> Any:
-        return self.call("account_info", self._mt5.account_info)
+        return self.call("account_info", self._mt5_or_raise().account_info)
 
     def symbol_info(self, symbol: str) -> Any:
-        return self.call("symbol_info", self._mt5.symbol_info, symbol)
+        return self.call("symbol_info", self._mt5_or_raise().symbol_info, symbol)
 
     def symbol_info_tick(self, symbol: str) -> Any:
-        return self.call("symbol_info_tick", self._mt5.symbol_info_tick, symbol)
+        return self.call("symbol_info_tick",
+                         self._mt5_or_raise().symbol_info_tick, symbol)
 
     def symbol_select(self, symbol: str, select: bool = True) -> Any:
-        return self.call("symbol_select", self._mt5.symbol_select, symbol, select)
+        return self.call("symbol_select",
+                         self._mt5_or_raise().symbol_select, symbol, select)
 
     def positions_get(self, symbol: str | None = None,
-                      ticket: int | None = None) -> Any:
-        return self.call("positions_get", self._mt5.positions_get,
-                         symbol=symbol, ticket=ticket)
+                      ticket: int | None = None) -> list:
+        """Open positions.
+
+        MT5 has a quirk here: passing EITHER argument explicitly, even as None,
+        returns None instead of the positions. `positions_get()` with no
+        arguments returns everything; `positions_get(symbol=None)` returns
+        None. The gateway always passed both, so every call came back empty and
+        reconciliation silently saw zero exposure.
+
+        Arguments are therefore only supplied when they actually carry a value.
+
+        MT5 also returns None rather than an empty list for "no data", so None
+        is normalised to [] and callers can iterate without a None check.
+        """
+        func = self._mt5_or_raise().positions_get
+        if ticket is not None:
+            result = self.call("positions_get", func, ticket=ticket)
+        elif symbol is not None:
+            result = self.call("positions_get", func, symbol=symbol)
+        else:
+            result = self.call("positions_get", func)
+        return list(result) if result else []
 
     def close_position(self, ticket: int) -> OrderResult:
         """Close one position. Routed through send_order for reconciliation."""
