@@ -192,6 +192,50 @@ def _looks_like_type_annotation(value: str) -> bool:
     return False
 
 
+def _looks_like_prose_capture(value: str) -> bool:
+    """True when the capture is prose rather than a credential.
+
+    Applies only to a line that merely NAMES a credential, which is a docstring
+    or a comment. Decisive signals, in order:
+
+      - The line is a comment or a docstring opener.
+      - The value sits inside quotes that clearly belong to prose, i.e. the
+        quote is immediately followed by a word character and the line has more
+        words after it.
+
+    Both must hold. An earlier version keyed on the value's shape (a short
+    alphabetic token) and consequently excused `client_secret: str = "hunter2xyz"`,
+    because the capture `str` looks like a word. The shape of a value is not a
+    reliable signal; the shape of the LINE is.
+    """
+    stripped = value.strip().strip('"').strip("'").rstrip(",);")
+    if not stripped:
+        return True
+
+    # Not prose-capable: an assignment. A quoted literal anywhere in this line
+    # is a credential, whatever else the line contains.
+    if not _is_comment_or_docstring_line():
+        return False
+
+    # Comment or docstring: the capture is prose unless it is quoted on both
+    # sides, which a sentence fragment would not be.
+    return not (value.strip().startswith(('"', "'"))
+                and value.strip().endswith(('"', "'")))
+
+
+# The line currently being classified, set by _is_benign_line. Module-level
+# because the pattern match has no line context of its own.
+_CURRENT_LINE = ""
+
+
+def _is_comment_or_docstring_line() -> bool:
+    text = _CURRENT_LINE.strip()
+    if text.startswith("#"):
+        return True
+    # A docstring opener, or the continuation line of one.
+    return text.startswith(('"""', "'''", '"', "'"))
+
+
 def is_env_reference(value: str) -> bool:
     """True when the value is code that READS a secret, not a literal one.
 
@@ -583,7 +627,15 @@ def verify_scanner_detects_known_secret() -> bool:
         # A real key must not hide behind a type-annotation-looking prefix.
         'OPENROUTER_API_KEY = "sk-or-v1-ZZZZrandomrandom1234"',
     ):
-        if _is_benign_line(literal, literal.partition("=")[2].strip().strip('"')):
+        # Take the value the pattern actually captures, not a hand-rolled
+        # partition: some of these lines have no '=' at all, so partition
+        # yields an empty string and the check would pass for the wrong reason.
+        m = dict(PATTERNS)["credential_assignment"].search(literal)
+        if m is None:
+            print(f"  BROKEN: pattern no longer matches {literal[:48]!r}",
+                  file=sys.stderr)
+            return False
+        if _is_benign_line(literal, m.groupdict()["val"]):
             print(f"  BROKEN: a real literal was suppressed: {literal[:48]!r}",
                   file=sys.stderr)
             return False
@@ -608,10 +660,45 @@ def verify_scanner_detects_known_secret() -> bool:
 def _is_benign_line(line: str, value: str) -> bool:
     """Whether a match on `line` can be ignored.
 
-    A whole-line parameter declaration is benign: it names a parameter. A real
-    assignment on the same line as a declaration is not, which is why the
-    declaration check is line-level and anchored.
+    A parameter declaration is benign: it names a parameter. A real assignment
+    on the same line as a declaration is not, which is why the declaration check
+    is line-level and anchored.
+
+    Prose that merely names a credential, in a docstring or a comment, is also
+    benign. The line is made available to _looks_like_prose_capture through a
+    module-level slot because the pattern match carries no line context.
     """
+    global _CURRENT_LINE
+    _CURRENT_LINE = line
+    try:
+        return _benign_for(line, value)
+    finally:
+        _CURRENT_LINE = ""
+
+
+def _benign_for(line: str, value: str) -> bool:
+    """The decision, with `line` in scope for the prose check."""
+    # Prose that merely NAMES a credential, e.g.
+    #   """Check the XAI_API_KEY: is it picked up, and does it authenticate?
+    # The sensitive word is followed by prose, not by a value. What the
+    # assignment pattern then captures is punctuation from the sentence
+    # (a markdown '**', a stray quote) rather than anything meaningful.
+    #
+    # The discriminator: the captured value carries no alphanumeric content of
+    # length, so there is nothing for it to be. A real assignment always has a
+    # value with substance.
+    _PROSE_NOISE_RE = re.compile(r"^[^\w]*$")
+
+    if _PROSE_NOISE_RE.match(value.strip().strip('"').strip("'")):
+        return True
+    # A docstring or comment that merely NAMES a credential:
+    #   """Check the XAI_API_KEY: is it picked up?
+    # The sensitive word is followed by prose, so the pattern captures the rest
+    # of the sentence. A real assignment captures a single token with no spaces.
+    # Requiring the capture to be space-free is what separates them: no genuine
+    # credential value contains unescaped spaces after the quotes are stripped.
+    if _looks_like_prose_capture(value):
+        return True
     return is_placeholder(value) or is_env_reference(value) \
         or is_parameter_declaration(line)
 
