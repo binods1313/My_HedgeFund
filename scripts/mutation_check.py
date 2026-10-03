@@ -725,18 +725,18 @@ def _unused_is_synthetic(value: str) -> bool:""",
         ],
     ),
     Mutation(
-        name="M55: orders permitted without risk approval",
+name="M55: stop-loss check removed from the executor",
         target="engine/executor.py",
-        old="""        if not risk_approved:
+        old="""        if request.sl is None or request.sl <= 0:
             raise ExecutionRejected(
-                "Refusing to submit: risk gate did not approve this order."
+                f"Refusing to submit {request.side} {request.symbol}: no stop "
+                f"loss. Every order requires a broker-side SL."
             )""",
         new="""        if False:
-            raise ExecutionRejected(
-                "Refusing to submit: risk gate did not approve this order."
-            )""",
+            raise ExecutionRejected("unreachable in this mutation")""",
         expect_fail=[
-            "tests/test_engine/test_executor_commands.py::TestExecutorSafetyGates::test_unapproved_order_is_rejected",
+            "tests/test_engine/test_executor_commands.py::TestExecutorSafetyGates::test_order_without_sl_is_rejected[0]",
+            "tests/test_engine/test_executor_commands.py::TestExecutorSafetyGates::test_order_without_sl_is_rejected[None]",
         ],
     ),
     Mutation(
