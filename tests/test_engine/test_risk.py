@@ -91,6 +91,104 @@ class TestRiskAmount:
         assert "tick_value" in str(excinfo.value)
 
 
+class TestTickSpecConversion:
+    """The live probe showed tick_value is the value of ONE tick_size move.
+
+    Dividing by tick_size instead of scaling by it reported EURUSD as 88,861.24
+    per point, where the real figure is 0.8886. At that magnitude every order
+    would breach the per-trade cap by five orders of magnitude, so the wrong
+    direction here silently blocks all trading.
+    """
+
+    # Values measured from MetaQuotes-Demo via probe_tick_specs.py.
+    EURUSD = dict(tick_value=0.8886124316879194, tick_size=1e-05,
+                  point=1e-05, digits=5)
+    XAUUSD = dict(tick_value=0.1, tick_size=0.01, point=0.01, digits=2)
+
+    def test_five_digit_forex_point_conversion(self):
+        spec = self.EURUSD
+        per_point = spec["tick_value"] * (spec["point"] / spec["tick_size"])
+        assert per_point == pytest.approx(0.8886124, abs=1e-6)
+        assert per_point < 1.0, "a point of EURUSD cannot be worth 100,000 EUR"
+
+    def test_gold_point_conversion(self):
+        spec = self.XAUUSD
+        per_point = spec["tick_value"] * (spec["point"] / spec["tick_size"])
+        assert per_point == pytest.approx(0.1, abs=1e-9)
+
+    def test_a_pip_is_worth_the_market_standard(self):
+        """EURUSD should be ~8.89 account currency per pip per lot.
+
+        The account is EUR-denominated, so the figure is EUR 8.886 rather than
+        the usual USD 8.89. This pins the conversion against a number every
+        trader would recognise, which is a stronger check than a self-consistent
+        one: a formula that is internally consistent but off by a factor of
+        ten would otherwise pass unnoticed.
+        """
+        spec = self.EURUSD
+        pip_size = spec["point"] * 10          # 5-digit quote: 10 points
+        per_pip = pip_size / spec["tick_size"] * spec["tick_value"]
+        assert per_pip == pytest.approx(8.886, abs=0.01), (
+            f"EURUSD pip value came out at {per_pip}; the market standard is "
+            f"about 8.89 per pip per lot"
+        )
+
+    def test_ten_pip_stop_on_a_tenth_of_a_lot(self):
+        """0.10 lots with a 10 pip stop risks about EUR 8.89."""
+        spec = self.EURUSD
+        pip_size = spec["point"] * 10
+        distance = pip_size * 10
+        risk = (distance / spec["tick_size"]
+                * spec["tick_value"] * 0.10)
+        assert risk == pytest.approx(8.886, abs=0.01), (
+            f"implied risk EUR {risk:.2f} for a 10 pip stop on 0.10 lots"
+        )
+
+    def test_wider_stop_scales_linearly(self):
+        """Doubling the stop distance doubles the risk."""
+        spec = self.EURUSD
+        base = OrderIntent.from_symbol_spec(
+            symbol="EURUSD", side="BUY", volume=0.10, entry_price=1.10000,
+            stop_loss=1.09900,
+            tick_value=spec["tick_value"], tick_size=spec["tick_size"])
+        wide = OrderIntent.from_symbol_spec(
+            symbol="EURUSD", side="BUY", volume=0.10, entry_price=1.10000,
+            stop_loss=1.09800,
+            tick_value=spec["tick_value"], tick_size=spec["tick_size"])
+        assert wide.risk_amount == pytest.approx(2 * base.risk_amount, rel=1e-6)
+
+    def test_wrong_conversion_is_detectably_absurd(self):
+        """Pins why the conversion matters rather than trusting it."""
+        spec = self.EURUSD
+        correct = spec["tick_value"] * (spec["point"] / spec["tick_size"])
+        wrong = spec["tick_value"] / spec["tick_size"]
+        assert wrong / correct > 10_000, (
+            "the incorrect conversion must be orders of magnitude off, so any "
+            "order sized with it is obviously broken"
+        )
+
+    def test_from_symbol_spec_accepts_live_values(self):
+        spec = self.EURUSD
+        intent = OrderIntent.from_symbol_spec(
+            symbol="EURUSD", side="BUY", volume=0.10, entry_price=1.10000,
+            stop_loss=1.09900,
+            tick_value=spec["tick_value"], tick_size=spec["tick_size"])
+        # 10 pips on 0.10 lots, from live broker values.
+        assert intent.risk_amount == pytest.approx(8.886, abs=0.01)
+
+    @pytest.mark.parametrize("tick_value,tick_size", [
+        (0.0, 1e-05), (0.888, 0.0), (None, 1e-05), (0.888, None),
+    ])
+    def test_from_symbol_spec_refuses_a_missing_tick_field(self, tick_value,
+                                                          tick_size):
+        """An unmeasurable symbol cannot be sized, so it must be refused."""
+        with pytest.raises(RiskConfigError) as excinfo:
+            OrderIntent.from_symbol_spec(
+                symbol="X", side="BUY", volume=0.1, entry_price=1.1,
+                stop_loss=1.095, tick_value=tick_value, tick_size=tick_size)
+        assert "tick" in str(excinfo.value).lower()
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Limits
 # ─────────────────────────────────────────────────────────────────────────────

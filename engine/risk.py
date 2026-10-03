@@ -162,11 +162,45 @@ class OrderIntent:
 
     @property
     def risk_amount(self) -> float:
-        """Loss at the stop, in account currency."""
+        """Loss at the stop, in account currency.
+
+        tick_value is the money value of ONE trade_tick_size move, so a price
+        distance converts as:
+
+            distance / tick_size * tick_value * volume
+
+        When point == tick_size (the usual case) this is distance * tick_value,
+        and dividing by tick_size alone instead would inflate the figure by
+        1/tick_size -- roughly 100,000x for a 5-digit forex pair, which would
+        block every order against the per-trade cap.
+        """
         return (abs(self.entry_price - self.stop_loss)
                 / self.tick_size
                 * self.tick_value
                 * self.volume)
+
+    @classmethod
+    def from_symbol_spec(
+        cls, *, symbol: str, side: str, volume: float, entry_price: float,
+        stop_loss: float, tick_value: float, tick_size: float,
+        spread_points: float | None = None, max_spread_points: float | None = None,
+    ) -> "OrderIntent":
+        """Build an intent from raw MT5 symbol fields.
+
+        Refuses if either tick field is missing or zero, because the risk would
+        be unknown and the engine cannot allow what it cannot measure.
+        """
+        if not tick_value or not tick_size:
+            raise RiskConfigError(
+                f"{symbol}: the broker did not supply a usable tick spec "
+                f"(tick_value={tick_value}, tick_size={tick_size}); risk "
+                f"cannot be computed, so this symbol cannot be sized"
+            )
+        return cls(symbol=symbol, side=side, volume=volume,
+                   entry_price=entry_price, stop_loss=stop_loss,
+                   tick_value=tick_value, tick_size=tick_size,
+                   spread_points=spread_points,
+                   max_spread_points=max_spread_points)
 
     @property
     def stop_distance(self) -> float:
