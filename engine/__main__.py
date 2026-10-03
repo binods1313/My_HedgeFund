@@ -106,6 +106,16 @@ class Engine:
         known = {int(p["ticket"]): p for p in self.journal.positions()}
         adopted, vanished = [], []
 
+        # Reading broker state requires a live connection. Without this the read
+        # raises NotConnected and every position looks absent.
+        if not self.gateway.connected and not self.gateway.ensure_connected():
+            self.journal.log_event(
+                "reconcile", "skipped: gateway not connected",
+                severity="WARNING",
+                context={"error": self.gateway.status.last_error or "unknown"},
+            )
+            return {"adopted": [], "vanished": [], "error": "not connected"}
+
         try:
             positions = self.gateway.positions_get() or []
         except Exception as exc:   # noqa: BLE001
@@ -266,6 +276,15 @@ def build_engine(*, config_path: Path | str | None = None,
         journal=journal,
     )
     gateway.start()
+    # start() only spawns the owner thread. Connect explicitly before anything
+    # reads broker state: reconciliation ran first and logged 'not connected:
+    # not started', because nothing had asked the gateway to connect.
+    if not gateway.ensure_connected():
+        journal.log_event(
+            "gateway", "initial connect failed; trading stays blocked",
+            severity="WARNING",
+            context={"error": gateway.status.last_error or "unknown"},
+        )
 
     def tick_provider(symbol: str):
         if not gateway.connected:
