@@ -38,6 +38,75 @@ def engine_modules() -> list[Path]:
                   if p.name != "__init__.py")
 
 
+def _environment_reads(module: Path) -> list[str]:
+    """Lines that actually read the environment.
+
+    Uses the AST rather than a text scan. A text scan cannot distinguish code
+    from documentation: this module's own docstring contains the phrase
+    'never from os.environ', which a substring match reports as a violation of
+    the rule the docstring states.
+
+    A token-based approach was tried first and was worse: it silently dropped
+    real reads, which would have made this test decorative.
+    """
+    import ast
+
+    source = module.read_text(encoding="utf-8")
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return [f"{module.name}: does not parse"]
+
+    # Line ranges of every docstring, so prose can be excluded precisely.
+    prose_lines: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                             ast.AsyncFunctionDef)):
+            doc = ast.get_docstring(node, clean=False)
+            if doc and node.body:
+                first = node.body[0]
+                end = getattr(first, "end_lineno", first.lineno)
+                prose_lines.update(range(first.lineno, end + 1))
+
+    offenders: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Attribute):
+            continue
+        # `os.environ` parses as Attribute(attr='environ', value=Name('os')).
+        # `os.environ.get(...)` nests that inside Attribute(attr='get').
+        # Both are reads, so flag the chain ending in 'environ' at any depth.
+        if _attribute_chain(node) in ("os.environ", "environ"):
+            if node.lineno not in prose_lines:
+                offenders.append(f"{node.lineno}: {_attribute_chain(node)}")
+        # A bare `environ` imported from somewhere, used by subscript.
+        if node.attr == "__getitem__":
+            target = _attribute_chain(node.value)
+            if target in ("os.environ", "environ") and \
+                    node.lineno not in prose_lines:
+                offenders.append(f"{node.lineno}: {target}[...]")
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            func = node.func
+            name = getattr(func, "id", None) or getattr(func, "attr", None)
+            if name == "getenv" and node.lineno not in prose_lines:
+                offenders.append(f"{node.lineno}: getenv()")
+
+    return sorted(set(offenders))
+
+
+def _attribute_chain(node) -> str:
+    """Rebuild a dotted attribute expression, e.g. os.environ -> 'os.environ'."""
+    parts: list[str] = []
+    current = node
+    while isinstance(current, ast.Attribute):
+        parts.append(current.attr)
+        current = current.value
+    if isinstance(current, ast.Name):
+        parts.append(current.id)
+    return ".".join(reversed(parts))
+
+
 def imported_modules(path: Path) -> set[str]:
     """Top-level module names imported by a file."""
     tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -128,19 +197,15 @@ class TestCredentialAccessIsCentralised:
     @pytest.mark.parametrize("module", engine_modules(),
                              ids=lambda p: p.name)
     def test_only_keys_and_config_touch_the_environment(self, module):
-        """No module outside the allow-list may read os.environ."""
+        """No module outside the allow-list may read os.environ.
+
+        Docstrings and comments are stripped first: prose saying 'never from
+        os.environ' is documentation, not a read, and treating it as one makes
+        this test fail for correct code.
+        """
         if module.name in CREDENTIAL_READERS:
             pytest.skip(f"{module.name} is an approved credential reader")
-        source = module.read_text(encoding="utf-8")
-        offenders = []
-        for lineno, line in enumerate(source.splitlines(), 1):
-            stripped = line.strip()
-            if stripped.startswith("#"):
-                continue
-            if "os.environ" in line or "getenv(" in line:
-                # A getattr(config, ...) read is fine; a direct env read is not.
-                if "os.environ" in line or "environ.get(" in line:
-                    offenders.append(f"{lineno}: {stripped[:70]}")
+        offenders = _environment_reads(module)
         assert not offenders, (
             f"{module.name} reads the environment directly; route secrets "
             f"through engine.keys.ProviderKeyring. Offenders: {offenders}"

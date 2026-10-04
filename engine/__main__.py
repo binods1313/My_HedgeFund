@@ -34,6 +34,7 @@ from engine.config import (
     load_engine_config,
     read_mt5_credentials,
 )
+from engine.equity import EquityTracker, broker_today, validate_server_epoch
 from engine.executor import ExecutionRejected, build_executor
 from engine.gateway import Gateway
 from engine.journal import Journal, resolve_db_path
@@ -55,8 +56,9 @@ class Engine:
     executor: object
     commands: CommandProcessor
     risk: RiskEngine
-
+    equity_tracker: EquityTracker = None
     _running: bool = True
+    _epoch_cache: int | None = None
 
     def request_stop(self) -> None:
         self._running = False
@@ -88,9 +90,119 @@ class Engine:
                 ("ACCOUNT_EQUITY", equity, equity, 0.0, int(time.time()),
                  datetime.now(timezone.utc).isoformat(timespec="seconds")),
             )
-            self.journal.snapshot_equity(equity, balance=balance, margin=margin)
         except Exception:   # noqa: BLE001
             pass
+
+        # Feed the equity tracker rather than writing a bare snapshot. This is
+        # what supplies start_of_day_equity and peak_equity, without which the
+        # Risk Engine correctly refuses every order on 'peak equity unknown'.
+        if equity > 0:
+            try:
+                open_risk = self._current_open_risk()
+                self.equity_tracker.observe(
+                    equity, balance=balance, margin=margin,
+                    open_risk=open_risk,
+                    open_positions=self.journal.open_position_count(),
+                    now_day=self._broker_today(),
+                )
+                self._auto_halt_on_breach(equity)
+            except Exception:   # noqa: BLE001
+                pass
+
+    def _broker_today(self) -> str:
+        """The broker's trading day, from a VALIDATED terminal clock.
+
+        Falls back to UTC when no sample is plausible. The daily loss baseline
+        must reset on the broker's calendar; using the operator's local clock
+        would reset it out of step with the venue, and using an unvalidated
+        tick time was measured on this account to be up to a day wrong.
+        """
+        return broker_today(self._server_epoch())
+
+    def _server_epoch(self) -> int | None:
+        """Validated broker server time, memoised per engine instance."""
+        if self._epoch_cache is None:
+            self._epoch_cache = _broker_server_epoch(self.gateway)
+        return self._epoch_cache
+
+    def _current_open_risk(self) -> float | None:
+        """Summed entry-to-stop risk across open positions, or None if unknown.
+
+        None when any position cannot be measured, so the gate treats it as
+        unknown rather than as zero.
+        """
+        positions = self.journal.positions()
+        if not positions:
+            return 0.0
+        specs = self._symbol_specs()
+        total = 0.0
+        for position in positions:
+            spec = specs.get(position["symbol"].upper()) or {}
+            tick_value = float(spec.get("trade_tick_value") or 0.0)
+            tick_size = float(spec.get("trade_tick_size") or 0.0)
+            stop = float(position.get("sl") or 0.0)
+            entry = float(position.get("price_open") or 0.0)
+            volume = float(position.get("volume") or 0.0)
+            if not tick_value or not tick_size or stop <= 0 or entry <= 0:
+                return None      # unmeasurable; do not report zero risk
+            total += abs(entry - stop) / tick_size * tick_value * volume
+        return total
+
+    def _symbol_specs(self) -> dict:
+        """Trade specifications for the symbols we hold, from the terminal."""
+        if not self.gateway.connected:
+            return {}
+        specs = {}
+        for position in self.journal.positions():
+            name = position["symbol"]
+            if name.upper() in specs:
+                continue
+            try:
+                info = self.gateway.symbol_info(name)
+            except Exception:   # noqa: BLE001
+                info = None
+            if info is not None:
+                specs[name.upper()] = {
+                    "trade_tick_value": getattr(info, "trade_tick_value", None),
+                    "trade_tick_size": getattr(info, "trade_tick_size", None),
+                }
+        return specs
+
+    def _auto_halt_on_breach(self, equity: float) -> None:
+        """Halt the engine when a hard limit is breached.
+
+        The gate blocks individual orders; this stops the engine outright, so a
+        breached limit cannot be worked around by a later order that happens to
+        measure differently.
+        """
+        baselines = self.equity_tracker.current(self._broker_today())
+        if baselines is None or self.risk.halted:
+            return
+        drawdown = baselines.drawdown_pct(equity)
+        daily_loss = baselines.daily_loss_pct(equity)
+
+        if drawdown is not None and drawdown >= self.risk.limits.max_drawdown_pct:
+            self.risk.halt(
+                "drawdown",
+                f"drawdown {drawdown:.2f}% reached the "
+                f"{self.risk.limits.max_drawdown_pct}% limit; manual resume "
+                f"required")
+            try:
+                self.state.transition("PAUSED", "PAUSE", reason="drawdown limit")
+            except Exception:   # noqa: BLE001
+                pass
+        elif daily_loss is not None and daily_loss >= self.risk.limits.daily_loss_limit_pct:
+            self.risk.halt(
+                "daily_loss",
+                f"daily loss {daily_loss:.2f}% reached the "
+                f"{self.risk.limits.daily_loss_limit_pct}% limit")
+            try:
+                self.state.transition("PAUSED", "PAUSE", reason="daily loss limit")
+            except Exception:   # noqa: BLE001
+                pass
+        else:
+            # Within limits: clear a daily-loss halt for the new day.
+            self.risk.clear_daily_loss_halt()
 
     # -- reconciliation --------------------------------------------------
 
@@ -248,6 +360,33 @@ class Engine:
         self.journal.close()
 
 
+def _broker_server_epoch(gateway) -> int | None:
+    """A VALIDATED terminal server time, or None when none can be trusted.
+
+    Several symbols are sampled because the terminal does not report one
+    consistent clock: on the XM demo account, forex and index ticks were a day
+    stale while a crypto tick was correct to the minute. A single sample would
+    therefore seed the wrong trading day, which resets the daily loss limit at
+    the wrong moment. Each candidate is validated against the local clock and
+    the first plausible one wins; if none is plausible the caller falls back to
+    UTC.
+    """
+    if not gateway.connected:
+        return None
+
+    for symbol in ("EURUSD", "BTCUSD#", "US500Cash#", "GBPUSD"):
+        try:
+            tick = gateway.symbol_info_tick(symbol)
+        except Exception:   # noqa: BLE001
+            continue
+        if tick is None or not getattr(tick, "time", None):
+            continue
+        validated = validate_server_epoch(int(tick.time))
+        if validated is not None:
+            return validated
+    return None
+
+
 def build_engine(*, config_path: Path | str | None = None,
                  root: Path | str | None = None,
                  mt5_module=None,
@@ -302,7 +441,11 @@ def build_engine(*, config_path: Path | str | None = None,
         journal.close()
         raise
 
+    equity_tracker = EquityTracker(
+        journal, server_epoch_provider=lambda: _broker_server_epoch(gateway))
+
     risk = RiskEngine(journal)
+    risk.set_magic(config.engine.magic_number)
 
     # Keep the executor's view of state current as the machine moves.
     def sync_state(from_state: str, to_state: str, trigger: str, reason: str) -> None:
@@ -317,7 +460,7 @@ def build_engine(*, config_path: Path | str | None = None,
 
     return Engine(config=config, journal=journal, state=state_machine,
                   gateway=gateway, executor=executor, commands=commands,
-                  risk=risk)
+                  risk=risk, equity_tracker=equity_tracker)
 
 
 def main(argv: list[str] | None = None) -> int:
