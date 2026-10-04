@@ -210,7 +210,9 @@ class EquityTracker:
                 (day, value, value, ts, ts, ts),
             )
         else:
-            start = float(row["start_of_day_equity"])
+            # start_of_day_equity is deliberately NOT read here and NOT
+            # updated: it is fixed at the first reading of the broker's day.
+            # Reading it into a local implied it might change; it must not.
             peak = float(row["peak_equity"])
             count = int(row["sample_count"] or 0)
 

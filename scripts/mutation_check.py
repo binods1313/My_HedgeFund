@@ -1122,10 +1122,26 @@ from engine.gateway import Gateway, OrderOutcome, OrderResult""",
         ],
     ),
     Mutation(
-        name="M86: baselines taken from the peak instead of the day start",
+        # An earlier version of this mutation swapped a local `start` for
+        # `peak`, which proved unobservable: that local was dead code. The
+        # invariant that actually matters is that the stored day start is never
+        # rewritten once seeded, so that is what this breaks.
+        name="M86: start-of-day baseline rewritten on later samples",
         target="engine/equity.py",
-        old="""            start = float(row["start_of_day_equity"])""",
-        new="""            start = float(row["peak_equity"])  # MUTATION""",
+        old="""            self.journal.execute(
+                \"\"\"
+                UPDATE equity_baselines
+                   SET peak_equity = ?, peak_ts = ?, sample_count = ?,
+                       updated_ts = ?
+                 WHERE trading_day = ?
+                \"\"\",""",
+        new="""            self.journal.execute(
+                \"\"\"
+                UPDATE equity_baselines
+                   SET peak_equity = ?, peak_ts = ?, sample_count = ?,
+                       updated_ts = ?, start_of_day_equity = ?
+                 WHERE trading_day = ?
+                \"\"\",""",
         expect_fail=[
             "tests/test_engine/test_equity.py::TestBaselines::test_start_of_day_never_moves_within_a_day",
         ],
