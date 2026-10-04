@@ -128,11 +128,54 @@ class TestBaselines:
         )
 
     def test_start_of_day_never_moves_within_a_day(self, tracker):
+        """The daily baseline is fixed at the first reading.
+
+        A rally must not lift it: that would quietly forgive a loss that
+        happened earlier the same day.
+        """
         tracker.observe(100_000.0, now_day="2026-10-04")
         baselines = tracker.observe(120_000.0, now_day="2026-10-04")
         assert baselines.start_of_day_equity == 100_000.0, (
             "the daily baseline is fixed at the first reading of the day"
         )
+        # The peak DID move, so the two are genuinely distinct and a mutation
+        # that substitutes one for the other is observable.
+        assert baselines.peak_equity == 120_000.0
+
+    def test_loss_after_a_rally_is_still_measured_from_the_day_start(self, tracker):
+        """The case that matters: rally, then fall back below the day start."""
+        tracker.observe(100_000.0, now_day="2026-10-04")   # day starts here
+        tracker.observe(120_000.0, now_day="2026-10-04")   # rally
+        baselines = tracker.observe(98_000.0, now_day="2026-10-04")  # falls back
+
+        assert baselines.start_of_day_equity == 100_000.0
+        # A 2% daily loss, measured from the day's opening equity...
+        assert baselines.daily_loss_pct(98_000.0) == pytest.approx(2.0)
+        # ...not from the peak, which would report zero loss because 98,000 is
+        # still above the peak only if the peak were ignored entirely.
+        assert baselines.peak_equity == 120_000.0
+        assert baselines.drawdown_pct(98_000.0) == pytest.approx(
+            (120_000.0 - 98_000.0) / 120_000.0 * 100.0)
+
+    def test_daily_loss_survives_a_peak_that_is_not_the_day_start(self, tracker):
+        """Start-of-day and peak must be able to differ, and both must be used.
+
+        If daily loss were computed from the peak, a rally would erase the
+        day's loss entirely. This pins that it is not.
+        """
+        tracker.observe(50_000.0, now_day="2026-10-04")
+        tracker.observe(200_000.0, now_day="2026-10-04")   # 4x rally
+        baselines = tracker.current("2026-10-04")
+
+        assert baselines.start_of_day_equity == 50_000.0
+        assert baselines.peak_equity == 200_000.0
+        # At the peak there is no daily loss at all, even though the day opened
+        # at 50,000 and equity is now 200,000.
+        assert baselines.daily_loss_pct(200_000.0) == 0.0
+        # Back to the day's opening level: zero loss, measured correctly.
+        assert baselines.daily_loss_pct(50_000.0) == 0.0
+        # Halfway between: a real 50% daily loss from the 50,000 opening.
+        assert baselines.daily_loss_pct(25_000.0) == pytest.approx(50.0)
 
     def test_a_new_day_seeds_fresh_baselines(self, tracker):
         tracker.observe(100_000.0, now_day="2026-10-04")
