@@ -34,7 +34,7 @@ from engine.config import (
     load_engine_config,
     read_mt5_credentials,
 )
-from engine.equity import EquityTracker, broker_today
+from engine.equity import EquityTracker, broker_today, validate_server_epoch
 from engine.executor import ExecutionRejected, build_executor
 from engine.gateway import Gateway
 from engine.journal import Journal, resolve_db_path
@@ -57,8 +57,8 @@ class Engine:
     commands: CommandProcessor
     risk: RiskEngine
     equity_tracker: EquityTracker = None
-
     _running: bool = True
+    _epoch_cache: int | None = None
 
     def request_stop(self) -> None:
         self._running = False
@@ -110,21 +110,20 @@ class Engine:
                 pass
 
     def _broker_today(self) -> str:
-        """The broker's trading day, from terminal server time.
+        """The broker's trading day, from a VALIDATED terminal clock.
 
-        Falls back to UTC when the terminal is unreachable. The daily loss
-        baseline must reset on the broker's calendar; using the operator's
-        local clock would reset it up to a day out of step with the venue.
+        Falls back to UTC when no sample is plausible. The daily loss baseline
+        must reset on the broker's calendar; using the operator's local clock
+        would reset it out of step with the venue, and using an unvalidated
+        tick time was measured on this account to be up to a day wrong.
         """
-        server_epoch = None
-        try:
-            if self.gateway.connected:
-                tick = self.gateway.symbol_info_tick("EURUSD")
-                if tick is not None and getattr(tick, "time", None):
-                    server_epoch = int(tick.time)
-        except Exception:   # noqa: BLE001
-            server_epoch = None
-        return broker_today(server_epoch)
+        return broker_today(self._server_epoch())
+
+    def _server_epoch(self) -> int | None:
+        """Validated broker server time, memoised per engine instance."""
+        if self._epoch_cache is None:
+            self._epoch_cache = _broker_server_epoch(self.gateway)
+        return self._epoch_cache
 
     def _current_open_risk(self) -> float | None:
         """Summed entry-to-stop risk across open positions, or None if unknown.
@@ -362,19 +361,29 @@ class Engine:
 
 
 def _broker_server_epoch(gateway) -> int | None:
-    """Terminal server time as a unix epoch, or None when unreachable.
+    """A VALIDATED terminal server time, or None when none can be trusted.
 
-    Used to decide the broker's trading day, so the daily loss baseline resets
-    on the venue's calendar rather than the operator's.
+    Several symbols are sampled because the terminal does not report one
+    consistent clock: on the XM demo account, forex and index ticks were a day
+    stale while a crypto tick was correct to the minute. A single sample would
+    therefore seed the wrong trading day, which resets the daily loss limit at
+    the wrong moment. Each candidate is validated against the local clock and
+    the first plausible one wins; if none is plausible the caller falls back to
+    UTC.
     """
-    try:
-        if not gateway.connected:
-            return None
-        tick = gateway.symbol_info_tick("EURUSD")
-        if tick is not None and getattr(tick, "time", None):
-            return int(tick.time)
-    except Exception:   # noqa: BLE001
+    if not gateway.connected:
         return None
+
+    for symbol in ("EURUSD", "BTCUSD#", "US500Cash#", "GBPUSD"):
+        try:
+            tick = gateway.symbol_info_tick(symbol)
+        except Exception:   # noqa: BLE001
+            continue
+        if tick is None or not getattr(tick, "time", None):
+            continue
+        validated = validate_server_epoch(int(tick.time))
+        if validated is not None:
+            return validated
     return None
 
 

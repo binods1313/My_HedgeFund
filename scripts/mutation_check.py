@@ -1056,6 +1056,80 @@ from engine.gateway import Gateway, OrderOutcome, OrderResult""",
             "tests/test_engine/test_risk_wiring.py::TestBuildOrderIntent::test_unknown_symbol_is_refused",
         ],
     ),
+    # ─────────────────────────────────────────────────────────────────────────
+    # Phase 3: equity baselines. These decide when a hard limit resets.
+    # ─────────────────────────────────────────────────────────────────────────
+    Mutation(
+        name="M81: stale broker clock accepted as a day boundary",
+        target="engine/equity.py",
+        old="""    skew = abs(now - float(epoch))
+    if skew > MAX_CLOCK_SKEW_SECONDS:
+        return None
+    return int(epoch)""",
+        new="""    return int(epoch)""",
+        expect_fail=[
+            "tests/test_engine/test_equity.py::TestServerEpochValidation::test_a_one_day_stale_epoch_is_rejected",
+            "tests/test_engine/test_equity.py::TestServerEpochValidation::test_a_four_hour_offset_is_rejected",
+        ],
+    ),
+    Mutation(
+        name="M82: peak lowered by a drawdown reading",
+        target="engine/equity.py",
+        old="""            new_peak = peak if peak >= value else value""",
+        new="""            new_peak = value  # MUTATION: peak follows price down""",
+        expect_fail=[
+            "tests/test_engine/test_equity.py::TestBaselines::test_peak_does_not_fall_on_a_lower_reading",
+        ],
+    ),
+    Mutation(
+        name="M83: start-of-day baseline drifts within the day",
+        target="engine/equity.py",
+        old="""            # start_of_day_equity is deliberately NOT updated: it is fixed at
+            # the first reading of the broker's day.""",
+        new="""            self.journal.execute(
+                "UPDATE equity_baselines SET start_of_day_equity = ? "
+                "WHERE trading_day = ?", (max(start, value), day))""",
+        expect_fail=[
+            "tests/test_engine/test_equity.py::TestBaselines::test_start_of_day_never_moves_within_a_day",
+        ],
+    ),
+    Mutation(
+        name="M84: missing baseline reported as zero loss",
+        target="engine/equity.py",
+        old="""        sod = _finite(self.start_of_day_equity)
+        if sod <= 0:
+            return None""",
+        new="""        sod = _finite(self.start_of_day_equity)
+        if sod <= 0:
+            return 0.0  # MUTATION: absent baseline reads as no loss""",
+        expect_fail=[
+            "tests/test_engine/test_equity.py::TestDerivedPercentages::test_daily_loss_is_none_without_a_usable_baseline",
+        ],
+    ),
+    Mutation(
+        name="M85: non-positive equity accepted as a baseline",
+        target="engine/equity.py",
+        old="""        value = _finite(equity)
+        if value <= 0:
+            raise ValueError(
+                f"equity must be positive, got {equity!r}. A non-positive "
+                f"reading would corrupt both the daily loss and drawdown "
+                f"baselines."
+            )""",
+        new="""        value = abs(_finite(equity))""",
+        expect_fail=[
+            "tests/test_engine/test_equity.py::TestBaselines::test_non_positive_equity_is_refused",
+        ],
+    ),
+    Mutation(
+        name="M86: baselines taken from the peak instead of the day start",
+        target="engine/equity.py",
+        old="""            start = float(row["start_of_day_equity"])""",
+        new="""            start = float(row["peak_equity"])  # MUTATION""",
+        expect_fail=[
+            "tests/test_engine/test_equity.py::TestBaselines::test_start_of_day_never_moves_within_a_day",
+        ],
+    ),
 ]
 
 

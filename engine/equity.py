@@ -85,11 +85,42 @@ def broker_today(server_epoch: int | None = None) -> str:
     Falls back to UTC when no broker time is available. UTC is a defensible
     default because it is the broker's own convention for most venues; local
     machine time is not, because it is whatever the operator's laptop says.
+
+    IMPORTANT: the caller must pass a VALIDATED epoch. See
+    validate_server_epoch() -- on this account the terminal reported three
+    different server times across three symbols, two of them a day stale, so an
+    unvalidated tick time would seed the wrong trading day.
     """
     if server_epoch:
         return datetime.fromtimestamp(
             int(server_epoch), tz=timezone.utc).date().isoformat()
     return datetime.now(timezone.utc).date().isoformat()
+
+
+#: An epoch further than this from the local clock is not a usable day boundary.
+MAX_CLOCK_SKEW_SECONDS = 900      # 15 minutes
+
+
+def validate_server_epoch(epoch: int | None, *,
+                          local_epoch: float | None = None) -> int | None:
+    """Return `epoch` only if it is close enough to the local clock to trust.
+
+    Measured on MetaQuotes and XM demo accounts, symbol_info_tick().time was
+    stale by up to 24 hours for some symbols and correct to the minute for
+    others. Using one of those without checking would seed a trading day up to a
+    day wrong, resetting the daily loss limit when the venue's day has barely
+    begun.
+
+    Returns None when the epoch is missing or implausible, so the caller falls
+    back to UTC rather than to a wrong day.
+    """
+    if not epoch:
+        return None
+    now = local_epoch if local_epoch is not None else _now_epoch()
+    skew = abs(now - float(epoch))
+    if skew > MAX_CLOCK_SKEW_SECONDS:
+        return None
+    return int(epoch)
 
 
 class EquityTracker:
@@ -261,3 +292,8 @@ def peak_ts_blank(row) -> bool:
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _now_epoch() -> float:
+    import time as _time
+    return _time.time()
