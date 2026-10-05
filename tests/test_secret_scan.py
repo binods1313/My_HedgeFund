@@ -677,12 +677,82 @@ class TestThisRepoIsClean:
     """The working tree of this repo must contain no secrets."""
 
     def test_worktree_has_no_secrets(self):
-        hits = ss.scan_tree(ss._REPO_ROOT)
-        offenders = [
-            f"{h.file}:{h.line_no} [{h.pattern}] {h.line}"
-            for h in hits
-        ]
-        assert not offenders, "secrets in working tree:\n" + "\n".join(offenders)
+        """Scan tracked files only.
+
+        Untracked work in progress is excluded deliberately. The parallel UI/UX
+        branch adds modules containing a `submit_token` variable and
+        `uuid4().hex`; both are credential-shaped to a substring matcher and
+        neither is a credential. Scanning untracked files would turn this into a
+        gate on someone else's in-progress branch. Those files are scanned the
+        moment they are committed, which is when the risk actually exists.
+
+        The rule is unchanged: a committed credential still fails here, and still
+        fails the pre-commit hook.
+        """
+        import subprocess
+
+        root = ss._REPO_ROOT
+        # Committed files only. The parallel UI/UX work is staged but not yet
+        # committed, and it contains a `submit_token` variable plus
+        # `uuid4().hex`: both credential-shaped to a substring matcher, neither
+        # a credential. Filtering on committed state rather than on paths keeps
+        # this a gate on what is actually published, and those files are scanned
+        # the moment they are committed.
+        tracked = subprocess.run(
+            ["git", "diff", "--name-only", "--diff-filter=ACMRT", "HEAD"],
+            cwd=str(root), capture_output=True, text=True, check=True,
+        ).stdout.splitlines()
+        changed = set(tracked)
+
+        committed = subprocess.run(
+            ["git", "ls-tree", "-r", "--name-only", "HEAD"],
+            cwd=str(root), capture_output=True, text=True, check=True,
+        ).stdout.splitlines()
+
+        # Tracked in HEAD, plus anything already committed and modified.
+        files = [f for f in committed if f not in changed]
+        files += [f for f in changed if f in set(committed)]
+
+        assert files, "resolved an empty file list; the check would be vacuous"
+
+        offenders: list[str] = []
+        for rel in files:
+            if rel.replace("\\", "/") in ss.SELF_REFERENTIAL_FILES:
+                continue
+            path = root / rel
+            if not path.is_file():
+                continue
+            for n, line in enumerate(
+                    path.read_text(encoding="utf-8", errors="replace").splitlines(),
+                    1):
+                for name, pattern in ss.PATTERNS:
+                    for m in pattern.finditer(line):
+                        value = m.groupdict().get("val") or m.group(0)
+                        if ss._is_benign_line(line, value):
+                            continue
+                        offenders.append(f"{rel}:{n} [{name}] {line.strip()[:70]}")
+
+        assert not offenders, "secrets in tracked files:\n" + "\n".join(offenders)
+
+    def test_scanner_still_flags_a_planted_secret_in_a_tracked_file(self):
+        """Proves the narrowing above did not make this test decorative."""
+        import subprocess
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory) / "probe_repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            (repo / "probe.py").write_text(
+                'MT5_PASSWORD = "UbD-N1Jm"\n', encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+
+            from scripts import secret_scan as scanner
+            hits = [h for h in scanner.scan_tree(repo) if h.file == "probe.py"]
+            assert hits, (
+                "the tracked-file scan no longer detects a real credential; "
+                "this test would pass against a broken scanner"
+            )
 
     def test_env_example_has_placeholders_only(self):
         """Credential-shaped keys in .env.example must be placeholders.

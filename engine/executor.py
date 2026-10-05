@@ -103,8 +103,52 @@ class RiskApproval:
             symbol=symbol,
             risk_amount=getattr(decision, "risk_amount", None),
             risk_pct=getattr(decision, "risk_pct", None),
+            # RiskDecision keeps violations (what failed) and reasons (what
+            # passed). Only violations belong in a refusal: an approval's
+            # "reasons" are confirmations, and surfacing them as justification
+            # for a rejection would read as a contradiction.
             reasons=tuple(getattr(decision, "violations", ()) or ()),
         )
+
+
+@dataclass
+class LiveGuard:
+    """Re-checks structure immediately before dispatch.
+
+    An intent approved 45 seconds ago may no longer describe the market. The
+    expensive checks (spread, gate) are not repeated here, but invalidation is,
+    because a setup whose 100% swing anchor has been breached is dead however
+    recent the approval.
+
+    Deliberately cheap: one quote read and one comparison. Anything it cannot
+    evaluate blocks, since a guard that cannot see the price must not assume the
+    structure held.
+    """
+
+    #: Called with the symbol and returning a current price, or None.
+    price_provider: Any = None
+    #: Called with (symbol) and returning True when the swing anchor is breached.
+    invalidation_check: Any = None
+
+    def verify(self, symbol: str) -> tuple[bool, str]:
+        """Returns (ok, reason). ok=False blocks dispatch."""
+        if self.invalidation_check is None:
+            return True, "no invalidation check configured"
+
+        try:
+            breached = self.invalidation_check(symbol)
+        except Exception as exc:   # noqa: BLE001
+            return False, (
+                f"invalidation check raised {type(exc).__name__}; treating the "
+                f"setup as invalidated rather than assuming it held"
+            )
+
+        if breached:
+            return False, (
+                "price crossed the 100% swing anchor; the structure this "
+                "intent was built on no longer exists"
+            )
+        return True, "invalidation clear"
 
 
 @dataclass
@@ -114,6 +158,7 @@ class Executor(ABC):
     mode: str = MODE_PAPER
     journal: Journal | None = None
     gateway: Gateway | None = None
+    live_guard: "LiveGuard | None" = None
 
     @abstractmethod
     def prepare_order(self, symbol: str, side: str, volume: float, sl: float,
@@ -186,6 +231,37 @@ class Executor(ABC):
         if state == STATE_PAUSED:
             raise ExecutionRejected("Refusing to submit: engine is PAUSED.")
 
+    def _log(self, category: str, message: str, *, severity: str = "INFO",
+             context: dict | None = None) -> None:
+        """Journal helper on the base class.
+
+        The invalidation guard needs to log from either executor, so this lives
+        here rather than on LiveExecutor alone.
+        """
+        if self.journal is None:
+            return
+        try:
+            self.journal.log_event(category, message, severity=severity,
+                                   source="executor", context=context or {})
+        except Exception:   # noqa: BLE001 - logging must not change the verdict
+            pass
+
+    def _check_invalidation(self, symbol: str) -> None:
+        """Re-verify structure immediately before dispatch.
+
+        The swing anchor can be crossed between approval and submission. Failing
+        to notice would send an order into a setup that no longer exists.
+        """
+        if self.live_guard is None:
+            return
+        ok, reason = self.live_guard.verify(symbol)
+        if not ok:
+            self._log("executor",
+                      f"live invalidation blocked {symbol}: {reason}",
+                      severity="WARNING")
+            raise ExecutionRejected(
+                f"Refusing to submit {symbol}: {reason}")
+
 
 @dataclass
 class PaperExecutor(Executor):
@@ -219,6 +295,10 @@ class PaperExecutor(Executor):
         self._check_sl(request)
         self._check_risk(risk_approved)
         self._check_state(self.state)
+        # Last structural check before anything is simulated or sent. Placed after
+        # the state and risk gates so a blocked order reports the most specific
+        # reason, but before any fill or send.
+        self._check_invalidation(request.symbol)
 
         bid, ask = self._quote(request.symbol)
         price = ask if request.side == "BUY" else bid
@@ -375,6 +455,10 @@ class LiveExecutor(Executor):
         self._check_sl(request)
         self._check_risk(risk_approved)
         self._check_state(self.state)
+        # Live re-validation immediately before dispatch. Everything above may
+        # have passed on a quote that is now stale; this reads the current price
+        # and refuses if the structure is gone.
+        self._check_invalidation(request.symbol)
 
         if self.gateway is None:
             raise ExecutionRejected("LiveExecutor has no gateway")
@@ -439,12 +523,6 @@ class LiveExecutor(Executor):
             ok=result.ok, status=TRADE_CLOSED if result.ok else "REJECTED",
             ticket=int(ticket), mode=MODE_LIVE,
             resolution=result.resolution.value, message=result.comment)
-
-    def _log(self, category: str, message: str, *, severity: str = "INFO",
-             context: dict | None = None) -> None:
-        if self.journal:
-            self.journal.log_event(category, message, severity=severity,
-                                   source="executor", context=context)
 
 
 def build_executor(mode: str, *, journal=None, gateway=None, state: str | None = None,
