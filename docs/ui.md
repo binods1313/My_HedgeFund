@@ -131,3 +131,81 @@ The scans parse the AST rather than matching text: `ui/data_access.py` names
 `execution.execute_trade` inside a docstring whose whole purpose is to deny it, so
 a substring match would report the module's own documentation as the violation it
 disclaims.
+
+## Design system v2
+
+Tokens live only in `ui/theme.py` (`TOKENS`). `.streamlit/config.toml` mirrors the shell colours so the first paint is dark. Do not hardcode a new hex in a component. Add the colour to `TOKENS`, expose it as a CSS variable inside `_css()`, and read `TOKENS[...]` from Python.
+
+Accent tokens: `accent_cyan` (market and data), `accent_green` (account and positive), `accent_amber` (warnings and news), `accent_violet` (AI and agents), `accent_red` (risk and negative). Direction still uses ▲, ▼, or a text label. Colour is never the only signal.
+
+### How to add a card
+
+```python
+from ui.components.cards import accent_card
+
+with accent_card("cyan", "market"):
+    st.subheader("Market")
+```
+
+`accent_card` opens `st.container(border=True, key="card-<accent>-<name>")`. Streamlit 1.64 turns that key into the class `st-key-card-<accent>-<name>`. The theme CSS matches `[class*="st-key-card-cyan"]` (and the other four accents): 1px accent border at about 70% alpha, a 18px glow at about 25% alpha, 14px radius, a faint line grid, and a hover glow only when the user has not asked for reduced motion.
+
+The key must stay unique on the page. A second card with the same accent and name replaces the first.
+
+### Glass background
+
+`inject_theme()` paints one fixed layer, class `glass-bg`, behind the page. It is a deep gradient plus five blurred orbs. The orbs animate with `transform` only, on different 48–84s loops. The layer is `pointer-events: none` and sits under the content. `prefers-reduced-motion: reduce` freezes the orbs. Cards that support `backdrop-filter` blur 10px over `panel_glass`; everyone else gets the opaque panel colour.
+
+### Navigation
+
+`ui/components/nav.py` draws the five views as buttons plus a click `st.popover` (the ▾). Streamlit has no hover menu. The popover reads the `RunSnapshot` it was given. It does not fetch. "Open <view>" sets `active_tab` through the same mirror-key path as the nav button (`w_active_tab`, then `persist_active_tab()`). Only the active view is built.
+
+### One snapshot
+
+`ui/components/snapshot.py` `load_shared_snapshot(refresh=True)` fetches the account, positions, journal, news, and quote once and stores that object. Later calls in the same run use `refresh=False` and return the same instance. The Portfolio view is drawn inside the header fragment so a 2s tick cannot show a different equity than the header.
+
+### Tables and news HTML
+
+Positions, Portfolio exposure, and Journal use `render_html_table` / `render_journal_table`. Every cell goes through `html.escape`. The table sits in `.table-scroll` so a narrow column can scroll sideways, and header cells are bold. Journal times are relative ("2h ago") with the absolute IST stamp in the `title` attribute.
+
+Live Market News is one HTML block from `build_news_html`. The grid is `repeat(auto-fill, minmax(260px, 1fr))`. Feed strings are escaped. High-impact cards are expanded, medium cards are compact, and low-impact plus holidays sit in one collapsed group. Filters reuse the snapshot feed.
+
+## Task 5
+
+`docs/Instructions_2.md` was not edited.
+
+Phases B (screen defects) and E (motion) stay **PARTIAL** until a person signs off in the browser. Popovers are click controls. Streamlit does not open them on hover.
+
+### Indicator reuse
+
+`engine/indicators` has structure tools and one `ema_ribbon` snapshot. It does not provide RSI, MACD, ATR, or Bollinger series, and `ema_ribbon` refuses a short sample. The chart series live in `ui/indicators.py`. A value at index `i` uses only rows `0..i`. Signals stop before the forming bar (`upto = len - 1`). The caption on the chart says so.
+
+Signal rules, closed bars only:
+
+- EMA: fast crosses above slow = buy, below = sell.
+- RSI: leaving below 30 = buy, leaving above 70 = sell.
+- MACD: line crosses its signal the same way.
+- Bollinger: close re-enters the band after a break. A lower break then re-entry is buy. An upper break then re-entry is sell.
+- ATR is not a direction. Stop distance is `atr_k × ATR` (default 1.5). Take-profit distance is `rr` times that stop (default 3.0, range 1–10) in `config_ext.yaml`. Prices round to the symbol tick. A stop inside `stops_level` is rejected and the reason is shown.
+- The latest signal draws dashed SL and TP lines. "Use in order form" copies side and stop only. It does not submit. The market order path can send a take-profit. This button does not, and the chart says so.
+
+The break-even sentence on the chart is exactly: "Break-even win rate at 1:3 is 25% before spread/commission."
+
+### Alerts
+
+`ui/alerts.py` uses warn level `100.0`. `config.yaml` has no separate margin-level percent. `margin_level_na_below: 1.0` is only a display cutoff. The open-risk cap is the engine setting `risk.max_total_exposure_pct` (10). One banner sits under the header. Dismiss hides that signature for the session and does not block the page.
+
+### Nav contrast
+
+Text `#E6E8EE` on the inactive glass mix `#121821` is 14.55:1. On the active 22% accent tint it is 7.97:1 (Exchange), 8.52:1 (Portfolio), 8.63:1 (AI Signals), 8.57:1 (News), and 7.98:1 (Journal `#5EEAD4`). All are above 4.5:1.
+
+### Theme Studio and MutationMechanic
+
+MutationMechanic's picker is not a hex picker. `THEMES` is a 10-item array in `E:\MutationMechanic\App.tsx`. Settings buttons show a white check. The swatch classes do not match the hex that gets applied (for example the purple swatch is `#6366f1` while the preset writes `#C5B4E9`). `applyTheme` sets only `--color-primary` and `--color-primary-hover`, and stores the id in `localStorage` under `mutationMechanic_theme`. With no saved id the check sits on purple while the page stays teal `#22D3EE`. Red and pink share the same primary. An unknown id is ignored. Related dim, glow, and ring tokens stay put, and some hovers stay hardcoded teal. White text on a pastel fails contrast.
+
+Keep named preset ids, store the id, keep the dark surfaces, and keep a named swatch plus a selected marker and an accessible name. Improve by previewing the real colour, deriving the related tokens, and rejecting pairs that fail contrast. Do not copy that app's hex values into this palette.
+
+This app's Theme Studio is `ui/components/theme_studio.py`, opened from the header popover `🎨 Theme Studio`. Presets are Aurora Cyan, Emerald Ledger, Amber Terminal, Violet Nebula, Crimson Edge, and Monochrome Glass. Gain and loss stay green and red in the monochrome preset. The palette is checked on load (`extra=forbid`, `#RRGGBB` only) and saved to gitignored `data/ui_prefs.json`. A failing tint has its lightness moved to the nearest passing value. Gain and loss hues closer than 40° produce a warning. ▲ and ▼ stay. Glow and motion are off, low, or normal. Reset, export, and import ship the palette JSON only. No secrets. Hex literals stay in `ui/theme.py`.
+
+### Equity curve
+
+The cleaner drops equity at or below 0 and non-finite values, and it keeps only the latest segment when a gap is over 30 minutes. On this database that leaves one point, `1000.00`. The chart draws — until there are two points. The area fill, when there are two, starts at the data minimum rather than at zero.
