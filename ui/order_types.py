@@ -4,9 +4,14 @@ from __future__ import annotations
 
 UNSUPPORTED = "engine does not support this yet"
 
-MARKET_HELP = "fills now at the current price"
-LIMIT_HELP = "buy below / sell above market, fills only at that price or better"
-CONDITIONAL_HELP = "activates when a trigger price is reached"
+MARKET_HELP = "Fills now at the current price."
+LIMIT_HELP = (
+    "Buy below or sell above the market. Fills only at that price or better. "
+    + UNSUPPORTED
+)
+CONDITIONAL_HELP = (
+    "Activates when a trigger price is reached. " + UNSUPPORTED
+)
 
 
 def unsupported_order_message(order_type: str) -> str:
