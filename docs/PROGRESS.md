@@ -290,16 +290,18 @@ PASS: FAIL — URLError: <urlopen error [Errno 11001] getaddrinfo failed>
 ### Pytest
 ```
 $ py -3 -m pytest -q --basetemp=.pytest_tmp
-1179 passed, 6 skipped in 24.64s
+1191 passed, 6 skipped in 22.43s
 ```
+The earlier 1179 count was before the token-alias scanner cases. This run is after those cases and after the two code commits.
 
 ### Secret scan
 ```
 Scanner self-test : PASS
-History hits      : 180
+History hits      : 201
 Worktree hits     : 0
 .git/config hits  : 0
 ```
+The 180 figure above was before these commits. The extra 21 hits are the scanner's own synthetic canaries in `scripts/secret_scan.py` (10) and `tests/test_secret_scan.py` (11). Worktree is still 0.
 `git check-ignore -v .env` → `.gitignore:9:.env*	.env`
 
 ### Engine badge
@@ -354,3 +356,41 @@ Not found. The search list is in `docs/DEXTER_INTEGRATION_PLAN.md`. Dexter was n
 10. Open Theme Studio from the header, pick Emerald Ledger, reset, and export the JSON. Confirm it has colours only.
 11. Click each nav item and its ▾ popover. Confirm inactive items stay readable. These are clicks, not hover menus.
 12. Turn on reduced motion in the OS and confirm the shimmer and breathing stop.
+
+## TASK 7 — Instructions_2.md section 10
+
+`docs/Instructions*.md` was not edited. Section 9 is not in `docs/Instructions_2.md`, so Task 6 (Dexter) was not started. `docs/Instructions_3.md` is an untracked QA prompt for Playwright against `http://localhost:8501`. It says report only, and write only under `reports/ui_qa/round2/`. It has no git author. This session did not create it and did not run it.
+
+### Pytest
+```
+$ py -3 -m pytest -q --basetemp=.pytest_tmp
+1218 passed, 6 skipped in 75.22s
+```
+The A2 run, before these defect edits and after the hub commit `c6200d6`, was `1203 passed, 6 skipped in 31.34s`.
+
+### Secret scan
+```
+Scanner self-test : PASS
+History hits      : 201
+Worktree hits     : 0
+.git/config hits  : 0
+```
+History still asks to purge old commits. No worktree hit and no `.git/config` hit. Values are not copied here.
+
+### Keys
+`INFOWAY_API_KEY` in `.env`: no. `ANCHORBROWSER_API_KEY` in `.env`: no. The Infoway smoke therefore returned `not_configured` and no latency. It did not send a request. python-dotenv also reported that it could not parse statements at lines 17, 19, and 21 of `.env`. Those lines were not read and are not copied here.
+
+### What landed
+- Risk card colour follows every shown validation code. Green only when the code list is empty.
+- Broker tick age is never negative. A UTC+3 server clock is the cause of the old −10797.7s figure, not IST.
+- RSI, ATR, and MACD chips print the symbol's digits on the last closed bar. "—" is warm-up or not selected.
+- Margin centre type is sized for a 390px column. Equity caption is a sentence. Cliff points are dropped.
+- Theme Studio is in the clock column. The FOMC chip keeps `margin-top: 0`.
+- Infoway client, Finviz link-outs, and the hand-typed Ideas watchlist. Anchor Browser is documented as not needed yet.
+
+### Could not
+- Execute Task 6. Section 9 is absent from `docs/Instructions_2.md`.
+- Name the author of `docs/Instructions_3.md`.
+- Send a live Infoway request. The key is not present.
+- Sign off phases B and E in the browser. The running Streamlit process was not restarted.
+- Scrape Finviz, call Anchor Browser, or copy trades.

@@ -234,3 +234,9 @@ The data provider key name is `FINANCIAL_DATASETS_API_KEY`. FX pairs have no com
 - [ ] Add `source: Dexter` labels to dashboard outputs
 - [ ] Rate-limit calls (configurable cap, default 50/day)
 - [ ] Add tests: mock Agent, verify timeout, verify schema enforcement
+
+## Task 7 — section 9 was not in the instruction file
+
+Checked `docs/Instructions_2.md` on 2026-10-08. The file is section 10 only. It says to execute Task 6 exactly as written in section 9 of that same file, and to stop that part if section 9 is missing. Section 9 is missing. Dexter was not installed. No wrapper, Python client, `learning/` runner, outcome ledger, or Research Desk view was added.
+
+`INFOWAY_API_KEY` is a different vendor. It does not substitute for `FINANCIAL_DATASETS_API_KEY`. Dexter stays in fixture mode until a financialdatasets.ai key exists, and that work is still blocked on the missing section 9 text plus an install path. The discovery notes above still stand: no Dexter binary was found on 2026-10-07, and this session did not search again or start Bun.

@@ -208,4 +208,33 @@ This app's Theme Studio is `ui/components/theme_studio.py`, opened from the head
 
 ### Equity curve
 
-The cleaner drops equity at or below 0 and non-finite values, and it keeps only the latest segment when a gap is over 30 minutes. On this database that leaves one point, `1000.00`. The chart draws — until there are two points. The area fill, when there are two, starts at the data minimum rather than at zero.
+The cleaner drops equity at or below 0 and non-finite values, and it keeps only the latest segment when a gap is over 30 minutes. A point outside half to double the segment median is a cliff and is left out when at least two points remain. The caption is a plain sentence. It does not print the raw series. On this database a single positive point still draws —. The area fill, when there are two points, starts at the data minimum rather than at zero. The y axis is padded from that same range.
+
+## Task 7
+
+`docs/Instructions_2.md` section 10. `docs/Instructions*.md` was not edited.
+
+### Defects
+
+- The risk card is green only when `risk_card_accent` is given no codes. `TOTAL_RISK_EXCEEDED`, margin, stop, and SL codes are red. Any other shown code is amber. The success sentence is not used while a code is showing.
+- `quote_clock.broker_tick_age_seconds` corrects a broker server clock that is a whole number of hours ahead of UTC. A fresh UTC+3 tick is a few seconds old, not about −10800s. IST (UTC+5:30) is not snapped onto an hour. The age passed to the header is never negative. `data_engine.get_symbol_live_quote` uses that age for the stale check too.
+- RSI, ATR, and MACD chips use `indicator_chip_text` on the last closed bar and the symbol's digits. "—" means the series is not selected or the closed bar is still warming up.
+- The margin donut centre uses one Plotly size that fits the 390px column as well as 1280 and 1920. Plotly does not resize the annotation with the browser.
+- The FOMC countdown sits with the quote. Theme Studio sits in the clock column, so its popover is not the empty band above the chip. `.news-countdown` has `margin-top: 0`.
+- Header and Portfolio still share one `RunSnapshot` per run. `tests/test_ui/test_snapshot_identity.py` fetches the account and the positions once.
+
+### Research data
+
+Infoway's official HTTP host is `https://data.infoway.io`. The key is the `apiKey` header, not a query parameter. `ret` 200 is success. HTTP 200 with any other `ret` is a failure. Forex and metals use `/common/batch_trade/{codes}` and `POST /common/v2/batch_kline`. The published free REST plan is 1 request per second, 60 per minute, and 86,400 per day (docs page dated 2026-09-21). Terms at `https://infoway.io/en/terms-and-conditions` allow personal, non-commercial analysis and research. They do not allow redistribution. This dashboard is that personal research display. Infoway is not the price used for orders.
+
+`ui/services/infoway_client.py` is read-only. It uses a strict Pydantic envelope, a 5 second timeout, no retry on timeout, a 30 second cache, and `infoway.daily_cap` from `config_ext.yaml` (200). The count is `data/infoway_budget.json` (date and count only, gitignored). Any error, including a schema mismatch, returns status `degraded`. The Exchange button "Show Infoway quote" is outside the 2 second header fragment. Tests use `tests/fixtures/infoway/` and do not open a socket. `INFOWAY_API_KEY` does not stand in for `FINANCIAL_DATASETS_API_KEY`.
+
+Finviz is link-out only: `https://finviz.com/forex.ashx`, `https://finviz.com/futures.ashx`, and `https://finviz.com/quote.ashx?t=SYMBOL` for a letter ticker of at most five characters that is not forex, metals, crypto, or an index. Nothing is scraped. An official Elite export could be integrated if the operator subscribes.
+
+Anchor Browser (`https://docs.anchorbrowser.io/introduction`) is a cloud browser for agents: navigate, authenticate, fill forms, and extract data, then dispose of the VM. The vendor examples use `ANCHOR_API_KEY`. This repo's placeholder name, from the task, is `ANCHORBROWSER_API_KEY`. No client, SDK, or dependency was added. It is not needed yet. This UI does not automate third-party websites.
+
+The Ideas watchlist is typed by hand: source, symbol, direction (`long`, `short`, or `watch`), and a note. It is stored in gitignored `data/ideas_watchlist.json`. The table is escaped. It does not submit orders and it does not read agent scores.
+
+### Task 6
+
+Section 9 is not in `docs/Instructions_2.md`. The file begins at section 10. Dexter was not installed and the Research Desk was not built.
