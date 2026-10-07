@@ -8,6 +8,7 @@ pydantic==2.13.5
 pydantic_core==2.46.5
 requests==2.34.2
 watchdog==6.0.0
+defusedxml==0.7.1
 numpy==2.5.3
 pyarrow==25.0.1
 

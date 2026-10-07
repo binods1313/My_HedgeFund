@@ -23,6 +23,13 @@ ENGINE_DIR = REPO_ROOT / "engine"
 # import check would miss it. This is the one file allowed to reference it.
 MT5_OWNER = "gateway.py"
 
+#: Engine-side modules allowed to read MT5 directly. Everything else reaches
+#: the terminal through the gateway. dryrun_cli is a terminal adapter that
+#: happens to drive the engine, so it belongs outside engine/ with the CLI, but
+#: it is listed here because it lives in the engine directory for import
+#: convenience.
+MT5_ADAPTERS = {"__main__.py", "dryrun_cli.py"}
+
 # Modules permitted to read the environment for a credential. keys.py routes
 # them; config.py reads MT5 terminal credentials, which are not provider keys
 # and are only used to construct the gateway.
@@ -128,9 +135,48 @@ class TestOnlyTheGatewayTouchesMt5:
     def test_engine_module_does_not_import_mt5(self, module):
         if module.name == MT5_OWNER:
             pytest.skip("gateway.py owns the MT5 connection by design")
+        if module.name in MT5_ADAPTERS:
+            pytest.skip(
+                f"{module.name} is a terminal adapter; it reads MT5 and hands "
+                f"plain data to the engine")
         assert "MetaTrader5" not in imported_modules(module), (
-            f"{module.name} imports MetaTrader5. Only gateway.py may touch the "
-            f"MT5 API; everything else goes through the gateway queue."
+            f"{module.name} imports MetaTrader5. Only gateway.py and the "
+            f"declared adapters may touch the MT5 API."
+        )
+
+    def test_dryrun_cannot_place_an_order(self):
+        """The dry run must be structurally incapable of submitting.
+
+        It reads candles, builds an intent and runs the gate. If it could send,
+        a 'dry run' would be an integration test with a side effect.
+
+        Checked on the AST, not on raw text: the module's docstring names
+        order_send while promising never to call it, and a substring match
+        would report its own documentation as a violation.
+        """
+        import ast
+
+        source = (REPO_ROOT / "engine" / "dryrun.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+
+        forbidden_attrs = {"order_send", "send_order", "close_position",
+                           "order_check"}
+        found: list[str] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and node.attr in forbidden_attrs:
+                found.append(f"line {node.lineno}: .{node.attr}")
+            if isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    if alias.name in forbidden_attrs:
+                        found.append(f"line {node.lineno}: import {alias.name}")
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.split(".")[0] == "MetaTrader5":
+                        found.append(f"line {node.lineno}: import MetaTrader5")
+
+        assert not found, (
+            f"the dry-run harness references {found}; it could place a real "
+            f"order or reach the terminal directly"
         )
 
     def test_gateway_does_reference_mt5(self):
@@ -315,6 +361,15 @@ class TestKeyringRedaction:
         assert "xai" not in ring.missing()
         assert "openrouter" in ring.missing()
 
+    def test_agentrouter_key_is_redacted(self):
+        from engine.keys import Keyring
+        synthetic = "ar-sk-AAAABBBBCCCCDDDDEEEEFFFF"
+        ring = Keyring(env={"AGENTROUTER_API_KEY": synthetic})
+        assert synthetic not in repr(ring)
+        assert "REDACTED" in repr(ring)
+        assert synthetic not in ring.describe("agentrouter")
+        assert synthetic not in str(ring)
+
 
 class TestNoSecretsInEngineSource:
     """Belt and braces: the scanner already checks, this names the rule."""
@@ -331,3 +386,91 @@ class TestNoSecretsInEngineSource:
             assert not matches, (
                 f"{module.name} contains a credential-shaped literal: {matches}"
             )
+
+
+def _order_entry_point_uses(path: Path, forbidden: set[str]) -> list[str]:
+    """Names in `forbidden` that `path` actually calls or imports.
+
+    Scanned on the AST, not as text. `ui/data_access.py` names
+    `execution.execute_trade` inside a docstring that exists to deny it, so a
+    substring match would report the module's own documentation as the
+    violation it disclaims -- the same failure mode the dry-run check above
+    documents.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    found: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr in forbidden:
+            found.append(f"{path.name}:{node.lineno}: .{node.attr}")
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name in forbidden:
+                    found.append(
+                        f"{path.name}:{node.lineno}: from {node.module} "
+                        f"import {alias.name}")
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.split(".")[0] in forbidden:
+                    found.append(f"{path.name}:{node.lineno}: import {alias.name}")
+    return found
+
+
+class TestUiNeverReachesTheBrokerDirectly:
+    """The UI submits through the engine, never through the terminal.
+
+    `TestUiIsDecoupledFromMt5` covers `app.py` only. The order-submitting code
+    lives in `ui/`, so that is where the rule has to be enforced: a UI module
+    that calls `order_send` (directly or via the legacy `execution.execute_trade`
+    helper) skips every gate the engine layer exists to impose.
+    """
+
+    UI_DIR = REPO_ROOT / "ui"
+    FORBIDDEN = {"order_send", "send_order", "order_check", "execute_trade"}
+
+    def _ui_modules(self) -> list[Path]:
+        return sorted(self.UI_DIR.rglob("*.py"))
+
+    def test_ui_modules_exist(self):
+        """Anti-vacuous: a scan over an empty directory passes silently.
+
+        Without this, a renamed or moved `ui/` would turn every assertion below
+        into a no-op that keeps reporting success.
+        """
+        modules = self._ui_modules()
+        assert modules, f"no UI modules found under {self.UI_DIR}"
+        assert any(p.name == "data_access.py" for p in modules), (
+            "data_access.py is the module under test; its absence means this "
+            "class is checking the wrong tree"
+        )
+
+    def test_no_ui_module_submits_an_order(self):
+        offenders = [offence for path in self._ui_modules()
+                     for offence in _order_entry_point_uses(path, self.FORBIDDEN)]
+        assert not offenders, (
+            f"UI modules reach the broker directly: {offenders}. Every order "
+            f"must go through engine.executor so the risk gate and the "
+            f"structural guard both see it."
+        )
+
+    def test_no_ui_module_imports_mt5(self):
+        offenders = [p.name for p in self._ui_modules()
+                     if "MetaTrader5" in imported_modules(p)]
+        assert not offenders, (
+            f"{offenders} import MetaTrader5; the UI reads market data through "
+            f"data_engine, which owns the terminal session."
+        )
+
+    def test_data_access_still_uses_the_engine_seam(self):
+        """Guard the negative test against passing because the seam was deleted.
+
+        `test_no_ui_module_submits_an_order` would also pass if `submit_order`
+        were replaced by a stub that submits nothing. This asserts the seam is
+        actually there.
+        """
+        source = (self.UI_DIR / "data_access.py").read_text(encoding="utf-8")
+        assert "build_executor" in source, (
+            "ui/data_access.py no longer builds an engine Executor"
+        )
+        assert "make_live_guard" in source, (
+            "ui/data_access.py no longer attaches a structural guard"
+        )

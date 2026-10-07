@@ -526,15 +526,20 @@ class LiveExecutor(Executor):
 
 
 def build_executor(mode: str, *, journal=None, gateway=None, state: str | None = None,
-                   tick_provider=None, live_confirmed: bool = False) -> Executor:
+                   tick_provider=None, live_confirmed: bool = False,
+                   live_guard: "LiveGuard | None" = None) -> Executor:
     """Construct the executor for `mode`.
 
     PAPER is the default and requires nothing extra. LIVE requires both the
     config flag and an explicit confirmation, so neither alone is sufficient.
+
+    `live_guard` is forwarded to whichever executor is built. It is the same
+    guard in both modes: a simulated fill into a stale structure is as wrong as
+    a live one, and PAPER exists so that testing it proves something about LIVE.
     """
     if mode == MODE_PAPER:
         return PaperExecutor(journal=journal, gateway=gateway, state=state,
-                             tick_provider=tick_provider)
+                             tick_provider=tick_provider, live_guard=live_guard)
     if mode == MODE_LIVE:
         if not live_confirmed:
             raise ExecutionRejected(
@@ -542,5 +547,5 @@ def build_executor(mode: str, *, journal=None, gateway=None, state: str | None =
                 "not been supplied."
             )
         return LiveExecutor(journal=journal, gateway=gateway, state=state,
-                            live_confirmed=True)
+                            live_confirmed=True, live_guard=live_guard)
     raise ExecutionRejected(f"unknown mode {mode!r}; expected PAPER or LIVE")

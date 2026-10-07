@@ -37,6 +37,7 @@ PROVIDER_ENV_VARS: Final[dict[str, str]] = {
     "groq": "GROQ_API_KEY",
     "telegram": "TELEGRAM_BOT_TOKEN",
     "smtp": "SMTP_PASSWORD",
+    "agentrouter": "AGENTROUTER_API_KEY",
 }
 
 # Markers that identify an obvious placeholder rather than a real credential.

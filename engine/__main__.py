@@ -19,6 +19,7 @@ rejects it regardless.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import shutil
 import signal
 import sys
@@ -41,6 +42,16 @@ from engine.journal import Journal, resolve_db_path
 from engine.keys import keyring
 from engine.risk import RiskEngine
 from engine.state import StateMachine
+from engine.notifications import (
+    cleanup_pending_trades,
+    handle_approval_message,
+    init_telegram,
+    poll_updates,
+    process_no_approval,
+    process_yes_approval,
+    stop_telegram_polling,
+    pending_trade_count,
+)
 
 BANNER = "=" * 68
 
@@ -59,9 +70,107 @@ class Engine:
     equity_tracker: EquityTracker = None
     _running: bool = True
     _epoch_cache: int | None = None
+    _telegram_initialized: bool = False
+    _telegram_poll_task = None
+    _telegram_stop_event = None
 
     def request_stop(self) -> None:
         self._running = False
+
+    # -- telegram approval layer -----------------------------------------
+
+    async def _start_telegram_polling(self) -> None:
+        """Start the telegram approval message poll loop."""
+
+        self._telegram_stop_event = asyncio.Event()
+
+        async def handler(text: str, from_chat_id: int) -> None:
+            await self._handle_telegram_message(text, from_chat_id)
+
+        self._telegram_poll_task = asyncio.create_task(
+            poll_updates(self._telegram_stop_event, handler))
+        logger.info("Telegram polling started")
+
+    async def _handle_telegram_message(self, text: str, from_chat_id: int) -> None:
+        """Process an incoming telegram message.
+
+        Routes YES/NO to the executor / cancellation logic.
+        """
+
+        result = await handle_approval_message(text, from_chat_id)
+        if result == "unauthorized":
+            # Do not answer - ignore unauthorized users entirely.
+            return
+
+        # The approved/rejected result from handle_approval_message is a short-
+        # lived decision. The pending trade carries the authority, so the next
+        # step looks up the trade by its id and acts on that single record.
+        trade_id = self._extract_trade_id(text)
+        if not trade_id:
+            return
+
+        if result == "approved":
+            await self._handle_yes_approval(trade_id)
+        elif result == "rejected":
+            await self._handle_no_approval(trade_id)
+
+    @staticmethod
+    def _extract_trade_id(text: str) -> str | None:
+        """Extract the trade id from an incoming YES/NO telegram message."""
+
+        import re as _re
+
+        match = _re.match(r"^(?:YES|NO)\s+(\S+)$", text.strip())
+        if not match:
+            return None
+        return match.group(1)
+
+    async def _handle_yes_approval(self, trade_id: str) -> None:
+        """Forward a YES to the approval flow's executor."""
+
+        if pending_trade_count() == 0:
+            # Nothing to do; this can happen when two approvals arrive at
+            # once or when the cache has already been cleared.
+            return
+
+        response = await process_yes_approval(trade_id, self.executor,
+                                              self.journal, self.gateway)
+
+        if response == "not_found":
+            return  # nothing to do; already gone
+        if response == "already_processed":
+            # A duplicate YES: only one execution is allowed.
+            return
+
+        # Single execution per trade_id. The response carries the actual
+        # executor result so the operator gets the real outcome.
+        if response == "executed":
+            logger.info("Telegram approval resulted in a trade")
+        else:
+            logger.warning("Telegram approval did not result in a trade: %s",
+                           response)
+
+    async def _handle_no_approval(self, trade_id: str) -> None:
+        """Forward a NO to cancel the pending trade."""
+
+        await process_no_approval(trade_id, self.journal)
+        logger.info("Telegram approval cancelled trade %s", trade_id)
+
+    # -- shutdown ----------------------------------------------------------
+
+    def _stop_telegram_polling(self) -> None:
+        """Stop the telegram polling loop (cooperative)."""
+
+        if self._telegram_stop_event is None:
+            return
+        stop_telegram_polling(self._telegram_stop_event)
+        if self._telegram_poll_task is not None:
+            self._telegram_poll_task.cancel()
+            try:
+                self._telegram_poll_task = None
+                logger.info("Telegram polling stopped")
+            except Exception:  # noqa: BLE001 - shutdown must not raise
+                pass
 
     # -- telemetry -------------------------------------------------------
 
@@ -320,6 +429,14 @@ class Engine:
         print(f"[engine] db={self.config.db_path}")
         print(f"[engine] polling every {poll}s, heartbeat every {heartbeat}s")
 
+        # -- telegram approval layer ----------------------------------------
+
+        if self._telegram_initialized:
+            try:
+                asyncio.run(self._start_telegram_polling())
+            except Exception:  # noqa: BLE001 - telegram must not block startup
+                self._telegram_initialized = False
+
         while self._running:
             started = time.monotonic()
             try:
@@ -355,6 +472,8 @@ class Engine:
         except Exception:   # noqa: BLE001
             pass
         self.gateway.stop()
+        self._stop_telegram_polling()
+        cleanup_pending_trades()
         self.journal.log_event("engine", "engine stopped",
                                context={"state": self.state.state})
         self.journal.close()
@@ -458,9 +577,16 @@ def build_engine(*, config_path: Path | str | None = None,
 
     commands = CommandProcessor(journal, state_machine, executor)
 
+    # -- telegram approval layer (optional) -------------------------------
+    telegram_initialized = asyncio.run(init_telegram(journal))
+    if telegram_initialized:
+        journal.log_event("engine", "telegram approval layer enabled",
+                          source="engine")
+
     return Engine(config=config, journal=journal, state=state_machine,
                   gateway=gateway, executor=executor, commands=commands,
-                  risk=risk, equity_tracker=equity_tracker)
+                  risk=risk, equity_tracker=equity_tracker,
+                  _telegram_initialized=telegram_initialized)
 
 
 def main(argv: list[str] | None = None) -> int:
