@@ -340,14 +340,59 @@ def _task5_css() -> str:
         "news": "var(--accent-amber)",
         "journal": "var(--accent-journal)",
     }
+    motions = {
+        "exchange": (
+            "radial-gradient(circle, color-mix(in srgb, var(--accent-cyan) 85%, white) 0 1.6px, transparent 2.4px)",
+            "18px 100%",
+            "repeat-x",
+            "nav-flow",
+            "linear",
+        ),
+        "portfolio": (
+            "radial-gradient(120% 80% at 50% 120%, color-mix(in srgb, var(--accent-green) 75%, white), transparent 62%)",
+            "80% 70%",
+            "no-repeat",
+            "nav-wave",
+            "ease-in-out",
+        ),
+        "signals": (
+            "linear-gradient(115deg, transparent 46%, color-mix(in srgb, var(--accent-violet) 80%, white) 50%, transparent 54%), linear-gradient(65deg, transparent 46%, color-mix(in srgb, var(--accent-violet) 55%, white) 50%, transparent 54%), radial-gradient(circle at 18% 42%, color-mix(in srgb, var(--accent-violet) 90%, white) 0 2px, transparent 3px), radial-gradient(circle at 74% 60%, color-mix(in srgb, var(--accent-violet) 90%, white) 0 2px, transparent 3px)",
+            "180% 180%, 180% 180%, 100% 100%, 100% 100%",
+            "no-repeat",
+            "nav-mesh",
+            "ease-in-out",
+        ),
+        "news": (
+            "repeating-linear-gradient(90deg, transparent 0 6px, color-mix(in srgb, var(--accent-amber) 75%, white) 6px 8px, transparent 8px 14px, color-mix(in srgb, var(--accent-amber) 40%, white) 14px 15px)",
+            "48px 100%",
+            "repeat-x",
+            "nav-ticker",
+            "linear",
+        ),
+        "journal": (
+            "linear-gradient(rgba(255, 255, 255, 0.22) 1px, transparent 1px), linear-gradient(90deg, rgba(255, 255, 255, 0.22) 1px, transparent 1px)",
+            "12px 12px, 12px 12px",
+            "repeat",
+            "nav-grid",
+            "ease-in-out",
+        ),
+    }
     nav_rules = []
     for slug, accent in accents.items():
+        image, size, repeat, motion, easing = motions[slug]
         nav_rules.append(
             f"""
 .st-key-nav-{slug} button, .st-key-nav-{slug}-on button {{
   --nav-accent: {accent};
   animation-duration: {durations[slug]};
   animation-delay: {delays[slug]};
+  background-image: {image};
+  background-size: {size};
+  background-repeat: {repeat};
+  animation-name: {motion};
+  animation-timing-function: {easing};
+  animation-iteration-count: infinite;
+  animation-play-state: var(--motion-play);
 }}
 """
         )
@@ -374,15 +419,26 @@ def _task5_css() -> str:
   box-shadow: inset 0 -3px 0 var(--loss);
 }}
 [class*="st-key-nav-"] button {{
+  position: relative;
   min-height: 48px; font-size: 1.15rem; font-weight: 700; color: var(--text) !important;
-  background-color: color-mix(in srgb, var(--panel-glass) 88%, var(--bg-deep));
-  border: 1px solid color-mix(in srgb, var(--nav-accent, var(--accent-cyan)) 60%, transparent) !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(12px) saturate(180%);
+  -webkit-backdrop-filter: blur(12px) saturate(180%);
+  background-color: rgba(255, 255, 255, 0.03) !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
   box-shadow: 0 0 calc(12px * var(--glow-amp)) color-mix(in srgb, var(--nav-accent, var(--accent-cyan)) 28%, transparent);
   border-radius: 12px;
 }}
+[class*="st-key-nav-"] button * {{
+  position: relative;
+  z-index: 2;
+  color: var(--text) !important;
+  font-weight: 700;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85);
+}}
 {nav}
 [class*="st-key-nav-"][class*="-on"] button {{
-  background-color: color-mix(in srgb, var(--nav-accent) 22%, var(--panel)) !important;
+  background-color: rgba(255, 255, 255, 0.06) !important;
   border-color: var(--nav-accent) !important;
   box-shadow:
     inset 4px 0 0 var(--nav-accent),
@@ -390,19 +446,14 @@ def _task5_css() -> str:
   border-bottom: 3px solid var(--nav-accent) !important;
 }}
 @media (prefers-reduced-motion: no-preference) {{
-  [class*="st-key-nav-"] button {{
-    background-image: linear-gradient(110deg, transparent 30%, color-mix(in srgb, var(--nav-accent, var(--accent)) 55%, transparent) 50%, transparent 70%);
-    background-size: 220% 100%;
-    background-position: 0% 50%;
-    animation-name: nav-shimmer;
-    animation-timing-function: linear;
-    animation-iteration-count: infinite;
-    animation-play-state: var(--motion-play);
-  }}
   [class*="st-key-nav-"] button:hover {{
     transform: translateY(-2px);
     border-color: var(--nav-accent) !important;
     box-shadow: 0 0 calc(20px * var(--glow-amp)) color-mix(in srgb, var(--nav-accent) 50%, transparent);
+  }}
+  .st-key-nav-signals button:hover,
+  .st-key-nav-signals-on button:hover {{
+    background-color: color-mix(in srgb, var(--accent-violet) 16%, rgba(255, 255, 255, 0.05)) !important;
   }}
   .st-key-btn_submit_order button,
   .st-key-btn_sync_feed button,
@@ -435,7 +486,149 @@ button:focus-visible {{ outline: 2px solid var(--accent); outline-offset: 2px; }
 button:disabled, button[disabled] {{
   color: var(--disabled-text) !important; opacity: 1;
 }}
-@keyframes nav-shimmer {{ to {{ background-position: 200% 50%; }} }}
+/* Light chips keep the cyan fill. Text on that fill is charcoal. */
+[data-baseweb="tag"] {{
+  background-color: #B8F2FF !important;
+  border: 1px solid #7ADFFF !important;
+  border-radius: 999px !important;
+}}
+[data-baseweb="tag"],
+[data-baseweb="tag"] span {{
+  color: #14181F !important;
+}}
+[data-baseweb="select"] > div {{
+  background: #161922 !important;
+  border: 1.5px solid #9AA3B8 !important;
+  border-radius: 12px !important;
+  min-height: 46px;
+  padding: 2px 8px !important;
+}}
+[data-baseweb="select"] > div:focus-within {{
+  border-color: #B8F2FF !important;
+  box-shadow: 0 0 0 1px #B8F2FF;
+}}
+[data-baseweb="select"] > div,
+[data-baseweb="select"] > div * {{
+  color: var(--text);
+}}
+[data-baseweb="popover"] [role="listbox"],
+[data-baseweb="menu"] {{
+  background: #1A1C24 !important;
+  border: 1.5px solid #9AA3B8 !important;
+  border-radius: 12px !important;
+}}
+[data-baseweb="popover"] [role="option"] {{
+  color: #E6E8EE !important;
+}}
+[data-baseweb="popover"] [role="option"][aria-selected="true"] {{
+  background: #B8F2FF !important;
+  color: #14181F !important;
+}}
+/* Streamlit 1.64 draws selects with React Aria, not BaseWeb. */
+[data-testid="stSelectbox"] [role="group"],
+[data-testid="stMultiSelect"] > div[role="group"] {{
+  background: #161922 !important;
+  border: 1.5px solid #9AA3B8 !important;
+  border-radius: 12px !important;
+  min-height: 46px;
+}}
+[data-testid="stSelectbox"] [role="group"]:focus-within,
+[data-testid="stMultiSelect"] > div[role="group"]:focus-within {{
+  border-color: #B8F2FF !important;
+  box-shadow: 0 0 0 1px #B8F2FF;
+}}
+[data-testid="stMultiSelect"] [data-tag] {{
+  background: #B8F2FF !important;
+  border: 1px solid #7ADFFF !important;
+  border-radius: 999px !important;
+  color: #14181F !important;
+}}
+[data-testid="stMultiSelect"] [data-tag] * {{
+  color: #14181F !important;
+}}
+[role="listbox"] {{
+  background: #1A1C24 !important;
+  border: 1.5px solid #9AA3B8 !important;
+  border-radius: 12px !important;
+}}
+[role="listbox"] [role="option"] {{
+  color: #E6E8EE !important;
+}}
+[role="listbox"] [role="option"][aria-selected="true"],
+[role="listbox"] [role="option"][data-selected="true"] {{
+  background: #B8F2FF !important;
+  color: #14181F !important;
+}}
+.hf-tone {{ margin: .15rem 0 0; font-weight: 700; }}
+.hf-tone-safe {{ color: var(--gain); }}
+.hf-tone-warning {{ color: var(--warn); }}
+.hf-tone-risk {{ color: var(--loss); }}
+.hf-tone-unknown {{ color: var(--text); }}
+.st-key-card-cyan-volume::after,
+.st-key-card-amber-margin::after,
+.st-key-card-green-equity::after {{
+  content: "";
+  position: absolute;
+  width: 160%;
+  height: 160%;
+  left: -30%;
+  top: -50%;
+  pointer-events: none;
+  opacity: 0.45;
+  background: conic-gradient(
+    from 15deg,
+    transparent 0 38%,
+    color-mix(in srgb, var(--accent-cyan) 70%, white) 46%,
+    transparent 54% 100%
+  );
+  animation: crystal-spin 28s linear infinite;
+  animation-play-state: var(--motion-play);
+}}
+.st-key-card-amber-margin::after {{
+  animation-duration: 36s;
+  animation-direction: reverse;
+  background: conic-gradient(
+    from 200deg,
+    transparent 0 38%,
+    color-mix(in srgb, var(--accent-amber) 75%, white) 46%,
+    transparent 54% 100%
+  );
+}}
+.st-key-card-green-equity::after {{
+  animation-duration: 44s;
+  background: conic-gradient(
+    from 80deg,
+    transparent 0 38%,
+    color-mix(in srgb, var(--accent-green) 75%, white) 46%,
+    transparent 54% 100%
+  );
+}}
+.st-key-card-cyan-volume:hover,
+.st-key-card-amber-margin:hover,
+.st-key-card-green-equity:hover {{
+  transform: translateY(-3px);
+}}
+.st-key-card-cyan-volume:hover::after,
+.st-key-card-amber-margin:hover::after,
+.st-key-card-green-equity:hover::after {{
+  opacity: 0.8;
+}}
+@keyframes crystal-spin {{ to {{ transform: rotate(360deg); }} }}
+@keyframes nav-flow {{ to {{ background-position: 72px 0; }} }}
+@keyframes nav-wave {{
+  0%, 100% {{ background-size: 42% 46%; background-position: 50% 130%; }}
+  50% {{ background-size: 150% 100%; background-position: 50% 100%; }}
+}}
+@keyframes nav-mesh {{
+  0%, 100% {{ background-position: 0% 40%, 100% 70%, 0 0, 0 0; }}
+  50% {{ background-position: 70% 60%, 10% 30%, 0 0, 0 0; }}
+}}
+@keyframes nav-ticker {{ to {{ background-position: 48px 0; }} }}
+@keyframes nav-grid {{
+  0% {{ background-size: 10px 16px, 10px 16px; }}
+  45% {{ background-size: 18px 8px, 18px 8px; }}
+  100% {{ background-size: 12px 12px, 12px 12px; }}
+}}
 @keyframes hf-breathe {{
   50% {{ box-shadow: 0 0 calc(14px * var(--glow-amp)) color-mix(in srgb, var(--accent) 40%, transparent); }}
 }}
@@ -444,6 +637,7 @@ button:disabled, button[disabled] {{
   [class*="st-key-nav-"] button,
   .st-key-btn_submit_order button,
   [class*="st-key-card-"]::before,
+  [class*="st-key-card-"]::after,
   .glass-bg .orb {{
     animation: none !important; transform: none !important;
   }}

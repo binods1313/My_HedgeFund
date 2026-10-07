@@ -27,6 +27,16 @@ from ui.indicators import (
     rsi,
     rsi_signals,
 )
+from ui.components.pattern_hub import render_pattern_matrix
+from ui.patterns import (
+    FILTER_CHOICES,
+    allows_pattern,
+    describe_trigger,
+    detect_patterns,
+    marker_label,
+    pattern_key,
+    sentiment_text,
+)
 from ui.state import persist_chart_style, persist_timeframe
 from ui.theme import TOKENS, hex_rgba, plotly_theme, tokens
 
@@ -46,13 +56,18 @@ _TP_CAPTION = (
     "Use in order form fills side and stop only and does not submit. "
     "The market order path can send a take-profit; this button does not."
 )
+_PATTERN_CAPTION = (
+    "Pattern marks are shapes on the candle. Hover a mark for the short name, "
+    "the sentiment, and the threshold that fired."
+)
+_MARK_LIMIT = 12
 
 
 def render_chart(asset: str | None) -> pd.DataFrame:
     with st.container(border=True, key="card-cyan-market"):
         st.html('<svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><polyline points="1,13 6,7 10,10 16,3" fill="none" stroke="currentColor" stroke-width="2"/></svg>')
         st.subheader("Market workspace")
-        control_cols = st.columns([1.2, 2.2, 0.7], gap="small")
+        control_cols = st.columns([1.15, 1.7, 0.55, 1.25], gap="small")
         with control_cols[0]:
             st.segmented_control(
                 "Chart style",
@@ -71,8 +86,16 @@ def render_chart(asset: str | None) -> pd.DataFrame:
             )
         with control_cols[2]:
             sync = st.button("Sync", key="btn_sync_feed", help="Refresh market data")
+        with control_cols[3]:
+            hub_open = bool(st.session_state.get("pattern_hub"))
+            st.button(
+                "Close analysis hub" if hub_open else "Expand analysis hub",
+                key="btn_pattern_hub",
+                width="stretch",
+                on_click=_toggle_hub,
+            )
 
-        selected = _indicator_control()
+        selected = _indicator_row()
         if not asset:
             frame = pd.DataFrame()
         else:
@@ -84,16 +107,47 @@ def render_chart(asset: str | None) -> pd.DataFrame:
             frame = result if isinstance(result, pd.DataFrame) else pd.DataFrame()
 
         pack = _pack(frame, selected, asset)
+        visible = _visible_patterns(frame, pack.get("patterns") or [])
+        _attach_pattern_lane(pack, visible)
         _remember_closed_bar(frame, selected, pack)
-        fig = _build_figure(frame, asset, selected, pack)
-        st.plotly_chart(
-            fig, width="stretch", config={"displayModeBar": False}, key="chart_main",
-        )
-        st.caption(_CLOSED_CAPTION)
-        _render_readout(frame, pack)
+        if hub_open and asset:
+            chart_col, matrix_col = st.columns([3, 2], gap="small")
+            with chart_col:
+                _draw_chart(frame, asset, selected, pack, visible, tall=True)
+                _render_readout(frame, pack)
+            with matrix_col:
+                render_pattern_matrix(
+                    asset, frame, visible, _indicator_notes(pack),
+                    lambda hit: _deploy_pattern(asset, hit, pack),
+                )
+        else:
+            _draw_chart(frame, asset, selected, pack, visible, tall=False)
+            _render_readout(frame, pack)
         _render_stack(frame, pack)
         _render_levels(asset, pack)
         return frame
+
+
+def _draw_chart(frame, asset, selected, pack, patterns, *, tall: bool) -> None:
+    fig = _build_figure(frame, asset, selected, pack, patterns, tall=tall)
+    st.plotly_chart(
+        fig, width="stretch", config={"displayModeBar": False}, key="chart_main",
+    )
+    st.caption(_CLOSED_CAPTION)
+    st.caption(_PATTERN_CAPTION)
+
+
+def _toggle_hub() -> None:
+    st.session_state["pattern_hub"] = not bool(st.session_state.get("pattern_hub"))
+
+
+def _indicator_row() -> list[str]:
+    left, right = st.columns([2, 1], gap="small")
+    with left:
+        selected = _indicator_control()
+    with right:
+        st.selectbox("Patterns filter", list(FILTER_CHOICES), key="w_pattern_filter")
+    return selected
 
 
 def _indicator_control() -> list[str]:
@@ -171,7 +225,6 @@ def _pack(frame: pd.DataFrame, selected: list[str], asset: str | None) -> dict:
     latest = _latest(signals)
     plan = _plan(close, atr_series, latest, asset) if latest else None
     digits = 5
-    quote = {}
     shared = st.session_state.get("_run_snapshot")
     if shared is not None:
         quote = shared.quote or {}
@@ -179,7 +232,79 @@ def _pack(frame: pd.DataFrame, selected: list[str], asset: str | None) -> dict:
             digits = int(quote.get("digits") or 5)
         except (TypeError, ValueError):
             digits = 5
-    return {"signals": signals, "series": series, "latest": latest, "plan": plan, "digits": digits, "close": close}
+    hits = _pattern_hits(frame, close, high, low, upto)
+    return {
+        "signals": signals,
+        "series": series,
+        "latest": latest,
+        "plan": plan,
+        "digits": digits,
+        "close": close,
+        "patterns": hits,
+    }
+
+
+def _pattern_hits(
+    frame: pd.DataFrame,
+    close: list[float],
+    high: list[float],
+    low: list[float],
+    upto: int,
+) -> list:
+    """Every closed-bar pattern in the window. Display data only."""
+    opened = _as_float(frame, "open")
+    if not opened or not high or not low or len(opened) != len(close):
+        return []
+    from config_ext_loader import load_config_ext
+
+    return detect_patterns(
+        opened, high, low, close, upto=upto, rr=float(load_config_ext().chart.rr),
+    )
+
+
+def _visible_patterns(frame: pd.DataFrame, hits: list) -> list:
+    if frame.empty or "time" not in frame:
+        return []
+    choice = st.session_state.get("w_pattern_filter", "All patterns")
+    hidden = set(st.session_state.get("pattern_hidden") or [])
+    visible = []
+    for hit in hits:
+        if hit.index >= len(frame):
+            continue
+        token = pattern_key(str(frame["time"].iloc[hit.index]), hit.name)
+        if token in hidden or not allows_pattern(hit.name, choice):
+            continue
+        visible.append(hit)
+    return visible
+
+
+def _attach_pattern_lane(pack: dict, visible: list) -> None:
+    if not visible:
+        pack["signals"].pop("Pattern", None)
+        return
+    hit = visible[-1]
+    side = {"bullish": "BUY", "bearish": "SELL"}.get(hit.bias, "HOLD")
+    pack["signals"]["Pattern"] = [
+        Signal(hit.index, side, f"{hit.name} · {hit.bias} · display only", "Pattern")
+    ]
+
+
+def _indicator_notes(pack: dict) -> dict[int, list[str]]:
+    notes: dict[int, list[str]] = {}
+    for source, rows in pack["signals"].items():
+        if source == "Pattern":
+            continue
+        for signal in rows:
+            notes.setdefault(signal.index, []).append(f"{source}: {signal.reason}")
+    return notes
+
+
+def _deploy_pattern(asset: str | None, hit, pack: dict) -> None:
+    close = pack.get("close") or []
+    if hit.sl is None or hit.bias == "neutral" or hit.index >= len(close):
+        return
+    side = "BUY" if hit.bias == "bullish" else "SELL"
+    _prefill(asset, StopPlan(True, side, float(close[hit.index]), hit.sl, None, hit.name))
 
 
 def _latest(signals: dict[str, list[Signal]]) -> Signal | None:
@@ -235,7 +360,15 @@ def _spec_for(asset: str | None):
     return spec
 
 
-def _build_figure(frame: pd.DataFrame, asset: str | None, selected: list[str], pack: dict) -> go.Figure:
+def _build_figure(
+    frame: pd.DataFrame,
+    asset: str | None,
+    selected: list[str],
+    pack: dict,
+    patterns: list | None = None,
+    *,
+    tall: bool = False,
+) -> go.Figure:
     lanes = [name for name in ("RSI", "MACD") if name in selected]
     rows = 1 + len(lanes)
     fig = make_subplots(rows=rows, cols=1, shared_xaxes=True, vertical_spacing=0.04, row_heights=[0.62] + [0.38 / max(len(lanes), 1)] * len(lanes) if lanes else [1])
@@ -263,6 +396,7 @@ def _build_figure(frame: pd.DataFrame, asset: str | None, selected: list[str], p
         _overlay(fig, frame, pack)
         _levels(fig, pack)
         _markers(fig, frame, pack)
+        _pattern_markers(fig, frame, patterns or [])
         _lanes(fig, frame, lanes, pack)
     else:
         fig.add_annotation(
@@ -272,8 +406,17 @@ def _build_figure(frame: pd.DataFrame, asset: str | None, selected: list[str], p
         )
     theme = plotly_theme()
     theme.update({
-        "height": 420 if not lanes else 560,
-        "uirevision": f"{asset}-{st.session_state.get('timeframe', '1H')}-{','.join(selected)}",
+        "height": 640 if tall else (420 if not lanes else 560),
+        "uirevision": (
+            f"{asset}-{st.session_state.get('timeframe', '1H')}-{','.join(selected)}-"
+            f"{st.session_state.get('w_pattern_filter', 'All patterns')}"
+        ),
+        "hoverlabel": {
+            "bgcolor": "rgba(20, 24, 31, 0.92)",
+            "bordercolor": "rgba(255, 255, 255, 0.18)",
+            "font": {"color": "#E6E8EE", "size": 12},
+            "align": "left",
+        },
         "legend": {"orientation": "h", "x": 0, "y": 1.12},
         "xaxis": {"gridcolor": hex_rgba("border", 0.4), "rangeslider": {"visible": False}},
         "yaxis": {"gridcolor": hex_rgba("border", 0.4), "side": "right"},
@@ -331,19 +474,64 @@ def _markers(fig: go.Figure, frame: pd.DataFrame, pack: dict) -> None:
             if signal.index >= len(close):
                 continue
             price = close[signal.index]
-            above = signal.side == "SELL"
+            if signal.side == "SELL":
+                glyph, colour, position = "▼", TOKENS["loss"], "top center"
+            elif signal.side == "BUY":
+                glyph, colour, position = "▲", TOKENS["gain"], "bottom center"
+            else:
+                glyph, colour, position = "·", TOKENS["warn"], "top center"
+            if source == "Pattern":
+                continue
+            label = glyph
             fig.add_trace(go.Scatter(
                 x=[frame["time"].iloc[signal.index]],
                 y=[price],
                 mode="markers+text",
-                text=["▼" if above else "▲"],
-                textposition="top center" if above else "bottom center",
+                text=[label],
+                textposition=position,
                 name=f"{source} {signal.side}",
                 hovertext=signal.reason,
                 hoverinfo="text",
-                marker={"size": 10, "color": TOKENS["loss"] if above else TOKENS["gain"]},
+                marker={"size": 11, "color": colour},
                 showlegend=False,
             ), row=1, col=1)
+
+
+def _pattern_markers(fig: go.Figure, frame: pd.DataFrame, patterns: list) -> None:
+    if not patterns or frame.empty or "open" not in frame:
+        return
+    opens = [float(value) for value in frame["open"]]
+    highs = [float(value) for value in frame["high"]]
+    lows = [float(value) for value in frame["low"]]
+    closes = [float(value) for value in frame["close"]]
+    buckets: dict[str, list] = {"bullish": [], "bearish": [], "neutral": []}
+    for hit in patterns[-_MARK_LIMIT:]:
+        buckets.get(hit.bias, buckets["neutral"]).append(hit)
+    styles = {
+        "bullish": (TOKENS["gain"], "triangle-up", "low"),
+        "bearish": (TOKENS["loss"], "triangle-down", "high"),
+        "neutral": (TOKENS["warn"], "circle", "high"),
+    }
+    for bias, rows in buckets.items():
+        if not rows:
+            continue
+        colour, symbol, column = styles[bias]
+        hovers = []
+        for hit in rows:
+            hovers.append(
+                f"<b>{marker_label(hit.name)} · {hit.name}</b><br>{sentiment_text(hit.name)}<br>"
+                + describe_trigger(opens, highs, lows, closes, hit.index, hit.name)
+            )
+        fig.add_trace(go.Scatter(
+            x=[frame["time"].iloc[hit.index] for hit in rows],
+            y=[float(frame[column].iloc[hit.index]) for hit in rows],
+            mode="markers",
+            marker={"size": 9, "color": colour, "symbol": symbol},
+            hovertext=hovers,
+            hoverinfo="text",
+            name=f"Pattern {bias}",
+            showlegend=False,
+        ), row=1, col=1)
 
 
 def _lanes(fig: go.Figure, frame: pd.DataFrame, lanes: list[str], pack: dict) -> None:
