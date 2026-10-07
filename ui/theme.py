@@ -25,6 +25,7 @@ TOKENS: dict[str, str] = {
     "accent_violet": "#D2A8FF",
     "accent_red": "#FF8A8A",
     "accent_journal": "#5EEAD4",
+    "accent_research": "#A9C1FF",
     "mono_primary": "#C5CAD8",
     "mono_cyan": "#A8B3C7",
     "mono_green": "#B7C4B8",
@@ -39,7 +40,7 @@ TOKENS: dict[str, str] = {
     "font_mono": "'JetBrains Mono','IBM Plex Mono',ui-monospace,monospace",
 }
 
-_ACCENTS = ("cyan", "green", "amber", "violet", "red")
+_ACCENTS = ("cyan", "green", "amber", "violet", "red", "research")
 NAV_ACTIVE_MIX = 0.22
 NAV_INACTIVE_MIX = 0.10
 
@@ -67,6 +68,7 @@ def use_palette(palette: object) -> None:
             "accent_violet": str(getattr(palette, "accent_violet")),
             "accent_red": str(getattr(palette, "accent_red")),
             "accent_journal": str(getattr(palette, "accent_journal")),
+            "accent_research": str(getattr(palette, "accent_research", TOKENS["accent_research"])),
             "gain": str(getattr(palette, "gain")),
             "loss": str(getattr(palette, "loss")),
         }
@@ -86,6 +88,7 @@ def _preset(name: str, **roles: str) -> dict[str, object]:
         "accent_violet": TOKENS["accent_violet"],
         "accent_red": TOKENS["accent_red"],
         "accent_journal": TOKENS["accent_journal"],
+        "accent_research": TOKENS["accent_research"],
         "gain": TOKENS["gain"],
         "loss": TOKENS["loss"],
         "glow": "normal",
@@ -173,6 +176,7 @@ def _css() -> str:
   --accent-violet:{tokens()['accent_violet']};
   --accent-red:{tokens()['accent_red']};
   --accent-journal:{tokens()['accent_journal']};
+  --accent-research:{tokens()['accent_research']};
   --button-bg:{tokens()['button_bg']};
   --disabled-bg:{tokens()['disabled_bg']};
   --disabled-text:{tokens()['disabled_text']};
@@ -325,6 +329,7 @@ def _task5_css() -> str:
         "signals": "6s",
         "news": "13s",
         "journal": "9s",
+        "research": "10s",
     }
     delays = {
         "exchange": "0s",
@@ -332,6 +337,7 @@ def _task5_css() -> str:
         "signals": "-4s",
         "news": "-1s",
         "journal": "-3s",
+        "research": "-5s",
     }
     accents = {
         "exchange": "var(--accent-cyan)",
@@ -339,6 +345,7 @@ def _task5_css() -> str:
         "signals": "var(--accent-violet)",
         "news": "var(--accent-amber)",
         "journal": "var(--accent-journal)",
+        "research": "var(--accent-research)",
     }
     motions = {
         "exchange": (
@@ -374,6 +381,13 @@ def _task5_css() -> str:
             "12px 12px, 12px 12px",
             "repeat",
             "nav-grid",
+            "ease-in-out",
+        ),
+        "research": (
+            "linear-gradient(120deg, transparent 38%, color-mix(in srgb, var(--accent-research) 80%, white) 50%, transparent 62%)",
+            "220% 100%",
+            "no-repeat",
+            "nav-research",
             "ease-in-out",
         ),
     }
@@ -628,6 +642,10 @@ button:disabled, button[disabled] {{
   0% {{ background-size: 10px 16px, 10px 16px; }}
   45% {{ background-size: 18px 8px, 18px 8px; }}
   100% {{ background-size: 12px 12px, 12px 12px; }}
+}}
+@keyframes nav-research {{
+  0%, 100% {{ background-position: 120% 0; }}
+  50% {{ background-position: -20% 0; }}
 }}
 @keyframes hf-breathe {{
   50% {{ box-shadow: 0 0 calc(14px * var(--glow-amp)) color-mix(in srgb, var(--accent) 40%, transparent); }}

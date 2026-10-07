@@ -13,6 +13,11 @@ def test_shipped_file_loads_defaults() -> None:
     assert settings.infoway.daily_cap == 200
     assert settings.infoway.timeout_s == 5
     assert settings.infoway.cache_ttl_s == 30
+    assert settings.dexter.daily_cap == 20
+    assert settings.dexter.timeout_s == 90
+    assert settings.learning.max_change == 0.10
+    assert settings.learning.horizons == [4, 12, 24]
+    assert settings.shadow.enabled is False
 
 
 def test_valid_override(tmp_path: Path) -> None:

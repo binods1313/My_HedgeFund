@@ -23,9 +23,10 @@ TAB_LABELS = (
     "🤖 AI Signals",
     "📰 Live Market News",
     "🧾 Journal",
+    "🔬 Research Desk",
 )
 
-_SLUGS = ("exchange", "portfolio", "signals", "news", "journal")
+_SLUGS = ("exchange", "portfolio", "signals", "news", "journal", "research")
 _IST = ZoneInfo("Asia/Kolkata")
 
 
@@ -79,6 +80,8 @@ def _render_facts(slug: str, snapshot: RunSnapshot) -> None:
         _signal_facts(snapshot)
     elif slug == "news":
         _news_facts(snapshot)
+    elif slug == "research":
+        _research_facts(snapshot)
     else:
         _journal_facts(snapshot)
 
@@ -143,6 +146,13 @@ def _news_facts(snapshot: RunSnapshot) -> None:
         return
     for index, event in enumerate(upcoming, start=1):
         _line(f"High {index}", countdown_text(event))
+
+
+def _research_facts(snapshot: RunSnapshot) -> None:
+    enabled = "on" if st.session_state.get("shadow_mode") else "off"
+    _line("Shadow mode", enabled)
+    _line("Outputs", "do not affect trading")
+    _line("Engine state", (snapshot.account.engine_state or "—").upper())
 
 
 def _journal_facts(snapshot: RunSnapshot) -> None:

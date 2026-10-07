@@ -15,7 +15,7 @@ DISPLAY_TZ = ZoneInfo("Asia/Kolkata")
 
 def accent_card(accent: str, key: str):
     """Bordered container whose stable class is ``st-key-card-<accent>-<key>``."""
-    safe_accent = accent if accent in {"cyan", "green", "amber", "violet", "red"} else "cyan"
+    safe_accent = accent if accent in {"cyan", "green", "amber", "violet", "red", "research"} else "cyan"
     return st.container(border=True, key=f"card-{safe_accent}-{key}")
 
 

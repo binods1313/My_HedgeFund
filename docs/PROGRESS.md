@@ -394,3 +394,43 @@ History still asks to purge old commits. No worktree hit and no `.git/config` hi
 - Send a live Infoway request. The key is not present.
 - Sign off phases B and E in the browser. The running Streamlit process was not restarted.
 - Scrape Finviz, call Anchor Browser, or copy trades.
+
+## TASK 8 — Instructions_2.md section 11
+
+`docs/Instructions*.md` was not edited. The Research Desk, the shadow ledger, and the Dexter sandbox are in this commit. External repos were cloned outside the repo and not wired in.
+
+### Pytest
+```
+$ py -3 -m pytest -q --basetemp=.pytest_tmp
+1 failed, 1240 passed, 6 skipped in 160.52s
+```
+The failure is `tests/test_secret_scan.py::TestThisRepoIsClean::test_worktree_has_no_secrets`. It reads the working tree of `docs/Instructions_2.md` line 5, which the task forbids editing. The scanner names that line `credential_assignment`. No other file was in the offender list.
+
+### Secret scan
+```
+Scanner self-test : PASS
+History hits      : 201
+Worktree hits     : 1
+.git/config hits  : 0
+```
+The one worktree hit is `docs/Instructions_2.md:5`. It was not staged. History still asks to purge old commits. Values are not copied here.
+
+### Keys
+`parse=ok`. Duplicates: none. `INFOWAY_API_KEY` present and non-empty. `ANCHOR_API_KEY` present and non-empty. `ANCHORBROWSER_API_KEY` present and non-empty. `AGENTROUTER_API_KEY` present and non-empty. `FINANCIAL_DATASETS_API_KEY` absent.
+
+### Infoway smoke
+One request, EURUSD: `key_present=yes http_status=401 ret=None latency_ms=374.7 result=FAIL`. No second request.
+
+### What landed
+- `ANCHOR_API_KEY` is the canonical name. The deprecated alias still falls back, and describe() adds `deprecated duplicate, remove it from .env`.
+- Infoway chip on Exchange and on the Research Desk. The chip does not fetch.
+- Dexter clone `E:\tools\dexter` at `534f6be455523c5926eba72bdaf4f914555be5c9`. `bun install --ignore-scripts` exited 0. Playwright postinstall was not run. Fixture mode, because `E:\tools\dexter\.env` is absent.
+- `learning/` ledger, resolver, calibration, proposals, and a shadow thread that starts only when the desk toggle is on.
+- Research Desk nav item. Proposals require a confirm dialog.
+- External review: experiential skip, worldmonitor use sandboxed, neither wired.
+
+### Could not
+- Dexter US-stock smoke. Put one supported LLM key and `FINANCIAL_DATASETS_API_KEY` in `E:\tools\dexter\.env`.
+- A live Anchor call, an Anchor SDK install, and any run of experiential or worldmonitor.
+- Restart Streamlit on port 8501. The process was left running so Kilo can restart it.
+- Clear the pytest failure without editing `docs/Instructions_2.md`.

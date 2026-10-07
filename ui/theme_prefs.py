@@ -27,6 +27,7 @@ _ROLES = (
     "accent_violet",
     "accent_red",
     "accent_journal",
+    "accent_research",
     "gain",
     "loss",
 )
@@ -50,6 +51,7 @@ class Palette(BaseModel):
     accent_violet: str
     accent_red: str
     accent_journal: str
+    accent_research: str = "#A9C1FF"
     gain: str
     loss: str
     glow: str = Field(default="normal", pattern="^(off|low|normal)$")

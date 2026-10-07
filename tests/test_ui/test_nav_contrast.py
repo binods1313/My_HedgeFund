@@ -9,6 +9,7 @@ ACCENTS = {
     "signals": TOKENS["accent_violet"],
     "news": TOKENS["accent_amber"],
     "journal": TOKENS["accent_journal"],
+    "research": TOKENS["accent_research"],
 }
 
 
@@ -23,4 +24,5 @@ def test_nav_text_on_active_and_inactive_fills() -> None:
 
 def test_journal_token_on_panel() -> None:
     assert contrast_ratio(TOKENS["accent_journal"], TOKENS["panel"]) >= 3.0
+    assert contrast_ratio(TOKENS["accent_research"], TOKENS["panel"]) >= 3.0
     assert contrast_ratio(TOKENS["text"], TOKENS["panel"]) >= 4.5

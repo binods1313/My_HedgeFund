@@ -231,10 +231,22 @@ Infoway's official HTTP host is `https://data.infoway.io`. The key is the `apiKe
 
 Finviz is link-out only: `https://finviz.com/forex.ashx`, `https://finviz.com/futures.ashx`, and `https://finviz.com/quote.ashx?t=SYMBOL` for a letter ticker of at most five characters that is not forex, metals, crypto, or an index. Nothing is scraped. An official Elite export could be integrated if the operator subscribes.
 
-Anchor Browser (`https://docs.anchorbrowser.io/introduction`) is a cloud browser for agents: navigate, authenticate, fill forms, and extract data, then dispose of the VM. The vendor examples use `ANCHOR_API_KEY`. This repo's placeholder name, from the task, is `ANCHORBROWSER_API_KEY`. No client, SDK, or dependency was added. It is not needed yet. This UI does not automate third-party websites.
+Anchor Browser (`https://docs.anchorbrowser.io/introduction`) is a cloud browser for agents: navigate, authenticate, fill forms, and extract data, then dispose of the VM. The vendor SDK reads `ANCHOR_API_KEY`. `ANCHORBROWSER_API_KEY` is a deprecated duplicate. When that name is set, key status includes the sentence `deprecated duplicate, remove it from .env`. No client, SDK, or dependency was added. A live call was not made, because a call can start a billed browser. It can log into websites using stored credentials, so it must not receive this repo's `.env`. This UI does not automate third-party websites.
 
 The Ideas watchlist is typed by hand: source, symbol, direction (`long`, `short`, or `watch`), and a note. It is stored in gitignored `data/ideas_watchlist.json`. The table is escaped. It does not submit orders and it does not read agent scores.
 
 ### Task 6
 
-Section 9 is not in `docs/Instructions_2.md`. The file begins at section 10. Dexter was not installed and the Research Desk was not built.
+Section 9 was not in `docs/Instructions_2.md` when Task 7 was written. Task 8 section 11 is the Dexter and Research Desk task. The sandbox and the desk are described below.
+
+### Task 8 — Research Desk
+
+The nav has a sixth item, Research Desk, with accent `#A9C1FF`. The page opens with the sentence `Shadow mode: these outputs do not affect trading.` The Shadow mode toggle defaults to off. Turning it on starts a daemon thread that records agent results. Turning it off removes `data/shadow_mode.on`. The thread does not submit orders.
+
+The Infoway chip reads `Secondary data (research only)`, then `source: Infoway`, the age of the last button fetch, and calls today against the cap. The chip does not fetch. MetaTrader 5 remains the only order price. The same chip is on the Exchange research panel.
+
+Agent cards 01–08 show the latest shadow row for the selected symbol: OK, N-A, DEGRADED, or OFF, plus direction, score, age, and the track record. Fewer than 30 resolved samples is `INSUFFICIENT`. Agents 09 and 10 are labelled `deterministic, no learning` and are not called. The Dexter card shows the last cached symbol, an escaped summary, sources, data age, calls against the cap, a fixture badge while the data key is absent, and `source: Dexter`. Reliability is a Plotly bar of hit rate by score bucket with the sample count on the bar. Proposals list evidence and the change bounds. Approve, Reject, Apply, and Rollback each open a confirm dialog. Apply writes a new file under `data/learning_weights/`. Nothing is applied by itself.
+
+`learning/` is the shadow package. It does not import MetaTrader5. The ledger is gitignored `data/learning.db`. Outcomes use the chart ATR stop and target rules, with the stop winning when both are touched in one bar. Spread is a price distance when a bar has one. Calibration is Wilson 95 percent, mean R, and a reliability gap. Prompt changes are proposals with evidence, not silent edits.
+
+Dexter lives at `E:\tools\dexter` and is reviewed in `docs/DEXTER_INTEGRATION_PLAN.md`. External repos are reviewed in `docs/EXTERNAL_REPOS_REVIEW.md` and are not wired in.

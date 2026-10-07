@@ -39,11 +39,24 @@ PROVIDER_ENV_VARS: Final[dict[str, str]] = {
     "smtp": "SMTP_PASSWORD",
     "agentrouter": "AGENTROUTER_API_KEY",
     "infoway": "INFOWAY_API_KEY",
-    "anchorbrowser": "ANCHORBROWSER_API_KEY",
+    "anchor": "ANCHOR_API_KEY",
 }
+
+# The vendor SDK reads ANCHOR_API_KEY. The old name remains a fallback only.
+DEPRECATED_ALIAS: Final[dict[str, str]] = {
+    "anchor": "ANCHORBROWSER_API_KEY",
+}
+DEPRECATION_NOTE: Final[str] = "deprecated duplicate, remove it from .env"
 
 # Markers that identify an obvious placeholder rather than a real credential.
 _PLACEHOLDER_PREFIXES = ("YOUR_", "<", "REPLACE_", "CHANGEME")
+
+
+def _usable(value: str) -> bool:
+    text = value.strip()
+    if not text:
+        return False
+    return not text.upper().startswith(_PLACEHOLDER_PREFIXES)
 
 
 class KeyNotConfigured(LookupError):
@@ -90,15 +103,22 @@ class Keyring:
                 f"{self.providers()}"
             ) from None
 
+    def _stored(self, env_var: str) -> str:
+        return str(self.env.get(env_var, ""))
+
+    def _configured_value(self, provider: str) -> str | None:
+        """The canonical value, or the deprecated alias when that is the only real key."""
+        primary = self._stored(self.env_var_for(provider))
+        if _usable(primary):
+            return primary.strip()
+        alias = DEPRECATED_ALIAS.get(provider)
+        if alias and _usable(self._stored(alias)):
+            return self._stored(alias).strip()
+        return None
+
     def is_configured(self, provider: str) -> bool:
         """True when a real key is present for this provider."""
-        env_var = self.env_var_for(provider)
-        value = self.env.get(env_var, "")
-        if not value or not value.strip():
-            return False
-        if value.strip().upper().startswith(_PLACEHOLDER_PREFIXES):
-            return False
-        return True
+        return self._configured_value(provider) is not None
 
     def missing(self) -> list[str]:
         """Providers with no key configured, for a startup readiness report."""
@@ -113,11 +133,10 @@ class Keyring:
         send an empty credential and receive a confusing auth error.
         """
         env_var = self.env_var_for(provider)
-        value = self.env.get(env_var, "")
-        if not value or not value.strip() or \
-                value.strip().upper().startswith(_PLACEHOLDER_PREFIXES):
+        value = self._configured_value(provider)
+        if value is None:
             raise KeyNotConfigured(provider, env_var)
-        return value.strip()
+        return value
 
     def get(self, provider: str, default: str | None = None) -> str | None:
         """The key for `provider`, or `default` when not configured."""
@@ -129,12 +148,23 @@ class Keyring:
     # -- redaction -------------------------------------------------------
 
     def describe(self, provider: str) -> str:
-        """Redacted description, safe for logs and exceptions."""
+        """Redacted description, safe for logs and exceptions.
+
+        A deprecated alias that is present is named as a duplicate. The value
+        is never included.
+        """
         env_var = self.env_var_for(provider)
-        if self.is_configured(provider):
-            length = len(self.require(provider))
-            return f"{provider} (env {env_var}): ***REDACTED*** (set, len={length})"
-        return f"{provider} (env {env_var}): ***NOT CONFIGURED***"
+        alias = DEPRECATED_ALIAS.get(provider, "")
+        note = ""
+        if alias and self._stored(alias).strip():
+            note = f" {DEPRECATION_NOTE}"
+        value = self._configured_value(provider)
+        if value is None:
+            return f"{provider} (env {env_var}): ***NOT CONFIGURED***{note}"
+        return (
+            f"{provider} (env {env_var}): ***REDACTED*** "
+            f"(set, len={len(value)}){note}"
+        )
 
     def describe_all(self) -> list[str]:
         return [self.describe(p) for p in self.providers()]

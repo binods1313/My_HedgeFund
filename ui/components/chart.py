@@ -29,6 +29,7 @@ from ui.indicators import (
     rsi,
     rsi_signals,
 )
+from learning.bars import publish_closed_rows
 from ui.components.pattern_hub import render_pattern_matrix
 from ui.patterns import (
     FILTER_CHOICES,
@@ -107,6 +108,7 @@ def render_chart(asset: str | None) -> pd.DataFrame:
                 chart_data.clear()
             result = chart_data(asset, timeframe, count, int(time.time()) // 2)
             frame = result if isinstance(result, pd.DataFrame) else pd.DataFrame()
+            _publish_closed(asset, timeframe_name, frame)
 
         pack = _pack(frame, selected, asset)
         visible = _visible_patterns(frame, pack.get("patterns") or [])
@@ -128,6 +130,44 @@ def render_chart(asset: str | None) -> pd.DataFrame:
         _render_stack(frame, pack)
         _render_levels(asset, pack)
         return frame
+
+
+_PUBLISH_TF = {
+    "15M": "M15",
+    "1H": "H1",
+    "4H": "H4",
+    "1D": "D1",
+    "1Y": "D1",
+    "All": "W1",
+}
+
+
+def _publish_closed(asset: str, timeframe_name: str, frame: pd.DataFrame) -> None:
+    """Store closed bars for shadow mode. The last row is still forming."""
+    try:
+        if frame is None or frame.empty or len(frame) < 2:
+            return
+        if not {"time", "open", "high", "low", "close"}.issubset(frame.columns):
+            return
+        rows = []
+        for record in frame.iloc[:-1].to_dict("records"):
+            stamp = record.get("time")
+            if hasattr(stamp, "isoformat"):
+                stamp = stamp.isoformat()
+            row = {
+                "time": "" if stamp is None else str(stamp),
+                "open": record.get("open"),
+                "high": record.get("high"),
+                "low": record.get("low"),
+                "close": record.get("close"),
+            }
+            # MT5 `spread` is points. Only a price-distance column is stored.
+            if "spread_price" in record:
+                row["spread"] = record.get("spread_price")
+            rows.append(row)
+        publish_closed_rows(asset, _PUBLISH_TF.get(timeframe_name, "H1"), rows)
+    except OSError:
+        return
 
 
 def _draw_chart(frame, asset, selected, pack, patterns, *, tall: bool) -> None:

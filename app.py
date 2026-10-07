@@ -15,6 +15,7 @@ from ui.components.infoway_panel import render_infoway_research
 from ui.components.nav import render_navigation
 from ui.components.news_tab import render_news_tab
 from ui.components.order_form import render_order_form
+from ui.components.research_desk import render_research_desk
 from ui.components.positions_matrix import render_positions_matrix
 from ui.components.snapshot import load_shared_snapshot
 
@@ -59,3 +60,5 @@ elif view == TAB_LABELS[3]:
     render_news_tab(snapshot)
 elif view == TAB_LABELS[4]:
     render_journal_view(snapshot)
+elif view == TAB_LABELS[5]:
+    render_research_desk(config.symbols.whitelist)

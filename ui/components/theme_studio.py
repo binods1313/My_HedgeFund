@@ -29,6 +29,7 @@ _ROLES = (
     ("accent_violet", "Card violet"),
     ("accent_red", "Card red"),
     ("accent_journal", "Journal"),
+    ("accent_research", "Research Desk"),
     ("gain", "Gain ▲"),
     ("loss", "Loss ▼"),
 )

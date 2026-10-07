@@ -71,6 +71,12 @@ data/news_cache.json
 data/ui_prefs.json
 data/ideas_watchlist.json
 data/infoway_budget.json
+data/learning.db
+data/dexter_cache/
+data/dexter_budget.json
+data/market_bars/
+data/learning_weights/
+data/shadow_mode.on
 .pytest_tmp/
 .tmp/
 pytest_*.txt

@@ -1,0 +1,11 @@
+{
+  "symbol": "AAPL",
+  "asset_class": "equity",
+  "status": "ok",
+  "summary": "Fixture sample for a US stock. No live vendor call was made.",
+  "metrics": {"revenue": null},
+  "sources": ["financialdatasets.ai"],
+  "as_of": "1970-01-01T00:00:00Z",
+  "tool_calls": 0,
+  "model": "fixture"
+}

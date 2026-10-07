@@ -91,6 +91,9 @@ class InfowayStatus:
     price: str | None = None
     candles: tuple[CandleBar, ...] = ()
     detail: str = ""
+    http_status: int | None = None
+    ret_code: int | None = None
+    as_of: str = ""
 
 
 Transport = Callable[[HttpRequest], HttpResponse]
@@ -117,6 +120,9 @@ def _status(
     price: str | None = None,
     candles: tuple[CandleBar, ...] = (),
     detail: str = "",
+    http_status: int | None = None,
+    ret_code: int | None = None,
+    as_of: str = "",
 ) -> InfowayStatus:
     return InfowayStatus(
         ok=ok,
@@ -126,6 +132,9 @@ def _status(
         price=price,
         candles=candles,
         detail=detail[:160],
+        http_status=http_status,
+        ret_code=ret_code,
+        as_of=as_of,
     )
 
 
@@ -181,7 +190,7 @@ def _parse_trades(payload: list[dict], symbol: str) -> InfowayStatus:
     match = next((item for item in prints if item.s.upper() == symbol), prints[0] if prints else None)
     if match is None:
         return _status(symbol, "degraded", detail="empty trade list")
-    return _status(symbol, "ok", ok=True, price=match.p)
+    return _status(symbol, "ok", ok=True, price=match.p, as_of=str(match.t))
 
 
 def _parse_candles(payload: list[dict], symbol: str) -> InfowayStatus:
@@ -202,14 +211,28 @@ def _finish(body: bytes, symbol: str, kind: str) -> InfowayStatus:
     except (UnicodeError, json.JSONDecodeError, ValidationError):
         return _status(symbol, "degraded", detail="response did not match the schema")
     if envelope.ret != 200:
-        return _status(symbol, "degraded", detail=envelope.msg or f"ret {envelope.ret}")
+        return _status(
+            symbol,
+            "degraded",
+            detail=envelope.msg or "ret rejected",
+            ret_code=envelope.ret,
+        )
     data = envelope.data or []
     try:
-        if kind == "trade":
-            return _parse_trades(data, symbol)
-        return _parse_candles(data, symbol)
+        parsed = _parse_trades(data, symbol) if kind == "trade" else _parse_candles(data, symbol)
     except ValidationError:
-        return _status(symbol, "degraded", detail="response did not match the schema")
+        return _status(symbol, "degraded", detail="response did not match the schema", ret_code=envelope.ret)
+    return InfowayStatus(
+        ok=parsed.ok,
+        status=parsed.status,
+        latency_s=parsed.latency_s,
+        symbol=parsed.symbol,
+        price=parsed.price,
+        candles=parsed.candles,
+        detail=parsed.detail,
+        ret_code=envelope.ret,
+        as_of=parsed.as_of,
+    )
 
 
 def _request(
@@ -243,7 +266,13 @@ def _request(
         return _status(symbol, "degraded", detail="request failed", latency_s=time.perf_counter() - started)
     latency = time.perf_counter() - started
     if response.status != 200:
-        result = _status(symbol, "degraded", detail=f"http {response.status}", latency_s=latency)
+        result = _status(
+            symbol,
+            "degraded",
+            detail="http error",
+            latency_s=latency,
+            http_status=response.status,
+        )
     else:
         result = _finish(response.body, symbol, kind)
         result = InfowayStatus(
@@ -254,6 +283,9 @@ def _request(
             price=result.price,
             candles=result.candles,
             detail=result.detail,
+            http_status=response.status,
+            ret_code=result.ret_code,
+            as_of=result.as_of,
         )
     _CACHE[cache_key] = (now, result)
     return result
@@ -372,8 +404,37 @@ def _fetch(
     )
 
 
+def budget_snapshot(
+    path: Path | None = None,
+    now: float | None = None,
+) -> tuple[int | None, int]:
+    """Calls counted today and the cap. None means the budget file is unreadable."""
+    settings = load_config_ext().infoway
+    moment = time.time() if now is None else now
+    today = datetime.fromtimestamp(moment, timezone.utc).date().isoformat()
+    try:
+        count = _budget_count(path or BUDGET_PATH, today)
+    except ValueError:
+        return None, settings.daily_cap
+    return count, settings.daily_cap
+
+
 def smoke_quote(symbol: str = "EURUSD") -> tuple[str, float | None]:
     """One live read. Returns status and latency only."""
     clear_cache()
     result = fetch_quote(symbol, refresh=True)
     return result.status, result.latency_s
+
+
+def smoke_report(symbol: str = "EURUSD") -> dict[str, object]:
+    """One live read. The dict has no headers and no credential."""
+    clear_cache()
+    result = fetch_quote(symbol, refresh=True)
+    latency_ms = None if result.latency_s is None else round(result.latency_s * 1000.0, 1)
+    return {
+        "key_present": result.status != "not_configured",
+        "http_status": result.http_status,
+        "ret": result.ret_code,
+        "latency_ms": latency_ms,
+        "result": "PASS" if result.ok else "FAIL",
+    }

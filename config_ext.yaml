@@ -7,3 +7,17 @@ infoway:
   daily_cap: 200
   timeout_s: 5
   cache_ttl_s: 30
+dexter:
+  daily_cap: 20
+  timeout_s: 90
+  max_iterations: 6
+learning:
+  timeframe: H1
+  horizons: [4, 12, 24]
+  atr_period: 14
+  min_samples: 30
+  max_change: 0.10
+  shrinkage: 0.5
+  drift_window: 30
+shadow:
+  enabled: false

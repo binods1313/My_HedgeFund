@@ -1,6 +1,40 @@
 # Dexter Integration Plan
 
-## D1 — Dexter Discovery Summary
+## Task 8 — sandbox is installed, shadow only
+
+The "not installed" notes below are the Task 5 and Task 6 search. Task 8 (`docs/Instructions_2.md` section 11) cloned Dexter outside this repo and wrapped it. Those older notes are not a reason to skip the sandbox.
+
+- Clone: `E:\tools\dexter`
+- Commit: `534f6be455523c5926eba72bdaf4f914555be5c9`
+- Package: `dexter-ts` 1.0.6, ESM, Bun. `bun` on this machine is 1.4.0.
+- License: no `LICENSE` file in the clone. README line 192 says "This project is licensed under the MIT License."
+- Install: `bun install --ignore-scripts` completed with exit 0. The `postinstall` script is `playwright install chromium`. It was not run. This channel does not use the browser tool.
+
+### What was reviewed before anything ran
+
+`package.json` scripts are `start`, `dev`, `gateway`, `gateway:login`, `typecheck`, and `test`. The only lifecycle hook is `postinstall`. None of those scripts were run.
+
+Dexter registers `get_financials`, `get_market_data`, `read_filings`, `stock_screener`, `spawn_subagent`, `ask_user_question`, `web_fetch`, `browser`, `read_file`, `write_file`, `edit_file`, `heartbeat`, `cron`, `memory_search`, `memory_get`, and `memory_update`. `web_search` is added when a search-provider key is present. `getTools` returns the full set. `Agent.create` is what filters, through `toolAllowlist`.
+
+Outbound hosts the upstream client can reach: financialdatasets.ai, OpenAI, Anthropic, Google, xAI, OpenRouter, Ollama at `http://127.0.0.1:11434` by default, Exa, Tavily, Perplexity, LangSearch, LangSmith, SEC filing hosts, arbitrary URLs through Playwright, and WhatsApp through the gateway (`@whiskeysockets/baileys`). The gateway was not started.
+
+Env names Dexter reads: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `XAI_API_KEY`, `OPENROUTER_API_KEY`, `OLLAMA_BASE_URL`, `FINANCIAL_DATASETS_API_KEY`, `EXASEARCH_API_KEY`, `TAVILY_API_KEY`, `PERPLEXITY_API_KEY`, `LANGSEARCH_API_KEY`, and `LANGSMITH_*`. `INFOWAY_API_KEY` does not substitute for `FINANCIAL_DATASETS_API_KEY`.
+
+### Channel
+
+`E:\tools\dexter\hf_wrapper.ts` calls `Agent.create` on channel `hf-shadow` with `memoryEnabled: false` and a system prompt that does not load soul, rules, or memory. The allow-list is `get_financials`, `get_market_data`, `read_filings`, `stock_screener`, `web_search`, and `web_fetch`.
+
+Disabled for this channel: `bash`, `write_file`, `edit_file`, `read_file`, `browser`, `ask_user_question`, `spawn_subagent`, `cron`, `heartbeat`, `memory_search`, `memory_get`, `memory_update`.
+
+The wrapper writes one JSON object to stdout. The default timeout is 90 seconds and the iteration cap comes from `config_ext.yaml` (`dexter.max_iterations`, default 6). Raw model text is stripped of control characters and markup before it is kept.
+
+`ui/services/dexter_client.py` starts that process with an argument list and `shell=False`. The child environment keeps path and Windows system variables only. HedgeFund secret names are removed, including `FINANCIAL_DATASETS_API_KEY`. Dexter loads its own key from `E:\tools\dexter\.env`, which is gitignored inside that clone. That file is absent, so the client stays in fixture mode. Put one LLM key Dexter supports and `FINANCIAL_DATASETS_API_KEY` in `E:\tools\dexter\.env`. Do not put them in this repo or on a command line.
+
+Forex, metals, crypto, and indices return `status=na` and do not start a process. The US-stock smoke was skipped because `FINANCIAL_DATASETS_API_KEY` is not set. Fixture sample: `tests/fixtures/dexter/sample.json`. Cache and the daily counter live under gitignored `data/dexter_cache/` and `data/dexter_budget.json`. The default cap is 20 calls a day.
+
+Dexter has no function that submits, modifies, or closes a HedgeFund order. The shadow process does not import the executor, the risk gate, or MetaTrader5. A Dexter result is stored in `data/learning.db` and shown on the Research Desk. It is not an order input.
+
+## D1 — Dexter Discovery Summary (historical, Task 5)
 
 **Repository:** `virattt/dexter` (https://github.com/virattt/dexter)
 **License:** MIT

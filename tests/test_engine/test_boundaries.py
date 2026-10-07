@@ -338,13 +338,65 @@ class TestKeyringRedaction:
     def test_infoway_and_anchor_placeholders_are_not_configured(self):
         from engine.keys import PROVIDER_ENV_VARS, Keyring
         assert PROVIDER_ENV_VARS["infoway"] == "INFOWAY_API_KEY"
-        assert PROVIDER_ENV_VARS["anchorbrowser"] == "ANCHORBROWSER_API_KEY"
+        assert PROVIDER_ENV_VARS["anchor"] == "ANCHOR_API_KEY"
         ring = Keyring(env={
             "INFOWAY_API_KEY": "YOUR_INFOWAY_API_KEY",
+            "ANCHOR_API_KEY": "YOUR_ANCHOR_API_KEY",
             "ANCHORBROWSER_API_KEY": "YOUR_ANCHORBROWSER_API_KEY",
         })
         assert ring.is_configured("infoway") is False
-        assert ring.is_configured("anchorbrowser") is False
+        assert ring.is_configured("anchor") is False
+
+    def test_anchor_alias_is_a_deprecated_fallback(self):
+        from engine.keys import DEPRECATION_NOTE, Keyring
+        primary = "not-a-secret-primary"
+        alias = "not-a-secret-alias"
+        fallback = Keyring(env={"ANCHORBROWSER_API_KEY": alias})
+        assert fallback.is_configured("anchor") is True
+        assert fallback.require("anchor") == alias
+        described = fallback.describe("anchor")
+        assert DEPRECATION_NOTE in described
+        assert alias not in described
+        assert primary not in described
+        both = Keyring(env={"ANCHOR_API_KEY": primary, "ANCHORBROWSER_API_KEY": alias})
+        assert both.require("anchor") == primary
+        assert DEPRECATION_NOTE in both.describe("anchor")
+        assert alias not in both.describe("anchor")
+
+    def test_research_key_values_never_appear_in_repr_logs_or_exceptions(self):
+        import io
+        import logging
+
+        from engine.keys import KeyNotConfigured, Keyring
+        sentinels = {
+            "INFOWAY_API_KEY": "not-a-secret-infoway",
+            "ANCHOR_API_KEY": "not-a-secret-anchor",
+            "ANCHORBROWSER_API_KEY": "not-a-secret-anchor-alias",
+            "AGENTROUTER_API_KEY": "not-a-secret-agentrouter",
+            "FINANCIAL_DATASETS_API_KEY": "not-a-secret-datasets",
+        }
+        ring = Keyring(env=dict(sentinels))
+        buffer = io.StringIO()
+        handler = logging.StreamHandler(buffer)
+        logger = logging.getLogger("test.task8.redaction")
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+        try:
+            logger.info("%s", repr(ring))
+            logger.info("%s", str(ring))
+            for line in ring.describe_all():
+                logger.info("%s", line)
+            try:
+                Keyring(env={}).require("anchor")
+            except KeyNotConfigured as exc:
+                logger.info("%s", exc)
+        finally:
+            logger.removeHandler(handler)
+        leaked = buffer.getvalue()
+        for value in sentinels.values():
+            assert value not in repr(ring)
+            assert value not in str(ring)
+            assert value not in leaked
 
     def test_blank_key_is_not_configured(self):
         from engine.keys import Keyring
