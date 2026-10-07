@@ -1,0 +1,5 @@
+# Operator settings that are not part of config.yaml.
+# The loader rejects unknown keys and out-of-range numbers.
+chart:
+  atr_k: 1.5
+  rr: 3.0

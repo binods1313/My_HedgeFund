@@ -66,3 +66,12 @@ __pycache__/
 venv/
 *.pyd
 .pytest_cache/
+# Engine data: transient artifacts that must never enter version history
+data/news_cache.json
+data/ui_prefs.json
+.pytest_tmp/
+.tmp/
+pytest_*.txt
+output.txt
+*.db-shm
+*.db-wal

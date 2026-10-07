@@ -14,6 +14,7 @@ TIMEFRAME_M15 = mt5.TIMEFRAME_M15
 TIMEFRAME_H4 = mt5.TIMEFRAME_H4
 TIMEFRAME_D1 = mt5.TIMEFRAME_D1
 TIMEFRAME_H1 = mt5.TIMEFRAME_H1
+TIMEFRAME_W1 = mt5.TIMEFRAME_W1
 
 
 def initialize_mt5() -> bool:
@@ -107,11 +108,14 @@ def get_symbol_info_safe(symbol) -> dict | None:
         "name": getattr(info, "name", symbol),
         "digits": getattr(info, "digits", None),
         "point": getattr(info, "point", None),
+        "trade_tick_value_loss": getattr(info, "trade_tick_value_loss", None),
         "trade_tick_value": getattr(info, "trade_tick_value", None),
         "trade_tick_size": getattr(info, "trade_tick_size", None),
+        "trade_contract_size": getattr(info, "trade_contract_size", None),
         "volume_min": getattr(info, "volume_min", None),
         "volume_max": getattr(info, "volume_max", None),
         "volume_step": getattr(info, "volume_step", None),
+        "trade_stops_level": getattr(info, "trade_stops_level", None),
     }
 
 

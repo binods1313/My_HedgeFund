@@ -1,0 +1,450 @@
+from __future__ import annotations
+
+import time
+
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+from plotly.subplots import make_subplots
+
+from data_engine import TIMEFRAME_D1, TIMEFRAME_H1, TIMEFRAME_H4, TIMEFRAME_M15, TIMEFRAME_W1
+from ui.components.data_cache import chart_data
+from ui.indicators import (
+    DEFAULT_INDICATORS,
+    MAX_INDICATORS,
+    Signal,
+    StopPlan,
+    atr,
+    bollinger,
+    bollinger_signals,
+    clamp_indicators,
+    ema,
+    ema_cross_signals,
+    format_fixed,
+    macd,
+    macd_cross_signals,
+    plan_stops,
+    rsi,
+    rsi_signals,
+)
+from ui.state import persist_chart_style, persist_timeframe
+from ui.theme import TOKENS, hex_rgba, plotly_theme, tokens
+
+TIMEFRAMES = {
+    "15M": (TIMEFRAME_M15, 120),
+    "1H": (TIMEFRAME_H1, 120),
+    "4H": (TIMEFRAME_H4, 120),
+    "1D": (TIMEFRAME_D1, 120),
+    "1Y": (TIMEFRAME_D1, 252),
+    "All": (TIMEFRAME_W1, 1000),
+}
+
+_BREAK_EVEN = "Break-even win rate at 1:3 is 25% before spread/commission."
+_CLOSED_CAPTION = "Signals use closed bars only. The forming bar is excluded, so markers do not repaint."
+_TP_CAPTION = (
+    "Take-profit on this chart is display-only. "
+    "Use in order form fills side and stop only and does not submit. "
+    "The market order path can send a take-profit; this button does not."
+)
+
+
+def render_chart(asset: str | None) -> pd.DataFrame:
+    with st.container(border=True, key="card-cyan-market"):
+        st.html('<svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><polyline points="1,13 6,7 10,10 16,3" fill="none" stroke="currentColor" stroke-width="2"/></svg>')
+        st.subheader("Market workspace")
+        control_cols = st.columns([1.2, 2.2, 0.7], gap="small")
+        with control_cols[0]:
+            st.segmented_control(
+                "Chart style",
+                ["Candlestick", "Area", "Bar"],
+                key="w_chart_style",
+                on_change=persist_chart_style,
+                label_visibility="collapsed",
+            )
+        with control_cols[1]:
+            st.segmented_control(
+                "Timeframe",
+                list(TIMEFRAMES),
+                key="w_timeframe",
+                on_change=persist_timeframe,
+                label_visibility="collapsed",
+            )
+        with control_cols[2]:
+            sync = st.button("Sync", key="btn_sync_feed", help="Refresh market data")
+
+        selected = _indicator_control()
+        if not asset:
+            frame = pd.DataFrame()
+        else:
+            timeframe_name = st.session_state.get("timeframe", "1H")
+            timeframe, count = TIMEFRAMES.get(timeframe_name, TIMEFRAMES["1H"])
+            if sync:
+                chart_data.clear()
+            result = chart_data(asset, timeframe, count, int(time.time()) // 2)
+            frame = result if isinstance(result, pd.DataFrame) else pd.DataFrame()
+
+        pack = _pack(frame, selected, asset)
+        _remember_closed_bar(frame, selected, pack)
+        fig = _build_figure(frame, asset, selected, pack)
+        st.plotly_chart(
+            fig, width="stretch", config={"displayModeBar": False}, key="chart_main",
+        )
+        st.caption(_CLOSED_CAPTION)
+        _render_readout(frame, pack)
+        _render_stack(frame, pack)
+        _render_levels(asset, pack)
+        return frame
+
+
+def _indicator_control() -> list[str]:
+    st.session_state.setdefault("w_chart_indicators", list(DEFAULT_INDICATORS))
+    picked = st.multiselect(
+        "Indicators",
+        ["EMA20", "EMA50", "RSI", "MACD", "ATR", "Bollinger"],
+        key="w_chart_indicators",
+        max_selections=MAX_INDICATORS,
+    )
+    selected = clamp_indicators(picked)
+    if selected != list(picked):
+        st.session_state["w_chart_indicators"] = selected
+    return selected
+
+
+def _remember_closed_bar(frame: pd.DataFrame, selected: list[str], pack: dict) -> None:
+    bar_id = None
+    if not frame.empty and "time" in frame and len(frame) >= 2:
+        bar_id = str(frame["time"].iloc[-2])
+    signature = (bar_id, tuple(selected))
+    if st.session_state.get("_signal_signature") != signature:
+        st.session_state["_signal_signature"] = signature
+        st.session_state["_signal_pack"] = pack
+
+
+def _as_float(frame: pd.DataFrame, column: str) -> list[float]:
+    if column not in frame:
+        return []
+    values: list[float] = []
+    for value in frame[column].tolist():
+        if value is None or (isinstance(value, float) and value != value):
+            return []
+        values.append(float(value))
+    return values
+
+
+def _pack(frame: pd.DataFrame, selected: list[str], asset: str | None) -> dict:
+    empty: dict = {"signals": {}, "series": {}, "latest": None, "plan": None, "digits": 5}
+    if frame.empty:
+        return empty
+    close = _as_float(frame, "close")
+    high = _as_float(frame, "high")
+    low = _as_float(frame, "low")
+    if not close:
+        return empty
+    upto = max(0, len(close) - 1)
+    series: dict[str, object] = {}
+    signals: dict[str, list[Signal]] = {}
+    if "EMA20" in selected:
+        series["EMA20"] = ema(close, 20)
+        if "EMA50" in selected:
+            series["EMA50"] = ema(close, 50)
+            signals["EMA"] = ema_cross_signals(series["EMA20"], series["EMA50"], upto=upto)  # type: ignore[arg-type]
+    elif "EMA50" in selected:
+        series["EMA50"] = ema(close, 50)
+    if "RSI" in selected:
+        series["RSI"] = rsi(close, 14)
+        signals["RSI"] = rsi_signals(series["RSI"], upto=upto)  # type: ignore[arg-type]
+    if "MACD" in selected:
+        line, signal, hist = macd(close)
+        series["MACD"] = line
+        series["MACD-signal"] = signal
+        series["MACD-hist"] = hist
+        signals["MACD"] = macd_cross_signals(line, signal, upto=upto)
+    atr_series = atr(high, low, close, 14) if high and low else [None] * len(close)
+    if "ATR" in selected:
+        series["ATR"] = atr_series
+    if "Bollinger" in selected:
+        mid, upper, lower = bollinger(close, 20, 2.0)
+        series["BB-mid"] = mid
+        series["BB-upper"] = upper
+        series["BB-lower"] = lower
+        signals["Bollinger"] = bollinger_signals(close, upper, lower, upto=upto)
+    latest = _latest(signals)
+    plan = _plan(close, atr_series, latest, asset) if latest else None
+    digits = 5
+    quote = {}
+    shared = st.session_state.get("_run_snapshot")
+    if shared is not None:
+        quote = shared.quote or {}
+        try:
+            digits = int(quote.get("digits") or 5)
+        except (TypeError, ValueError):
+            digits = 5
+    return {"signals": signals, "series": series, "latest": latest, "plan": plan, "digits": digits, "close": close}
+
+
+def _latest(signals: dict[str, list[Signal]]) -> Signal | None:
+    found: list[Signal] = []
+    for rows in signals.values():
+        if rows:
+            found.append(rows[-1])
+    if not found:
+        return None
+    return max(found, key=lambda item: item.index)
+
+
+def _plan(
+    close: list[float],
+    atr_series: list[float | None],
+    latest: Signal,
+    asset: str | None,
+) -> StopPlan:
+    """ATR distance uses atr_k even when ATR is not drawn. Tick comes from the spec."""
+    from config_ext_loader import load_config_ext
+
+    settings = load_config_ext().chart
+    entry = close[latest.index]
+    value = atr_series[latest.index] if latest.index < len(atr_series) else None
+    atr_value = float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+    if atr_value is None or atr_value != atr_value or atr_value <= 0:
+        return StopPlan(False, latest.side, entry, None, None, "ATR is unavailable on the closed bar")
+    spec = _spec_for(asset)
+    if spec is None or spec.tick_size <= 0 or spec.point <= 0:
+        return StopPlan(False, latest.side, entry, None, None, "symbol spec unavailable")
+    return plan_stops(
+        latest.side,
+        entry,
+        atr_value,
+        atr_k=settings.atr_k,
+        rr=settings.rr,
+        tick_size=float(spec.tick_size),
+        stops_level_points=float(spec.stops_level_points),
+        point=float(spec.point),
+    )
+
+
+def _spec_for(asset: str | None):
+    if not asset:
+        return None
+    cache = st.session_state.setdefault("_chart_specs", {})
+    if asset in cache:
+        return cache[asset]
+    from ui.data_access import get_symbol_spec
+
+    spec = get_symbol_spec(asset, st.session_state.get("asset_category") or "forex")
+    cache[asset] = spec
+    return spec
+
+
+def _build_figure(frame: pd.DataFrame, asset: str | None, selected: list[str], pack: dict) -> go.Figure:
+    lanes = [name for name in ("RSI", "MACD") if name in selected]
+    rows = 1 + len(lanes)
+    fig = make_subplots(rows=rows, cols=1, shared_xaxes=True, vertical_spacing=0.04, row_heights=[0.62] + [0.38 / max(len(lanes), 1)] * len(lanes) if lanes else [1])
+    style = st.session_state.get("chart_style", "Candlestick")
+    if not frame.empty and "close" in frame:
+        if style == "Candlestick":
+            fig.add_trace(go.Candlestick(
+                x=frame["time"], open=frame["open"], high=frame["high"],
+                low=frame["low"], close=frame["close"], name="Price",
+                increasing_line_color=TOKENS["gain"], increasing_fillcolor=hex_rgba("gain", 0.55),
+                decreasing_line_color=TOKENS["loss"], decreasing_fillcolor=hex_rgba("loss", 0.45),
+            ), row=1, col=1)
+        elif style == "Area":
+            fig.add_trace(go.Scatter(
+                x=frame["time"], y=frame["close"], name="Price", mode="lines",
+                line={"color": TOKENS["accent"], "width": 1.5},
+                fill="tozeroy", fillcolor=hex_rgba("accent", 0.14),
+            ), row=1, col=1)
+        else:
+            colors = [
+                TOKENS["gain"] if close >= open_ else TOKENS["loss"]
+                for open_, close in zip(frame["open"], frame["close"])
+            ]
+            fig.add_trace(go.Bar(x=frame["time"], y=frame["close"], name="Price", marker_color=colors), row=1, col=1)
+        _overlay(fig, frame, pack)
+        _levels(fig, pack)
+        _markers(fig, frame, pack)
+        _lanes(fig, frame, lanes, pack)
+    else:
+        fig.add_annotation(
+            text="Live chart data unavailable · —", x=0.5, y=0.5,
+            xref="paper", yref="paper", showarrow=False,
+            font={"color": TOKENS["text_muted"], "size": 13},
+        )
+    theme = plotly_theme()
+    theme.update({
+        "height": 420 if not lanes else 560,
+        "uirevision": f"{asset}-{st.session_state.get('timeframe', '1H')}-{','.join(selected)}",
+        "legend": {"orientation": "h", "x": 0, "y": 1.12},
+        "xaxis": {"gridcolor": hex_rgba("border", 0.4), "rangeslider": {"visible": False}},
+        "yaxis": {"gridcolor": hex_rgba("border", 0.4), "side": "right"},
+    })
+    fig.update_layout(**theme)
+    return fig
+
+
+def _levels(fig: go.Figure, pack: dict) -> None:
+    plan = pack.get("plan")
+    if plan is None or not plan.ok:
+        return
+    colours = tokens()
+    for price, name, colour in (
+        (plan.sl, "SL", colours["loss"]),
+        (plan.tp, "TP", colours["accent"]),
+    ):
+        if price is None:
+            continue
+        fig.add_hline(
+            y=price,
+            line_dash="dash",
+            line_color=colour,
+            line_width=1,
+            annotation_text=name,
+            annotation_position="right",
+            row=1,
+            col=1,
+        )
+
+
+def _overlay(fig: go.Figure, frame: pd.DataFrame, pack: dict) -> None:
+    colours = {
+        "EMA20": TOKENS["accent"],
+        "EMA50": TOKENS["warn"],
+        "BB-mid": TOKENS["text_muted"],
+        "BB-upper": TOKENS["accent_violet"],
+        "BB-lower": TOKENS["accent_violet"],
+    }
+    for key, colour in colours.items():
+        series = pack["series"].get(key)
+        if not isinstance(series, list):
+            continue
+        fig.add_trace(go.Scatter(
+            x=frame["time"], y=series, name=key, mode="lines",
+            line={"color": colour, "width": 1.2, "dash": "dot" if key.startswith("BB") else "solid"},
+            connectgaps=False,
+        ), row=1, col=1)
+
+
+def _markers(fig: go.Figure, frame: pd.DataFrame, pack: dict) -> None:
+    close = pack.get("close") or []
+    for source, rows in pack["signals"].items():
+        for signal in rows:
+            if signal.index >= len(close):
+                continue
+            price = close[signal.index]
+            above = signal.side == "SELL"
+            fig.add_trace(go.Scatter(
+                x=[frame["time"].iloc[signal.index]],
+                y=[price],
+                mode="markers+text",
+                text=["▼" if above else "▲"],
+                textposition="top center" if above else "bottom center",
+                name=f"{source} {signal.side}",
+                hovertext=signal.reason,
+                hoverinfo="text",
+                marker={"size": 10, "color": TOKENS["loss"] if above else TOKENS["gain"]},
+                showlegend=False,
+            ), row=1, col=1)
+
+
+def _lanes(fig: go.Figure, frame: pd.DataFrame, lanes: list[str], pack: dict) -> None:
+    for offset, name in enumerate(lanes, start=2):
+        if name == "RSI":
+            fig.add_trace(go.Scatter(
+                x=frame["time"], y=pack["series"].get("RSI"), name="RSI", mode="lines",
+                line={"color": TOKENS["accent_amber"], "width": 1.2}, connectgaps=False,
+            ), row=offset, col=1)
+        else:
+            fig.add_trace(go.Scatter(
+                x=frame["time"], y=pack["series"].get("MACD"), name="MACD", mode="lines",
+                line={"color": TOKENS["accent_cyan"], "width": 1.2}, connectgaps=False,
+            ), row=offset, col=1)
+            fig.add_trace(go.Scatter(
+                x=frame["time"], y=pack["series"].get("MACD-signal"), name="Signal", mode="lines",
+                line={"color": TOKENS["warn"], "width": 1}, connectgaps=False,
+            ), row=offset, col=1)
+
+
+def _render_readout(frame: pd.DataFrame, pack: dict) -> None:
+    digits = int(pack.get("digits") or 5)
+    closed_index = len(frame) - 2 if len(frame) >= 2 else None
+
+    def at(name: str) -> str:
+        series = pack["series"].get(name)
+        if closed_index is None or not isinstance(series, list) or closed_index >= len(series):
+            return "—"
+        places = 1 if name == "RSI" else digits
+        return format_fixed(series[closed_index], places)
+
+    labels = (
+        ("RSI 14", at("RSI")),
+        ("ATR", at("ATR")),
+        ("EMA 20", at("EMA20")),
+        ("EMA 50", at("EMA50")),
+        ("MACD", at("MACD")),
+    )
+    columns = st.columns(len(labels), gap="small")
+    for column, (label, value) in zip(columns, labels):
+        with column:
+            st.metric(label, value)
+
+
+def _render_stack(frame: pd.DataFrame, pack: dict) -> None:
+    signals: dict[str, list[Signal]] = pack["signals"]
+    if not signals:
+        st.caption("Signal lane · —")
+        return
+    closed = max(len(frame) - 1, 0)
+    rows = []
+    for source, items in signals.items():
+        latest = items[-1] if items else None
+        age = "—" if latest is None else str(closed - 1 - latest.index)
+        rows.append({
+            "source": source,
+            "side": latest.side if latest else "—",
+            "age_bars": age,
+            "reason": latest.reason if latest else "—",
+        })
+    st.caption("Signal lane · one row per selected source · closed bars")
+    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+
+
+def _render_levels(asset: str | None, pack: dict) -> None:
+    st.caption(_BREAK_EVEN)
+    st.caption(_TP_CAPTION)
+    plan: StopPlan | None = pack.get("plan")
+    latest: Signal | None = pack.get("latest")
+    if latest is None or plan is None:
+        st.caption("No closed-bar signal yet · —")
+        return
+    digits = int(pack.get("digits") or 5)
+    if not plan.ok or plan.sl is None:
+        st.caption(f"{latest.source} {latest.side} · {plan.reason}")
+        return
+    st.caption(
+        f"{latest.source} {plan.side} · SL {format_fixed(plan.sl, digits)} · "
+        f"TP {format_fixed(plan.tp, digits)} · {latest.reason}"
+    )
+    if st.button("Use in order form", key="btn_use_signal", width="content"):
+        _prefill(asset, plan)
+
+
+def _prefill(asset: str | None, plan: StopPlan) -> None:
+    from ui.data_access import get_symbol_spec
+    from ui.risk_calc import pip_size
+
+    st.session_state["order_side"] = plan.side
+    st.session_state["w_order_side"] = plan.side
+    category = st.session_state.get("asset_category", "forex")
+    spec = get_symbol_spec(asset, category) if asset else None
+    if spec is None or plan.sl is None:
+        st.caption("Stop was not copied · symbol spec unavailable")
+        return
+    distance = abs(plan.entry - plan.sl)
+    unit = pip_size(spec)
+    if unit <= 0:
+        st.caption("Stop was not copied · pip size unavailable")
+        return
+    pips = distance / unit
+    st.session_state["sl_pips"] = pips
+    st.session_state["w_sl_pips"] = pips
+    st.caption("Side and stop copied. Nothing was submitted.")

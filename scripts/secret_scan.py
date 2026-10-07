@@ -80,6 +80,9 @@ PLACEHOLDER_VALUES = {
     "your_mt5_account_number", "your_broker_server", "your_token", "your_secret",
     "yourkeyhere", "your_key_here", "changeme", "placeholder", "example",
     "your_openrouter_api_key", "none", "null", "true", "false", "xxxxx",
+    # Idempotency fixture word. A real credential is not the dictionary word
+    # "repeat"; the same list already treats "test" and "dummy" this way.
+    "repeat",
     # Values that announce themselves as not real. Used by test fixtures that
     # must name a credential without supplying one.
     "synthetic", "dummy", "fake", "stub", "redacted", "test",
@@ -144,6 +147,10 @@ ALLOWED_LOCAL_NAMES = frozenset({
     "orig_key", "orig_password", "the_key", "the_password",
     "api_key", "openrouter_key", "mt5_password", "password", "secret",
     "key_value", "live_key", "real_key",
+    "session_run_counter",
+    # Same narrow alias rule as "password": the RHS is the local name, not a
+    # literal. A quoted secret assigned to token is still a finding.
+    "token", "order_token",
 })
 
 # Attribute access on a module or object, e.g. "cfg.OPENROUTER_API_KEY".
@@ -275,28 +282,61 @@ def is_env_reference(value: str) -> bool:
         return True
     if stripped in ALLOWED_LOCAL_NAMES:
         return True
+    # Use the raw capture. Stripping quotes and trailing parens would eat the
+    # closing of st.session_state.get(...) and of an f-string.
+    if _is_code_reference(value):
+        return True
     return False
 
 
-#: keyword -> the value that follows it in a parameter declaration, e.g.
-#: `password: str | None = None` where the captured value is `str | None = None`.
+def _is_code_reference(value: str) -> bool:
+    """True for a few source expressions that build an id, not a literal secret.
+
+    Exact shapes only. A quoted credential, including one passed into a call,
+    does not match.
+    """
+    text = value.strip()
+    if text == "uuid.uuid4().hex":
+        return True
+    if re.fullmatch(r"""st\.session_state\.get\("_[A-Za-z0-9_]+"\)""", text):
+        return True
+    if re.fullmatch(r'f"var\(--[A-Za-z0-9_-]+-\{name\}\)"', text):
+        return True
+    return False
+
+
+# No leading \b. The assignment pattern matches `token` inside `order_token`
+# because '_' is a word character. A leading boundary would miss that parameter.
+_CREDENTIAL_KEYWORD_RE = (
+    r"(?: password | passwd | pwd | secret | api[_-]?key | apikey | token"
+    r" | access[_-]?key | client[_-]?secret ) \b"
+)
+_TYPE_RE = r"[A-Za-z_][\w.\[\], |]*"
+_SAFE_DEFAULT_RE = r"(?: = \s* (?:None|True|False|0) )?"
+
+#: keyword -> a type, optional later parameters, optional return annotation.
+#: Covers `order_token: str | None = None,`,
+#: `def __init__(self, token: str) -> None:`, and
+#: `def hex_rgba(token: str, alpha: float) -> str:`.
+#: A quoted default does not match: the only default is None/True/False/0.
 _ANNOTATION_DECLARATION_RE = re.compile(
-    r"""(?ix)
-    \b (?: password | passwd | pwd | secret | api[_-]?key | apikey | token
-          | access[_-]?key | client[_-]?secret ) \b
+    rf"""(?ix)
+    {_CREDENTIAL_KEYWORD_RE}
     \s* : \s*
-    (?P<val> [A-Za-z_][\w.\[\], |]* (?: = \s* (?:None|True|False|0) )? )
-    \s* [,) ]? $
+    {_TYPE_RE}
+    {_SAFE_DEFAULT_RE}
+    (?: \s* , \s* \** \w+ \s* : \s* {_TYPE_RE} {_SAFE_DEFAULT_RE} )*
+    (?: \s* \) \s* -> \s* {_TYPE_RE} \s* :? )?
+    \s* ,? \s* $
     """
 )
 
 #: A declaration whose default is an environment read, e.g.
 #: `api_key: str = os.environ.get('X')`. Benign: it reads the environment.
 _ENV_READ_DEFAULT_RE = re.compile(
-    r"""(?ix)
-    \b (?: password | passwd | pwd | secret | api[_-]?key | apikey | token
-          | access[_-]?key | client[_-]?secret ) \b
-    \s* : \s* [A-Za-z_][\w.\[\], |]* \s* = \s*
+    rf"""(?ix)
+    {_CREDENTIAL_KEYWORD_RE}
+    \s* : \s* {_TYPE_RE} \s* = \s*
     (?: os\.environ .* | .* getenv \( .* | .* environ \[ .* )
     """,
 )
@@ -305,15 +345,19 @@ _ENV_READ_DEFAULT_RE = re.compile(
 def is_parameter_declaration(line: str) -> bool:
     """True when the line declares a parameter rather than assigning a secret.
 
-    Covers `def __init__(self, *, password: str | None = None,` and
+    Covers `def __init__(self, *, password: str | None = None,`,
+    `def __init__(self, token: str) -> None:`, and
     `api_key: str = os.environ.get('X')`.
 
     End-anchored, so `client_secret: str = "hunter2xyz"` -- where the literal IS
-    the credential -- is not treated as a declaration.
+    the credential -- is not treated as a declaration. A quoted default fails
+    closed unless that default is an environment read.
     """
     text = line.strip()
     if _ENV_READ_DEFAULT_RE.search(text):
         return True
+    if '"' in text or "'" in text:
+        return False
     return bool(_ANNOTATION_DECLARATION_RE.search(text))
 
 
@@ -651,6 +695,27 @@ def verify_scanner_detects_known_secret() -> bool:
     if m is not None and not _is_benign_line(
             declaration, m.groupdict()["val"]):
         print("  BROKEN: a parameter declaration was treated as a secret",
+              file=sys.stderr)
+        return False
+
+    # A return annotation after the parameter, and an alias assignment whose
+    # RHS is the local name. A quoted default on the same signature stays a hit.
+    for benign in (
+        "def __init__(self, token: str) -> None:",
+        "self._token = token",
+        "order_token: str | None = None,",
+        "def hex_rgba(token: str, alpha: float) -> str:",
+        "token = uuid.uuid4().hex",
+    ):
+        m = dict(PATTERNS)["credential_assignment"].search(benign)
+        if m is None or not _is_benign_line(benign, m.groupdict()["val"]):
+            print("  BROKEN: a token parameter alias was treated as a secret",
+                  file=sys.stderr)
+            return False
+    quoted_return = 'def __init__(self, token: str = "hunter2xyz") -> None:'
+    m = dict(PATTERNS)["credential_assignment"].search(quoted_return)
+    if m is None or _is_benign_line(quoted_return, m.groupdict()["val"]):
+        print("  BROKEN: a quoted token default was suppressed",
               file=sys.stderr)
         return False
 

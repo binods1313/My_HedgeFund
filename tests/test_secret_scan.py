@@ -644,6 +644,40 @@ class TestProseNamingACredentialIsNotACredential:
             )
 
 
+class TestTokenParameterAlias:
+    """`token: str` and `self._token = token` name a parameter, not a secret."""
+
+    @pytest.mark.parametrize("line", [
+        "def __init__(self, token: str) -> None:",
+        "self._token = token",
+        "    order_token: str | None = None,",
+        "def hex_rgba(token: str, alpha: float) -> str:",
+        "        order_token=order_token,",
+        "            token = uuid.uuid4().hex",
+        '    token = st.session_state.get("_snapshot_token")',
+        '        token = f"var(--accent-{name})"',
+        '        order_token="repeat",',
+    ])
+    def test_parameter_alias_is_benign(self, line):
+        pattern = dict(ss.PATTERNS)["credential_assignment"]
+        matches = list(pattern.finditer(line))
+        assert matches, f"pattern stopped matching {line!r}"
+        for m in matches:
+            assert ss._is_benign_line(line, m.groupdict()["val"]) is True
+
+    @pytest.mark.parametrize("line", [
+        'def __init__(self, token: str = "hunter2xyz") -> None:',
+        'self._token = "Xq7SampleNotRealPwd9z"',
+        'token = "Xq7SampleNotRealPwd9z"',
+    ])
+    def test_quoted_token_is_still_a_secret(self, line):
+        pattern = dict(ss.PATTERNS)["credential_assignment"]
+        matches = list(pattern.finditer(line))
+        assert matches, f"pattern stopped matching {line!r}"
+        for m in matches:
+            assert ss._is_benign_line(line, m.groupdict()["val"]) is False
+
+
 class TestHistoryCleanReporting:
     """A bare run must not claim OK while a secret is present."""
 
@@ -775,9 +809,10 @@ class TestThisRepoIsClean:
             assert ss.is_placeholder(value.strip()), (
                 f".env.example has a non-placeholder value for {key}: {value}"
             )
-        assert checked == 3, (
-            f"expected 3 sensitive keys in .env.example (MT5_LOGIN, "
-            f"MT5_PASSWORD, OPENROUTER_API_KEY), checked {checked}"
+        assert checked == 7, (
+            f"expected 7 sensitive keys in .env.example "
+            f"(MT5_LOGIN, MT5_PASSWORD, OPENROUTER_API_KEY, XAI_API_KEY, "
+            f"TELEGRAM_BOT_TOKEN, GROQ_API_KEY, AGENTROUTER_API_KEY), checked {checked}"
         )
 
     def test_env_file_is_not_tracked(self):

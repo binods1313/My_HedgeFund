@@ -1,0 +1,17 @@
+[server]
+headless = true
+
+[client]
+toolbarMode = "minimal"
+
+[theme]
+base = "dark"
+primaryColor = "#B8F2FF"
+backgroundColor = "#121318"
+secondaryBackgroundColor = "#1A1C24"
+textColor = "#E6E8EE"
+font = "sans serif"
+borderColor = "#262A36"
+baseRadius = "14px"
+dataframeHeaderBackgroundColor = "#1A1C24"
+dataframeBorderColor = "#262A36"
