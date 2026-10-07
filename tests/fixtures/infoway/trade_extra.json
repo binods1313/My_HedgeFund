@@ -1,0 +1,16 @@
+{
+  "ret": 200,
+  "msg": "ok",
+  "traceId": "fixture-extra",
+  "data": [
+    {
+      "s": "EURUSD",
+      "t": 1710000000000,
+      "p": "1.08501",
+      "v": "1",
+      "vw": "1.08501",
+      "td": 1,
+      "unexpected": true
+    }
+  ]
+}

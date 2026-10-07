@@ -26,10 +26,11 @@ def clean_equity_points(
     *,
     max_gap_s: float = 1800.0,
 ) -> list[tuple[float, float]]:
-    """Drop equity <= 0 and keep only the latest contiguous segment.
+    """Drop equity <= 0, keep the latest contiguous segment, then drop cliffs.
 
     A gap longer than ``max_gap_s`` is a disconnected snapshot. The fill must
-    not be drawn back to zero.
+    not be drawn back to zero. A point outside half to double the segment
+    median is a cliff and is left out when at least two points remain.
     """
     rows: list[tuple[float, float]] = []
     for stamp, equity in zip(timestamps, equities):
@@ -49,4 +50,41 @@ def clean_equity_points(
         if when - segments[-1][-1][0] > max_gap_s:
             segments.append([])
         segments[-1].append((when, amount))
-    return segments[-1]
+    return drop_cliff_points(segments[-1])
+
+
+def drop_cliff_points(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Drop snapshots far from the median so one bad print cannot cliff the chart.
+
+    A segment shorter than three points is returned as-is. If the filter would
+    leave fewer than two points, the unfiltered segment is kept.
+    """
+    if len(points) < 3:
+        return list(points)
+    amounts = sorted(point[1] for point in points)
+    mid = len(amounts) // 2
+    if len(amounts) % 2:
+        median = amounts[mid]
+    else:
+        median = (amounts[mid - 1] + amounts[mid]) / 2.0
+    if median <= 0:
+        return list(points)
+    kept = [point for point in points if median * 0.5 <= point[1] <= median * 2.0]
+    if len(kept) < 2:
+        return list(points)
+    return kept
+
+
+def equity_caption(first: float, last: float) -> str:
+    """Plain sentence. No raw equity series."""
+    if last > first:
+        verb = "rose"
+    elif last < first:
+        verb = "fell"
+    else:
+        verb = "was unchanged"
+    return (
+        f"Equity {verb} from the first snapshot to the latest in the current "
+        "continuous window. Gaps longer than thirty minutes and non-positive or "
+        "cliff snapshots are left out."
+    )

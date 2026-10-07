@@ -3,3 +3,7 @@
 chart:
   atr_k: 1.5
   rr: 3.0
+infoway:
+  daily_cap: 200
+  timeout_s: 5
+  cache_ttl_s: 30

@@ -10,6 +10,9 @@ def test_shipped_file_loads_defaults() -> None:
     settings = load_config_ext()
     assert settings.chart.atr_k == 1.5
     assert settings.chart.rr == 3.0
+    assert settings.infoway.daily_cap == 200
+    assert settings.infoway.timeout_s == 5
+    assert settings.infoway.cache_ttl_s == 30
 
 
 def test_valid_override(tmp_path: Path) -> None:

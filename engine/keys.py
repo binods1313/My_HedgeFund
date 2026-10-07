@@ -38,6 +38,8 @@ PROVIDER_ENV_VARS: Final[dict[str, str]] = {
     "telegram": "TELEGRAM_BOT_TOKEN",
     "smtp": "SMTP_PASSWORD",
     "agentrouter": "AGENTROUTER_API_KEY",
+    "infoway": "INFOWAY_API_KEY",
+    "anchorbrowser": "ANCHORBROWSER_API_KEY",
 }
 
 # Markers that identify an obvious placeholder rather than a real credential.

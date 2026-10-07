@@ -335,6 +335,17 @@ class TestKeyringRedaction:
         ring = Keyring(env={"XAI_API_KEY": "YOUR_XAI_KEY"})
         assert ring.is_configured("xai") is False
 
+    def test_infoway_and_anchor_placeholders_are_not_configured(self):
+        from engine.keys import PROVIDER_ENV_VARS, Keyring
+        assert PROVIDER_ENV_VARS["infoway"] == "INFOWAY_API_KEY"
+        assert PROVIDER_ENV_VARS["anchorbrowser"] == "ANCHORBROWSER_API_KEY"
+        ring = Keyring(env={
+            "INFOWAY_API_KEY": "YOUR_INFOWAY_API_KEY",
+            "ANCHORBROWSER_API_KEY": "YOUR_ANCHORBROWSER_API_KEY",
+        })
+        assert ring.is_configured("infoway") is False
+        assert ring.is_configured("anchorbrowser") is False
+
     def test_blank_key_is_not_configured(self):
         from engine.keys import Keyring
         ring = Keyring(env={"XAI_API_KEY": "   "})

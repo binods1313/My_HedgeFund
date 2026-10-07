@@ -289,6 +289,25 @@ def plan_stops(
     return StopPlan(True, side, entry, sl, tp, "ATR stop and RR target")
 
 
+def closed_bar_index(length: int) -> int | None:
+    """Index of the last closed bar. The final row is the forming bar."""
+    if length >= 2:
+        return length - 2
+    return None
+
+
+def indicator_chip_text(series: object, closed_index: int | None, digits: int) -> str:
+    """Number for a selected series. An em dash means not selected or still warming up."""
+    if not isinstance(series, list):
+        return "—"
+    if closed_index is None or closed_index < 0 or closed_index >= len(series):
+        return "—"
+    value = series[closed_index]
+    if value is None:
+        return "—"
+    return format_fixed(value, digits)
+
+
 def format_fixed(value: object, digits: int) -> str:
     """Fixed decimals. Never scientific notation."""
     try:

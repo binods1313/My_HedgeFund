@@ -2,6 +2,7 @@ import MetaTrader5 as mt5
 import pandas as pd
 import numpy as np
 from config import MT5_LOGIN, MT5_PASSWORD, MT5_SERVER, MT5_PATH
+from quote_clock import broker_tick_age_seconds
 
 # Chart timeframe constants, re-exported so the Streamlit UI never needs to
 # import MetaTrader5 itself.
@@ -306,8 +307,9 @@ def get_symbol_live_quote(symbol: str, max_tick_age_seconds: int = 30) -> dict:
         return {"bid": 0.0, "ask": 0.0, "spread": 0.0, "digits": 2,
                 "time": "N/A", "description": "", "valid": False, "reason": "No data"}
 
-    # 1. Stale tick check — tick.time is a UNIX timestamp (seconds)
-    tick_age = _time.time() - tick.time
+    # tick.time is the broker server clock, not UTC. Correct before display
+    # and before the stale check so a fresh UTC+3 tick is not negative.
+    tick_age = broker_tick_age_seconds(float(tick.time), _time.time())
     if tick_age > max_tick_age_seconds:
         return {"bid": tick.bid, "ask": tick.ask, "spread": 0.0,
                 "digits": info.digits,

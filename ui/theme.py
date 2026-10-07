@@ -280,7 +280,7 @@ button[role="tab"][aria-selected="true"] {{ color: var(--text); border-bottom: 2
 .status-badge.live, .status-badge.active {{ color:var(--gain); border-color:color-mix(in srgb, var(--gain) 35%, transparent); background:color-mix(in srgb, var(--gain) 7%, transparent); }}
 .status-badge.offline, .status-badge.halted {{ color:var(--loss); border-color:color-mix(in srgb, var(--loss) 35%, transparent); background:color-mix(in srgb, var(--loss) 7%, transparent); }}
 .status-badge.stale {{ color:var(--warn); border-color:color-mix(in srgb, var(--warn) 35%, transparent); background:color-mix(in srgb, var(--warn) 7%, transparent); }}
-.news-countdown {{ display:inline-block; margin-top:.2rem; padding:.25rem .5rem; border-radius:6px; background:color-mix(in srgb, var(--loss) 9%, transparent); color:var(--loss); border:1px solid color-mix(in srgb, var(--loss) 30%, transparent); font-family:var(--font-mono); font-size:.72rem; }}
+.news-countdown {{ display:inline-block; margin-top:0; padding:.25rem .5rem; border-radius:6px; background:color-mix(in srgb, var(--loss) 9%, transparent); color:var(--loss); border:1px solid color-mix(in srgb, var(--loss) 30%, transparent); font-family:var(--font-mono); font-size:.72rem; }}
 .news-impact.high {{ color:var(--loss); border-color:color-mix(in srgb, var(--loss) 45%, transparent); }}
 .news-impact.medium {{ color:var(--warn); border-color:color-mix(in srgb, var(--warn) 45%, transparent); }}
 .news-impact.low {{ color:var(--muted); }}

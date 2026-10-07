@@ -18,9 +18,11 @@ from ui.indicators import (
     bollinger,
     bollinger_signals,
     clamp_indicators,
+    closed_bar_index,
     ema,
     ema_cross_signals,
     format_fixed,
+    indicator_chip_text,
     macd,
     macd_cross_signals,
     plan_stops,
@@ -554,14 +556,10 @@ def _lanes(fig: go.Figure, frame: pd.DataFrame, lanes: list[str], pack: dict) ->
 
 def _render_readout(frame: pd.DataFrame, pack: dict) -> None:
     digits = int(pack.get("digits") or 5)
-    closed_index = len(frame) - 2 if len(frame) >= 2 else None
+    closed_index = closed_bar_index(len(frame))
 
     def at(name: str) -> str:
-        series = pack["series"].get(name)
-        if closed_index is None or not isinstance(series, list) or closed_index >= len(series):
-            return "—"
-        places = 1 if name == "RSI" else digits
-        return format_fixed(series[closed_index], places)
+        return indicator_chip_text(pack["series"].get(name), closed_index, digits)
 
     labels = (
         ("RSI 14", at("RSI")),

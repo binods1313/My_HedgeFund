@@ -19,8 +19,17 @@ class ChartSettings(StrictModel):
     rr: float = Field(default=3.0, ge=1, le=10)
 
 
+class InfowaySettings(StrictModel):
+    """Read caps for the research quote client. No secrets belong here."""
+
+    daily_cap: int = Field(default=200, ge=0, le=86400)
+    timeout_s: float = Field(default=5.0, gt=0, le=30)
+    cache_ttl_s: float = Field(default=30.0, ge=0, le=3600)
+
+
 class ConfigExt(StrictModel):
     chart: ChartSettings = Field(default_factory=ChartSettings)
+    infoway: InfowaySettings = Field(default_factory=InfowaySettings)
 
 
 def load_config_ext(path: Path | str | None = None) -> ConfigExt:

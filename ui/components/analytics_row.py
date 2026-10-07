@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import html
 import time
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from ui.chart_fit import fitted_donut_font_size
 from ui.components.data_cache import equity_history
 from ui.data_access import AccountSnapshot
-from ui.equity_curve import clean_equity_points
+from ui.equity_curve import clean_equity_points, equity_caption
 from ui.theme import TOKENS, hex_rgba, plotly_theme
 
 
@@ -17,7 +19,9 @@ def render_analytics_row(frame: pd.DataFrame, account: AccountSnapshot | None) -
     with volume_col:
         with st.container(border=True, key="card-cyan-volume"):
             st.html('<svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><rect x="1" y="9" width="3" height="7" fill="currentColor"/><rect x="7" y="5" width="3" height="11" fill="currentColor"/><rect x="13" y="2" width="3" height="14" fill="currentColor"/></svg>')
-            st.caption("BROKER TICK VOLUME")
+            st.caption("📊 Broker tick volume")
+            last_volume = _last_tick_volume(frame)
+            st.caption(f"Last bar · {last_volume}" if last_volume is not None else "Last bar · —")
             fig = go.Figure()
             if not frame.empty and "tick_volume" in frame:
                 fig.add_trace(go.Bar(
@@ -32,7 +36,7 @@ def render_analytics_row(frame: pd.DataFrame, account: AccountSnapshot | None) -
     with margin_col:
         with st.container(border=True, key="card-amber-margin"):
             st.html('<svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><circle cx="9" cy="9" r="7" fill="none" stroke="currentColor" stroke-width="2"/><path d="M9 9 L9 2 A7 7 0 0 1 15 11 Z" fill="currentColor"/></svg>')
-            st.caption("MARGIN ALLOCATION")
+            st.caption("⚖️ Margin allocation")
             used = account.margin_used if account and account.margin_used is not None else 0.0
             free = account.free_margin if account and account.free_margin is not None else 0.0
             equity = account.equity if account and account.equity else 0.0
@@ -64,15 +68,24 @@ def render_analytics_row(frame: pd.DataFrame, account: AccountSnapshot | None) -
             fig.add_annotation(
                 text=f"{margin_level}<br><sup>LEVEL</sup>",
                 x=0.5, y=0.5, xref="paper", yref="paper", showarrow=False,
-                font={"family": TOKENS["font_mono"], "size": 22, "color": TOKENS["text"]},
+                font={
+                    "family": TOKENS["font_mono"],
+                    "size": fitted_donut_font_size(margin_level),
+                    "color": TOKENS["text"],
+                },
             )
             st.plotly_chart(fig, width="stretch", config={"displayModeBar": False}, key="margin_dial")
-            st.caption(f"{allocation:.1f}% used · {100 - allocation:.1f}% free" if total else "Margin data · —")
+            tone = _margin_tone(account.margin_level if account else None)
+            used_text = (
+                f"{tone} · {allocation:.1f}% used · {100 - allocation:.1f}% free"
+                if total else f"{tone} · margin data · —"
+            )
+            st.html(f'<p class="hf-tone hf-tone-{tone}">{used_text}</p>')
 
     with equity_col:
         with st.container(border=True, key="card-green-equity"):
             st.html('<svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><polyline points="1,14 5,9 8,11 12,4 17,6" fill="none" stroke="currentColor" stroke-width="2"/></svg>')
-            st.caption("ENGINE EQUITY CURVE")
+            st.caption("📈 Engine equity curve")
             history = equity_history(int(time.time()))
             points = clean_equity_points(
                 list(history["ts"]) if history is not None and "ts" in getattr(history, "columns", []) else [],
@@ -89,9 +102,15 @@ def render_analytics_row(frame: pd.DataFrame, account: AccountSnapshot | None) -
                     line={"width": 0, "color": hex_rgba("panel", 0)},
                     showlegend=False, hoverinfo="skip",
                 ))
+                if ys[-1] > ys[0]:
+                    equity_tone, equity_colour = "safe", TOKENS["gain"]
+                elif ys[-1] < ys[0]:
+                    equity_tone, equity_colour = "risk", TOKENS["loss"]
+                else:
+                    equity_tone, equity_colour = "warning", TOKENS["warn"]
                 fig.add_trace(go.Scatter(
                     x=xs, y=ys, mode="lines",
-                    line={"color": TOKENS["accent"], "width": 2},
+                    line={"color": equity_colour, "width": 2},
                     fill="tonexty",
                     fillcolor=hex_rgba("accent", 0.16),
                     name="Equity",
@@ -106,12 +125,31 @@ def render_analytics_row(frame: pd.DataFrame, account: AccountSnapshot | None) -
                 fig.update_yaxes(range=y_range, autorange=False, visible=False, rangemode="normal")
             st.plotly_chart(fig, width="stretch", config={"displayModeBar": False}, key="equity_curve")
             if len(points) < 2:
-                st.caption("—")
+                st.caption("Not enough snapshots in the current continuous window.")
             else:
-                head = " ".join(f"{point[1]:.2f}" for point in points[:5])
-                tail = " ".join(f"{point[1]:.2f}" for point in points[-5:])
-                st.caption(f"{head}")
-                st.caption(f"{tail}")
+                st.html(
+                    f'<p class="hf-tone hf-tone-{equity_tone}">'
+                    f"{html.escape(equity_caption(ys[0], ys[-1]))}</p>"
+                )
+
+
+def _last_tick_volume(frame: pd.DataFrame) -> str | None:
+    if frame.empty or "tick_volume" not in frame:
+        return None
+    value = frame["tick_volume"].iloc[-1]
+    if value is None or value != value:
+        return None
+    return f"{float(value):.0f}"
+
+
+def _margin_tone(level: float | None) -> str:
+    if level is None or level != level:
+        return "unknown"
+    if level < 100.0:
+        return "risk"
+    if level < 200.0:
+        return "warning"
+    return "safe"
 
 
 def _small_chart_layout(height: int) -> dict:

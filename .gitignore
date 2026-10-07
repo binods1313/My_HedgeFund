@@ -69,6 +69,8 @@ venv/
 # Engine data: transient artifacts that must never enter version history
 data/news_cache.json
 data/ui_prefs.json
+data/ideas_watchlist.json
+data/infoway_budget.json
 .pytest_tmp/
 .tmp/
 pytest_*.txt

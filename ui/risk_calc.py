@@ -333,6 +333,46 @@ def _number(value: object, default: float) -> float:
     return _finite_number(value) if _finite_number(value) is not None else default
 
 
+_HARD_RISK_CODES = frozenset({
+    "TOTAL_RISK_EXCEEDED",
+    "MARGIN_INSUFFICIENT",
+    "SL_REQUIRED",
+    "STOP_TOO_CLOSE",
+})
+
+
+def risk_card_accent(codes: list[str] | tuple[str, ...]) -> str:
+    """Green only when every check passed. Any shown code is amber or red."""
+    if not codes:
+        return "green"
+    for code in codes:
+        upper = str(code).upper()
+        if (
+            upper in _HARD_RISK_CODES
+            or "RISK" in upper
+            or "MARGIN" in upper
+            or "STOP" in upper
+            or upper.startswith("SL")
+        ):
+            return "red"
+    return "amber"
+
+
+def risk_summary_level(accent: str, risk_pct: float | None) -> str:
+    """Streamlit level for the risk sentence. Success only when every check passed.
+
+    A missing percent stays informational. The card accent still carries the
+    failure colour, and a known percent is never shown as success beside a code.
+    """
+    if risk_pct is None or (isinstance(risk_pct, float) and risk_pct != risk_pct):
+        return "info"
+    if accent == "red" or risk_pct > 1.0:
+        return "error"
+    if accent == "amber":
+        return "warning"
+    return "success"
+
+
 def _finite_number(value: object) -> float | None:
     if value is None or isinstance(value, bool):
         return None

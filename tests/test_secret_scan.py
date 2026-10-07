@@ -809,10 +809,11 @@ class TestThisRepoIsClean:
             assert ss.is_placeholder(value.strip()), (
                 f".env.example has a non-placeholder value for {key}: {value}"
             )
-        assert checked == 7, (
-            f"expected 7 sensitive keys in .env.example "
+        assert checked == 9, (
+            f"expected 9 sensitive keys in .env.example "
             f"(MT5_LOGIN, MT5_PASSWORD, OPENROUTER_API_KEY, XAI_API_KEY, "
-            f"TELEGRAM_BOT_TOKEN, GROQ_API_KEY, AGENTROUTER_API_KEY), checked {checked}"
+            f"TELEGRAM_BOT_TOKEN, GROQ_API_KEY, AGENTROUTER_API_KEY, "
+            f"INFOWAY_API_KEY, ANCHORBROWSER_API_KEY), checked {checked}"
         )
 
     def test_env_file_is_not_tracked(self):

@@ -9,7 +9,7 @@ from formatting import format_money
 from ui.components.cards import accent_card
 from ui.components.trading import execution_stop_units, inspect_order
 from ui.data_access import submit_order
-from ui.risk_calc import normalize_lots, trade_risk
+from ui.risk_calc import normalize_lots, risk_card_accent, risk_summary_level, trade_risk
 from ui.services.news import countdown_text, currencies_for_symbol, fetch_news, high_impact_within
 from ui.order_types import CONDITIONAL_HELP, LIMIT_HELP, MARKET_HELP, UNSUPPORTED
 from ui.state import (
@@ -220,16 +220,10 @@ def render_order_form(whitelist: dict[str, list[str]]) -> None:
             else:
                 st.error(f"{result['code']}: {result['message']}")
 
-    risk_codes = {"TOTAL_RISK_EXCEEDED", "MARGIN_INSUFFICIENT", "SL_REQUIRED", "STOP_TOO_CLOSE"}
-    if report.ok:
-        risk_accent = "green"
-    elif any(failure.code in risk_codes or "RISK" in failure.code or "MARGIN" in failure.code or "STOP" in failure.code or failure.code.startswith("SL") for failure in report.failures):
-        risk_accent = "red"
-    else:
-        risk_accent = "amber"
+    risk_accent = risk_card_accent([failure.code for failure in report.failures])
     with accent_card(risk_accent, "risk"):
         st.subheader("Risk")
-        _render_risk_summary(risk_amount, risk_pct, required, account, currency)
+        _render_risk_summary(risk_amount, risk_pct, required, account, currency, risk_accent)
         if report.failures:
             for failure in report.failures:
                 st.caption(f"{failure.code}: {failure.message}")
@@ -309,15 +303,19 @@ def _effective_lots(spec, account) -> float:
     return normalized
 
 
-def _render_risk_summary(risk_amount, risk_pct, required, account, currency: str) -> None:
+def _render_risk_summary(risk_amount, risk_pct, required, account, currency: str, accent: str) -> None:
     risk_label = format_money(risk_amount, currency) if math.isfinite(risk_amount) else "N/A"
     pct_label = f"{risk_pct:.2f}%" if risk_pct is not None and math.isfinite(risk_pct) else "N/A"
-    if risk_pct is None:
+    sentence = f"Open risk · {risk_label}  ·  {pct_label} of equity"
+    level = risk_summary_level(accent, risk_pct)
+    if level == "info":
         st.info(f"Open risk · {risk_label}  ·  {pct_label}")
-    elif risk_pct > 1.0:
-        st.error(f"Open risk · {risk_label}  ·  {pct_label} of equity")
+    elif level == "error":
+        st.error(sentence)
+    elif level == "warning":
+        st.warning(sentence)
     else:
-        st.success(f"Open risk · {risk_label}  ·  {pct_label} of equity")
+        st.success(sentence)
     projected_free = (
         account.free_margin - required
         if account.free_margin is not None and required is not None

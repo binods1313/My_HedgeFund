@@ -1,0 +1,6 @@
+{
+  "ret": 500,
+  "msg": "plan limit",
+  "traceId": "fixture-error",
+  "data": null
+}

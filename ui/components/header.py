@@ -104,6 +104,7 @@ def _draw_status(snapshot) -> None:
         )
     with status_cols[2]:
         st.caption(datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%H:%M:%S IST"))
+        render_theme_studio()
     with status_cols[3]:
         asset = st.session_state.get("selected_asset")
         quote = snapshot.quote or {}
@@ -117,7 +118,6 @@ def _draw_status(snapshot) -> None:
             st.caption(f"{asset}  ·  {quote.get('reason') or 'Quote unavailable'}")
         else:
             st.caption("Market quote · —")
-        render_theme_studio()
         next_event = next_upcoming_high_impact(snapshot.news.events)
         if next_event:
             st.markdown(
