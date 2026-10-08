@@ -434,3 +434,57 @@ One request, EURUSD: `key_present=yes http_status=401 ret=None latency_ms=374.7 
 - A live Anchor call, an Anchor SDK install, and any run of experiential or worldmonitor.
 - Restart Streamlit on port 8501. The process was left running so Kilo can restart it.
 - Clear the pytest failure without editing `docs/Instructions_2.md`.
+
+## TASK 9 — Instructions_2.md section 12
+
+`docs/Instructions*.md` was not edited. `.env` was not edited. `config.yaml` was not edited. No new Python dependency was added. Nothing was pushed. Pending orders, realised P&L, and the strategy library were not coded.
+
+The task said not to modify `engine/`. Agents 02 and 08 in `engine/research/` raised NameErrors on the required fixture, so those two research files were fixed and committed. `engine/risk.py`, `engine/executor.py`, `engine/gateway.py`, `engine/state.py`, and `engine/commands.py` were not edited in this task.
+
+### Pytest
+```
+$ py -3 -m pytest -q --basetemp=.pytest_tmp
+1260 passed, 6 skipped in 116.20s (0:01:56)
+```
+Exit 0. This run is the Task 9 tree before this progress note. The note is documentation only.
+
+### Secret scan
+```
+Scanner self-test : PASS
+History hits      : 201
+Worktree hits     : 0
+.git/config hits  : 0
+```
+Exit 0. The prompt expected one worktree hit on `docs/Instructions_2.md` line 5. A fresh scan of the current file has zero worktree hits. Line 5 is the audit instruction. It is example text, not a credential assignment. The scanner was not weakened. History still asks to purge old commits. Values are not copied here.
+
+### What landed
+- Agent 08 reads `confluence_data`. Agent 02 uses an EMA instead of `np.exp1`. A shadow result with `ok=False` is stored in `shadow_status` and is excluded from calibration. The learning schema version stays 1.
+- Theme Studio shows an inline error for a hex that is not `#RRGGBB` and does not save. A contrast adjustment shows the ratio and the adjusted colour.
+- The news toggle `Affects my open positions` keeps an event whose currency belongs to an open position, and it keeps `ALL`.
+- Header Floating equity and Portfolio Equity are formatted from the same snapshot.
+- The header chip shows the next High-impact event only inside 24 hours. Otherwise it says `No high-impact event in the next 24h`.
+- The Ideas watchlist is on Exchange, under the chart, in the container `ideas-watchlist`.
+- Nav buttons keep their labels. The current-page marker says `Current page`. The facts popover is labelled `Facts`. Focus uses `button:focus-visible`.
+- Pattern marks come from `pattern_mark_specs`. The same candles produce the same marks after a state reset.
+- Enable AI queues `ENABLE_AI` only after confirm, and only in PAPER. It is disabled in LIVE. Rendering it does not send the command and does not send an order.
+- Design documents and `docs/qa_recipe.md`. No engine code for those designs.
+
+### Could not
+- Code pending orders, realised P&L, or the strategy library. Each design ends with a review checklist and waits for operator approval.
+- Browser-check the new UI. The Streamlit process on port 8501 was left running and is older than this commit. Submit, close, and Confirm Enable AI were not clicked. A second Streamlit was not started.
+- Edit `docs/Instructions*.md` or `.env`.
+- Weaken the secret scanner, gitignore the instruction files, or run `git filter-repo` on the 201 history hits.
+- Sign off phases B and E. They stay partial until a person completes the browser checklist.
+- Move credential reads in root `config.py`, `engine/config.py`, `engine/notifications/telegram_service.py`, and `scripts/check_agentrouter.py` into `engine/keys.py`.
+- Retry the Infoway request. The one smoke was HTTP 401. A live Dexter smoke was not run because `E:\tools\dexter\.env` is absent.
+
+### Open risks
+
+| Rank | Kind | Risk |
+| --- | --- | --- |
+| 1 | Security | History still has 201 secret-scan hits in old commits. They were not purged. |
+| 2 | Security | Telegram, root config, engine config, and the AgentRouter check script still read credentials outside `engine/keys.py`. |
+| 3 | Correctness | Agent 02's MACD histogram is 0 on a single price, because there is no 9-bar signal series. The score stays advisory and shadow-only. |
+| 4 | Correctness | The process on port 8501 predates this commit. A look at that process is not a look at this UI. |
+| 5 | Data quality | Closed trades still store realised P&L as NULL, so learning cannot attach a money result. |
+| 6 | Data quality | Infoway's one smoke was HTTP 401. Dexter stays on the fixture until its own env file exists. |

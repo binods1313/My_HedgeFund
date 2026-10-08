@@ -250,3 +250,33 @@ Agent cards 01–08 show the latest shadow row for the selected symbol: OK, N-A,
 `learning/` is the shadow package. It does not import MetaTrader5. The ledger is gitignored `data/learning.db`. Outcomes use the chart ATR stop and target rules, with the stop winning when both are touched in one bar. Spread is a price distance when a bar has one. Calibration is Wilson 95 percent, mean R, and a reliability gap. Prompt changes are proposals with evidence, not silent edits.
 
 Dexter lives at `E:\tools\dexter` and is reviewed in `docs/DEXTER_INTEGRATION_PLAN.md`. External repos are reviewed in `docs/EXTERNAL_REPOS_REVIEW.md` and are not wired in.
+
+## Task 9
+
+`docs/Instructions_2.md` section 12. The instruction files were not edited.
+
+### Audit
+
+The order path (`execution.py`, `engine/__main__.py`, `engine/executor.py`, `engine/approval_flow.py`, and the command, risk, gateway, and state modules) does not import `learning/`, `engine/research/`, `ui/services/dexter_client.py`, or `ui/services/infoway_client.py`. `tests/test_ui/test_order_path_isolation.py` fails if that changes.
+
+`ui/` and `learning/` do not import MetaTrader5 and do not call `os.environ.get` for the secret names in `tests/test_ui/test_key_boundary.py`. Root `config.py`, `engine/config.py`, and `engine/notifications/telegram_service.py` still read credentials themselves. That is recorded as a gap, not moved in this task.
+
+Theme Studio rejects a colour that is not `#RRGGBB`, rejects unknown JSON keys (`extra=forbid`), and ignores a prefs file larger than 16 KiB. Preview CSS is built only from colours that passed that check. Ideas and news HTML escape dynamic text, including a `<script>` title.
+
+Dexter's client starts `bun` with an argument list, `shell=False`, a scrubbed environment, `LANGSMITH_TRACING` forced off, one JSON object on stdout, and `neutralise` on the summary. The wrapper itself stays in `E:\tools\dexter`.
+
+### Fixes
+
+- Agents 01, 02, 03, 07, and 08 return `ok=True` on the fixture in `tests/test_engine/test_agent_fixture.py`. Agents 04, 05, and 06 return `ok=False`, a reason, and no score when they have no provider. Agent 08's `confluence` name error is fixed. Agent 02's missing `np.exp1` is fixed with an EMA. A shadow result with `ok=False` is stored in `shadow_status` and is not a calibration row.
+- An invalid Theme Studio hex shows an inline error and does not save. A contrast change shows the adjusted hex and the ratio.
+- `Affects my open positions` keeps an event whose currency is a currency of an open position, and it keeps `ALL`.
+- Header Floating equity and Portfolio Equity are formatted from the same `RunSnapshot`.
+- The header chip shows the next High-impact event only when it is inside 24 hours. Otherwise it says `No high-impact event in the next 24h`.
+- The Ideas watchlist is on Exchange, under the chart, in the container `ideas-watchlist`. The Exchange facts popover names that place.
+- Nav buttons keep their labels. The current-page marker says `Current page`. The facts popover is labelled `Facts`. Focus uses `button:focus-visible`.
+- Pattern marks are `pattern_mark_specs`. The same candles produce the same marks after a state reset.
+- Enable AI is a header button. It is disabled in LIVE with the reason `Disabled in LIVE mode. Paper mode only.` In PAPER it queues `ENABLE_AI` only after `Confirm Enable AI`. Rendering it does not send the command, and it does not send an order.
+
+### Not built
+
+Pending orders, realised P&L, and the strategy library are design documents only: `docs/design/pending_orders.md`, `docs/design/realised_pnl.md`, and `docs/design/strategy_library_and_backtest.md`. `docs/qa_recipe.md` is the Playwright recipe. Phases B and E stay partial until a person signs the browser checklist. The process on port 8501 was not restarted.
