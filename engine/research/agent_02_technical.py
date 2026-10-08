@@ -8,6 +8,15 @@ from typing import Any
 import numpy as np
 
 
+def _ema_last(prices: np.ndarray, period: int) -> float:
+    """Last EMA value. The previous convolve used a missing numpy name."""
+    alpha = 2.0 / (period + 1.0)
+    value = float(prices[0])
+    for price in prices[1:]:
+        value = alpha * float(price) + (1.0 - alpha) * value
+    return value
+
+
 AGENT_ID = "02"
 AGENT_NAME = "Technical Agent"
 LAYER = "RESEARCH"
@@ -51,10 +60,9 @@ def run(context: dict[str, Any]) -> AgentResult:
                 latency_ms=context.get("latency_ms", 0.0),
             )
 
-        # Calculate indicators
-        # EMA ribbon
-        ema_fast = np.convolve(prices, np.exp1(np.arange(1, 6)) / np.arange(1, 6) / np.cumsum(np.ones(5)), mode='valid')[-1] if len(prices) >= 5 else np.mean(prices[-5:])
-        ema_slow = np.convolve(prices, np.exp1(np.arange(1, 21)) / np.arange(1, 21) / np.cumsum(np.ones(20)), mode='valid')[-1] if len(prices) >= 20 else np.mean(prices[-20:])
+        # EMA ribbon. A scalar series has no signal line to smooth.
+        ema_fast = _ema_last(prices, 5)
+        ema_slow = _ema_last(prices, 20)
 
         # RSI (14)
         deltas = np.diff(prices)
@@ -65,11 +73,11 @@ def run(context: dict[str, Any]) -> AgentResult:
         rs = avg_gain / avg_loss if avg_loss != 0 else 100
         rsi = 100 - (100 / (1 + rs))
 
-        # MACD
-        ema_12 = np.convolve(prices, np.exp1(np.arange(1, 13)) / np.arange(1, 13) / np.cumsum(np.ones(13)), mode='valid')[-1] if len(prices) >= 13 else np.mean(prices[-13:])
-        ema_26 = np.convolve(prices, np.exp1(np.arange(1, 27)) / np.arange(1, 27) / np.cumsum(np.ones(27)), mode='valid')[-1] if len(prices) >= 27 else np.mean(prices[-27:])
+        # MACD from the same EMA. One value has no 9-bar signal series.
+        ema_12 = _ema_last(prices, 12)
+        ema_26 = _ema_last(prices, 26)
         macd = ema_12 - ema_26
-        signal_line = np.convolve(macd, np.ones(9)/9, mode='valid')[-1] if len(macd) >= 9 else np.mean(macd[-9:]) if len(macd) >= 9 else 0
+        signal_line = macd
         histogram = macd - signal_line
 
         # Trend determination

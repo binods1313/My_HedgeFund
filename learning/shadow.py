@@ -13,7 +13,7 @@ import yaml
 from config_ext_loader import load_config_ext
 from engine.research import AGENT_MODULES
 from learning.bars import load_bars
-from learning.ledger import connect, record_prediction, resolve_open
+from learning.ledger import connect, record_prediction, record_shadow_status, resolve_open
 from ui.services.dexter_client import research
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -90,11 +90,28 @@ def _sentiment(symbol: str) -> dict:
     return found if isinstance(found, dict) and found else {}
 
 
-def _record(conn, *, symbol: str, timeframe: str, bar_time: str, agent_id: str, result: object, config_hash: str) -> None:
+def _record(conn, *, symbol: str, timeframe: str, bar_time: str, agent_id: str, result: object, config_hash: str) -> bool:
+    """Persist a valid prediction. A degraded result is status only."""
+    ok = bool(getattr(result, "ok", False))
+    reason = getattr(result, "error", None)
+    record_shadow_status(
+        conn,
+        {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "bar_time": bar_time,
+            "agent_id": agent_id,
+            "agent_version": "1",
+            "status": "ok" if ok else "degraded",
+            "reason": None if ok else (str(reason) if reason else "degraded"),
+        },
+    )
+    if not ok:
+        return False
     label = str(getattr(result, "label", "ERROR"))
     features = {
-        "ok": bool(getattr(result, "ok", False)),
-        "error": getattr(result, "error", None),
+        "ok": True,
+        "error": None,
         "label": label,
         "features": _plain(getattr(result, "features", {})),
     }
@@ -118,6 +135,7 @@ def _record(conn, *, symbol: str, timeframe: str, bar_time: str, agent_id: str, 
             "config_hash": config_hash,
         },
     )
+    return True
 
 
 def run_cycle(
@@ -168,7 +186,7 @@ def run_cycle(
                 if agent_id == "08":
                     context = {**context, "confluence": {"rule_statuses": upstream}}
                 result = AGENT_MODULES[agent_id].run(context)
-                _record(
+                if _record(
                     database,
                     symbol=symbol,
                     timeframe=timeframe,
@@ -176,15 +194,15 @@ def run_cycle(
                     agent_id=agent_id,
                     result=result,
                     config_hash=digest,
-                )
-                recorded += 1
+                ):
+                    recorded += 1
                 upstream[agent_id] = {
                     "triggered": direction_of(str(result.label)) != "flat",
                     "conflicting": False,
                 }
             if events:
                 news = AGENT_MODULES["04"].run({"events": events})
-                _record(
+                if _record(
                     database,
                     symbol=symbol,
                     timeframe=timeframe,
@@ -192,12 +210,12 @@ def run_cycle(
                     agent_id="04",
                     result=news,
                     config_hash=digest,
-                )
-                recorded += 1
+                ):
+                    recorded += 1
             sentiment = _sentiment(symbol)
             if sentiment:
                 mood = AGENT_MODULES["05"].run({"sentiment_data": sentiment})
-                _record(
+                if _record(
                     database,
                     symbol=symbol,
                     timeframe=timeframe,
@@ -205,8 +223,8 @@ def run_cycle(
                     agent_id="05",
                     result=mood,
                     config_hash=digest,
-                )
-                recorded += 1
+                ):
+                    recorded += 1
             report = research(symbol, asset_class)
             fundamentals = {
                 key: value
@@ -215,7 +233,7 @@ def run_cycle(
             }
             if fundamentals:
                 fundamental = AGENT_MODULES["06"].run({"fundamental_data": fundamentals})
-                _record(
+                if _record(
                     database,
                     symbol=symbol,
                     timeframe=timeframe,
@@ -223,8 +241,8 @@ def run_cycle(
                     agent_id="06",
                     result=fundamental,
                     config_hash=digest,
-                )
-                recorded += 1
+                ):
+                    recorded += 1
             record_prediction(
                 database,
                 {

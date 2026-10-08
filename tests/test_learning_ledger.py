@@ -10,7 +10,13 @@ import pytest
 
 from learning.bars import Bar
 from learning.calibrate import by_bucket, had_edge, summarise, wilson_interval
-from learning.ledger import connect, link_journal, record_prediction, resolve_open, samples_for
+from learning.ledger import (
+    connect,
+    link_journal,
+    record_prediction,
+    resolve_open,
+    samples_for,
+)
 from learning.propose import apply_proposal, bounded_value, build_proposal, current_values, rollback_to
 from learning.resolver import resolve_trade
 
@@ -262,4 +268,106 @@ def test_shadow_cycle_records_and_skips_order_agents(tmp_path: Path, monkeypatch
     assert "10" not in agents
     assert "01" in agents
     assert run_cycle(enabled=False, db_path=database) == 0
+    conn.close()
+
+
+def test_degraded_shadow_is_not_a_calibration_row(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from learning.shadow import _record
+
+    conn = connect(tmp_path / "learning.db")
+    recorded = _record(
+        conn,
+        symbol="EURUSD",
+        timeframe="H1",
+        bar_time="t0",
+        agent_id="08",
+        result=SimpleNamespace(
+            ok=False, error="name missing", label="ERROR",
+            score=9, confidence=0.9, features={},
+        ),
+        config_hash="abc",
+    )
+    assert recorded is False
+    assert conn.execute("SELECT COUNT(*) AS n FROM predictions").fetchone()["n"] == 0
+    status = conn.execute("SELECT status, reason FROM shadow_status").fetchone()
+    assert status["status"] == "degraded"
+    assert status["reason"] == "name missing"
+
+    record_prediction(
+        conn,
+        {
+            "symbol": "EURUSD",
+            "timeframe": "H1",
+            "bar_time": "t1",
+            "agent_id": "08",
+            "agent_version": "1",
+            "direction": "long",
+            "score": 3,
+            "confidence": 0.9,
+            "features_json": '{"ok": false}',
+            "config_hash": "abc",
+        },
+    )
+    prediction_id = conn.execute("SELECT id FROM predictions").fetchone()["id"]
+    conn.execute(
+        """
+        INSERT INTO outcomes (
+            prediction_id, horizon_bars, forward_return, hit, mfe, mae,
+            r_multiple_at_rr, resolved_at
+        ) VALUES (?, 1, 0.1, 1, 0.1, 0.0, 1.0, 't')
+        """,
+        (prediction_id,),
+    )
+    conn.commit()
+    assert samples_for(conn, "08", 1) == []
+
+    record_prediction(
+        conn,
+        {
+            "symbol": "EURUSD",
+            "timeframe": "H1",
+            "bar_time": "t2",
+            "agent_id": "08",
+            "agent_version": "1",
+            "direction": "long",
+            "score": 2,
+            "confidence": 0.5,
+            "features_json": '{"ok": true}',
+            "config_hash": "abc",
+        },
+    )
+    valid_id = conn.execute(
+        "SELECT id FROM predictions WHERE bar_time = 't2'"
+    ).fetchone()["id"]
+    conn.execute(
+        """
+        INSERT INTO outcomes (
+            prediction_id, horizon_bars, forward_return, hit, mfe, mae,
+            r_multiple_at_rr, resolved_at
+        ) VALUES (?, 1, 0.2, 1, 0.2, 0.0, 1.0, 't')
+        """,
+        (valid_id,),
+    )
+    conn.commit()
+    samples = samples_for(conn, "08", 1)
+    assert [row["score"] for row in samples] == [2]
+    conn.close()
+
+
+def test_existing_ledger_gains_status_table_without_a_version_bump(tmp_path: Path) -> None:
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    raw = sqlite3.connect(path)
+    raw.execute("CREATE TABLE schema_version (id INTEGER PRIMARY KEY CHECK (id = 1), version INTEGER NOT NULL)")
+    raw.execute("INSERT INTO schema_version (id, version) VALUES (1, 1)")
+    raw.commit()
+    raw.close()
+    conn = connect(path)
+    assert conn.execute("SELECT version FROM schema_version WHERE id = 1").fetchone()["version"] == 1
+    assert conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'shadow_status'"
+    ).fetchone()
     conn.close()

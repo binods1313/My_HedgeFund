@@ -51,7 +51,7 @@ def run(context: dict[str, Any]) -> AgentResult:
 
         # Extract rule triggers from confluence data
         # Each agent contributes a rule status
-        rule_statuses = confluence.get("rule_statuses", {})
+        rule_statuses = confluence_data.get("rule_statuses", {})
         
         if not rule_statuses:
             return AgentResult(

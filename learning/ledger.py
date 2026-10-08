@@ -61,11 +61,45 @@ CREATE TABLE IF NOT EXISTS proposals (
     ),
     decided_at TEXT
 );
+CREATE TABLE IF NOT EXISTS shadow_status (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    timeframe TEXT NOT NULL,
+    bar_time TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    agent_version TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('ok', 'degraded')),
+    reason TEXT,
+    UNIQUE (symbol, timeframe, bar_time, agent_id, agent_version)
+);
+"""
+
+# Additive on databases that already stored schema_version = 1.
+# A version bump would raise "no forward migration" on those files.
+_STATUS_DDL = """
+CREATE TABLE IF NOT EXISTS shadow_status (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    timeframe TEXT NOT NULL,
+    bar_time TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    agent_version TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('ok', 'degraded')),
+    reason TEXT,
+    UNIQUE (symbol, timeframe, bar_time, agent_id, agent_version)
+);
 """
 
 
 def _utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _ensure_status(conn: sqlite3.Connection) -> None:
+    conn.executescript(_STATUS_DDL)
+    conn.commit()
 
 
 def connect(path: Path) -> sqlite3.Connection:
@@ -81,7 +115,7 @@ def connect(path: Path) -> sqlite3.Connection:
             "INSERT INTO schema_version (id, version) VALUES (1, ?)",
             (SCHEMA_VERSION,),
         )
-        conn.commit()
+        _ensure_status(conn)
         return conn
     version = conn.execute(
         "SELECT version FROM schema_version WHERE id = 1"
@@ -99,6 +133,7 @@ def connect(path: Path) -> sqlite3.Connection:
     elif int(version["version"]) < SCHEMA_VERSION:
         conn.close()
         raise RuntimeError("learning schema has no forward migration")
+    _ensure_status(conn)
     return conn
 
 
@@ -135,6 +170,30 @@ def record_prediction(conn: sqlite3.Connection, row: dict) -> int:
         (row["symbol"], row["timeframe"], row["bar_time"], row["agent_id"], row["agent_version"]),
     ).fetchone()
     return int(found["id"])
+
+
+def record_shadow_status(conn: sqlite3.Connection, row: dict) -> None:
+    """Store ok or degraded separately from predictions used for calibration."""
+    conn.execute(
+        """
+        INSERT INTO shadow_status (
+            ts, symbol, timeframe, bar_time, agent_id, agent_version, status, reason
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (symbol, timeframe, bar_time, agent_id, agent_version)
+        DO UPDATE SET ts = excluded.ts, status = excluded.status, reason = excluded.reason
+        """,
+        (
+            row.get("ts") or _utc(),
+            row["symbol"],
+            row["timeframe"],
+            row["bar_time"],
+            row["agent_id"],
+            row["agent_version"],
+            row["status"],
+            row.get("reason"),
+        ),
+    )
+    conn.commit()
 
 
 def resolve_open(
@@ -211,6 +270,13 @@ def samples_for(conn: sqlite3.Connection, agent_id: str, horizon: int) -> list[d
         FROM outcomes o
         JOIN predictions p ON p.id = o.prediction_id
         WHERE p.agent_id = ? AND o.horizon_bars = ?
+          AND COALESCE(json_extract(p.features_json, '$.ok'), 1) != 0
+          AND NOT EXISTS (
+            SELECT 1 FROM shadow_status s
+            WHERE s.symbol = p.symbol AND s.timeframe = p.timeframe
+              AND s.bar_time = p.bar_time AND s.agent_id = p.agent_id
+              AND s.agent_version = p.agent_version AND s.status = 'degraded'
+          )
         ORDER BY o.resolved_at, o.prediction_id
         """,
         (agent_id, horizon),
