@@ -75,6 +75,31 @@ def drop_cliff_points(points: list[tuple[float, float]]) -> list[tuple[float, fl
     return kept
 
 
+MIN_VISIBLE_FRACTION = 0.0005
+
+
+def equity_axis_range(low: float, high: float) -> tuple[float, float]:
+    """Y window at least 0.05% of the equity level, so a small move stays small."""
+    if not math.isfinite(low) or not math.isfinite(high):
+        return 0.0, 1.0
+    if high < low:
+        low, high = high, low
+    mid = (low + high) / 2.0
+    span = max((high - low) * 1.16, abs(mid) * MIN_VISIBLE_FRACTION, 1.0)
+    return mid - span / 2.0, mid + span / 2.0
+
+
+def equity_move_caption(first: float, last: float, currency: str | None) -> str:
+    """Euro amount and percent over the drawn window. Separate from the cliff sentence."""
+    from formatting import format_money
+
+    if not math.isfinite(first) or not math.isfinite(last) or first == 0:
+        return "— · — over the window"
+    delta = last - first
+    percent = delta / first * 100.0
+    return f"{format_money(delta, currency)} · {percent:+.2f}% over the window"
+
+
 def equity_caption(first: float, last: float) -> str:
     """Plain sentence. No raw equity series."""
     if last > first:

@@ -580,7 +580,7 @@ button:disabled, button[disabled] {{
 }}
 .hf-tone {{ margin: .15rem 0 0; font-weight: 700; }}
 .hf-tone-safe {{ color: var(--gain); }}
-.hf-tone-warning {{ color: var(--warn); }}
+.hf-tone-warning, .hf-tone-caution {{ color: var(--warn); }}
 .hf-tone-risk {{ color: var(--loss); }}
 .hf-tone-unknown {{ color: var(--text); }}
 .st-key-card-cyan-volume::after,
@@ -663,6 +663,29 @@ button:disabled, button[disabled] {{
   [class*="st-key-card-"]::after,
   .glass-bg .orb {{
     animation: none !important; transform: none !important;
+  }}
+}}
+@media (max-width: 420px) {{
+  section.main, .block-container {{ overflow-x: hidden; max-width: 100%; }}
+  [data-testid="stHorizontalBlock"]:has([class*="st-key-nav-"]) {{
+    display: grid !important;
+    grid-template-columns: 1fr 1fr !important;
+  }}
+  [class*="st-key-nav-"] button {{
+    white-space: normal !important;
+    height: auto !important;
+    min-height: 2.4rem;
+    line-height: 1.25;
+  }}
+  [data-testid="stHorizontalBlock"]:has([data-testid="stMetric"]) {{
+    display: grid !important;
+    grid-template-columns: 1fr 1fr !important;
+  }}
+  [data-testid="stMetricLabel"],
+  [data-testid="stMetricLabel"] p {{
+    white-space: normal !important;
+    overflow: visible !important;
+    text-overflow: clip !important;
   }}
 }}
 """

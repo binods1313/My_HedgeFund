@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import time
+
 import streamlit as st
 
 from formatting import format_money
 from ui.components.cards import accent_card, render_html_table, render_journal_table
+from ui.components.data_cache import equity_history
 from ui.components.snapshot import RunSnapshot
+from ui.equity_curve import clean_equity_points
+from ui.performance import performance_report, slice_window
 
 
 def render_portfolio_view(snapshot: RunSnapshot) -> None:
@@ -25,6 +30,48 @@ def render_portfolio_view(snapshot: RunSnapshot) -> None:
     with accent_card("violet", "portfolio-exposure"):
         st.caption("LIVE OPEN EXPOSURE")
         render_html_table(snapshot.positions, empty="No active open positions")
+    render_performance(currency, _portfolio_equity(snapshot))
+
+
+def render_performance(currency: str, values: list[float]) -> None:
+    """Equity-snapshot metrics. Win/loss stays hidden until realised P&L exists."""
+    with accent_card("green", "portfolio-performance"):
+        st.subheader("Performance")
+        st.caption("from equity snapshots")
+        window = st.segmented_control(
+            "Equity window",
+            ["All", "Last 30", "Last 7"],
+            default="All",
+            key="w_perf_window",
+            width="stretch",
+            wrap=True,
+        )
+        report = performance_report(slice_window(values, window or "All"), realised=None)
+        st.caption(str(report["annualisation"]))
+        change = report["change"]
+        drawdown = report["max_drawdown_pct"]
+        sharpe = report["sharpe"]
+        columns = st.columns(3, gap="small")
+        with columns[0]:
+            if change is None:
+                st.metric("Equity change", "—")
+            else:
+                st.metric("Equity change", format_money(change[0], currency), delta=f"{change[1]:+.2f}%")
+        with columns[1]:
+            st.metric("Max drawdown", "—" if drawdown is None else f"{drawdown:.2f}%")
+        with columns[2]:
+            st.metric("Sharpe", "—" if sharpe is None else f"{sharpe:.2f}")
+        if "win_loss" in report:
+            ratio = report["win_loss"]
+            st.metric("Win/loss", "—" if ratio is None else f"{ratio:.2f}")
+
+
+def _portfolio_equity(snapshot: RunSnapshot) -> list[float]:
+    history = equity_history(int(time.time()))
+    columns = getattr(history, "columns", [])
+    stamps = list(history["ts"]) if history is not None and "ts" in columns else []
+    amounts = list(history["equity"]) if history is not None and "equity" in columns else []
+    return [point[1] for point in clean_equity_points(stamps, amounts)]
 
 
 def render_journal_view(snapshot: RunSnapshot) -> None:

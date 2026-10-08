@@ -32,6 +32,21 @@ def should_show(signature: str | None, dismissed: str | None) -> bool:
     return bool(signature) and signature != dismissed
 
 
+def margin_notice_text(
+    margin_level: float | None,
+    warn_level: float = MARGIN_WARN_LEVEL,
+) -> str | None:
+    """Sentence for the margin notice. None when the level is at or above the warn level.
+
+    config.yaml has no margin-level percent. The warn level is the same 100.0
+    the pre-submit check already uses.
+    """
+    if not margin_is_low(margin_level, warn_level):
+        return None
+    shown = f"{float(margin_level):.1f}%" if margin_level is not None else "—"
+    return f"Margin level {shown} is below the warn level {warn_level:.1f}%."
+
+
 def margin_is_low(margin_level: float | None, warn_level: float = MARGIN_WARN_LEVEL) -> bool:
     if margin_level is None:
         return False

@@ -402,6 +402,35 @@ def _spec_for(asset: str | None):
     return spec
 
 
+def price_trace(style: str, frame: pd.DataFrame):
+    """Price pane for one chart style.
+
+    Bar is an OHLC trace: the open tick is on the left and the close tick is
+    on the right. It is not a column of the close.
+    """
+    if style == "Candlestick":
+        return go.Candlestick(
+            x=frame["time"], open=frame["open"], high=frame["high"],
+            low=frame["low"], close=frame["close"], name="Price",
+            increasing_line_color=TOKENS["gain"], increasing_fillcolor=hex_rgba("gain", 0.55),
+            decreasing_line_color=TOKENS["loss"], decreasing_fillcolor=hex_rgba("loss", 0.45),
+        )
+    if style == "Area":
+        return go.Scatter(
+            x=frame["time"], y=frame["close"], name="Price", mode="lines",
+            line={"color": TOKENS["accent"], "width": 1.5},
+            fill="tozeroy", fillcolor=hex_rgba("accent", 0.14),
+            hovertemplate="%{x}<br>Close %{y}<extra></extra>",
+        )
+    return go.Ohlc(
+        x=frame["time"], open=frame["open"], high=frame["high"],
+        low=frame["low"], close=frame["close"], name="Price",
+        increasing_line_color=TOKENS["gain"],
+        decreasing_line_color=TOKENS["loss"],
+        hovertemplate="%{x}<br>Open %{open}<br>High %{high}<br>Low %{low}<br>Close %{close}<extra></extra>",
+    )
+
+
 def _build_figure(
     frame: pd.DataFrame,
     asset: str | None,
@@ -416,25 +445,7 @@ def _build_figure(
     fig = make_subplots(rows=rows, cols=1, shared_xaxes=True, vertical_spacing=0.04, row_heights=[0.62] + [0.38 / max(len(lanes), 1)] * len(lanes) if lanes else [1])
     style = st.session_state.get("chart_style", "Candlestick")
     if not frame.empty and "close" in frame:
-        if style == "Candlestick":
-            fig.add_trace(go.Candlestick(
-                x=frame["time"], open=frame["open"], high=frame["high"],
-                low=frame["low"], close=frame["close"], name="Price",
-                increasing_line_color=TOKENS["gain"], increasing_fillcolor=hex_rgba("gain", 0.55),
-                decreasing_line_color=TOKENS["loss"], decreasing_fillcolor=hex_rgba("loss", 0.45),
-            ), row=1, col=1)
-        elif style == "Area":
-            fig.add_trace(go.Scatter(
-                x=frame["time"], y=frame["close"], name="Price", mode="lines",
-                line={"color": TOKENS["accent"], "width": 1.5},
-                fill="tozeroy", fillcolor=hex_rgba("accent", 0.14),
-            ), row=1, col=1)
-        else:
-            colors = [
-                TOKENS["gain"] if close >= open_ else TOKENS["loss"]
-                for open_, close in zip(frame["open"], frame["close"])
-            ]
-            fig.add_trace(go.Bar(x=frame["time"], y=frame["close"], name="Price", marker_color=colors), row=1, col=1)
+        fig.add_trace(price_trace(style, frame), row=1, col=1)
         _overlay(fig, frame, pack)
         _levels(fig, pack)
         _markers(fig, frame, pack)
