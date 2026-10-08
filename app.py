@@ -18,6 +18,7 @@ from ui.components.order_form import render_order_form
 from ui.components.research_desk import render_research_desk
 from ui.components.positions_matrix import render_positions_matrix
 from ui.components.snapshot import load_shared_snapshot
+from ui.build_stamp import stamp_text
 
 st.set_page_config(
     page_title="AI Hedge Fund Command Center",
@@ -62,3 +63,5 @@ elif view == TAB_LABELS[4]:
     render_journal_view(snapshot)
 elif view == TAB_LABELS[5]:
     render_research_desk(config.symbols.whitelist)
+
+st.caption(stamp_text())
