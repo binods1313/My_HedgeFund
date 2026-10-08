@@ -548,3 +548,113 @@ Exit 0. The Task 9 note said 201 history hits. This re-measure is 204. The three
 | 4 | Correctness | The process on port 8501 predates these commits. A look at that process is not a look at this UI. |
 | 5 | Data quality | Closed trades still store realised P&L as NULL. The performance section therefore has no win/loss row. |
 | 6 | Data quality | Infoway's one smoke was HTTP 401. Dexter stays on the fixture until its own env file exists. |
+
+## TASK 11 — pasted section 14
+
+`docs/Instructions*.md` was not edited. `.env` was not edited. `config.yaml` was not edited. No new Python dependency was added. Nothing was pushed. History was not rewritten. The secret scanner was not changed.
+
+### Approvals
+`APPROVE_KEY_ACCESS_CENTRALISATION` is NO. `APPROVE_REALISED_PNL_MIGRATION` is NO.
+
+### A1 — Agent 02 MACD
+The signal line copied the MACD value, so the histogram was always 0. It is now EMA(9) of the MACD line, and the histogram is MACD minus that signal. The EMA seeds on the first value, the same rule as `ewm(adjust=False)`.
+
+Hand example, prices 1, 2, 3, 4, fast 2, slow 3, signal 2: MACD last is 85/216, signal last is 37/108, histogram last is 11/216. A prefix of the series matches the same index of the full series. The chart MACD in `ui/indicators.py` already smooths the line and already stops at the closed bar. A future bar does not change the closed line, signal, histogram, or the closed-bar crosses. A bent series has a signal that is not the line and a histogram that is not 0. Chart code was not changed. `data_engine.py` already sets the signal with `ewm(span=9, adjust=False)` and was not changed.
+
+`data/learning.db` exists. Schema version is 1 in the file and in code. The predictions table has 0 rows. Agent 02 has 0 prediction rows and 0 shadow rows. No stored prediction was produced with the buggy histogram, because there is no prediction row. Nothing was deleted. `mark_buggy_agent02_macd` ran once and marked 0 rows. New agent 02 writes use agent_version `2`. The marker for a future version `1` row is `1.macd0`. Dexter stays on version `1`.
+
+### A2 — Build stamp
+The page ends with a caption: `Build {git short hash} · process start {UTC time}`. Git failure, a missing binary, an empty answer, or a timeout becomes the word `unknown`. The Streamlit footer CSS stays hidden. This was not opened in a browser. The process on port 8501 was left running.
+
+### A3 — History classifier
+`scripts/classify_scan_hits.py` walked the same 204 history hits. It prints file, 12-character commit, rule, and the sha256 of the match. It does not print the match.
+
+```
+KNOWN_CANARY    69
+UNKNOWN         135
+TOTAL           204
+```
+
+131 UNKNOWN rows are in `scripts/secret_scan.py` (64) or `tests/test_secret_scan.py` (67). The file matches, and the captured value is not in `DECLARED_CANARIES`. Four UNKNOWN rows are outside those two files:
+
+| File | Commit | Rule | sha256 of the match |
+| --- | --- | --- | --- |
+| scripts/check_xai_key.py | 973d01e6d316 | credential_assignment | fa51fd49abf67705d6a35d18218c115ff5633aec1f9ebfdc9d5d4956416f57f6 |
+| scripts/check_xai_key.py | 93cf2859308a | credential_assignment | fa51fd49abf67705d6a35d18218c115ff5633aec1f9ebfdc9d5d4956416f57f6 |
+| tests/test_engine/test_boundaries.py | d2cb1d72850e | openrouter_key | a6b48a8a33db9ea206b011b0e59fdcec260d1d446a66d04156ee9c5d495dc215 |
+| tests/test_engine/test_boundaries.py | cd315fa59cc1 | openrouter_key | a6b48a8a33db9ea206b011b0e59fdcec260d1d446a66d04156ee9c5d495dc215 |
+
+### A4 — Provider diagnostics
+One request each. No retry. No header, key, or response body.
+
+AgentRouter, from `scripts/check_agentrouter.py`:
+
+```
+key present: yes
+host resolves: yes
+HTTP status: 401
+error code: 401
+failure class: auth rejected
+FAIL
+```
+
+Infoway, from `scripts/check_infoway.py`:
+
+```
+key_present=yes
+http_status=401
+ret=None
+error_code=401
+failure_class=auth rejected
+latency_ms=289.0
+FAIL
+```
+
+AgentRouter classes use the operator portal only: HTTP 401 is auth rejected, HTTP 404 is a wrong endpoint. The docs repo has no status table. Other HTTP codes stay unclassified. Infoway classes use the published REST page. Business `ret` and HTTP status are separate. `ret` 500 stays unclassified. HTTP 499 stays unclassified. HTTP 524 is network. `ret` 501, 502, 503, 504, 505, and 513 are rate or plan limit. `ret` 509 and 514 are auth rejected.
+
+### A5 — Realised P&L feasibility
+No. `engine/gateway.py` `_reconcile_history` calls `history_orders_get` and returns ticket, order_id, and symbol. It does not call `history_deals_get` and it does not return profit. `data_engine.py` has no deal history. `tests/test_engine/fake_mt5.py` `history_deals_get` only records the call. No read-only helper was added. `docs/design/realised_pnl.md` remains the migration path and the flag is NO.
+
+### B1
+skipped: not approved
+
+### B2
+skipped: not approved
+
+### Pytest
+```
+$ .\.venv\Scripts\python.exe -m pytest -q --basetemp=.pytest_tmp
+1289 passed, 6 skipped in 32.40s
+```
+Exit 0. This run is the Task 11 tree before this progress note.
+
+### Secret scan
+```
+Scanner self-test : PASS
+History hits      : 204
+Worktree hits     : 0
+.git/config hits  : 0
+```
+Exit 0. The four new commits did not change the history count. Values are not copied here.
+
+### Could not
+- Route credential reads through `engine/keys.py`. `APPROVE_KEY_ACCESS_CENTRALISATION` is NO.
+- Implement `docs/design/realised_pnl.md`. `APPROVE_REALISED_PNL_MIGRATION` is NO.
+- Add a realised-P&L helper. The gateway and the data engine do not expose deal profit.
+- Mark a stored agent 02 prediction. `data/learning.db` has 0 prediction rows.
+- Browser-check the footer. The Streamlit process on port 8501 was left running and is older than these commits. Submit, close, Deploy, and Confirm Enable AI were not clicked. A second Streamlit was not started.
+- Edit `docs/Instructions*.md`, `.env`, or `config.yaml`.
+- Weaken the secret scanner, rewrite history, or purge the 135 UNKNOWN hits.
+- Sign off phases B and E. They stay partial until a person completes the browser checklist.
+- Retry AgentRouter or Infoway. Each had one request. A live Dexter smoke was not run.
+
+### Open risks
+
+| Rank | Kind | Risk |
+| --- | --- | --- |
+| 1 | Security | History still has 204 secret-scan hits. 135 are UNKNOWN under the canary rule, including two rows in `scripts/check_xai_key.py` and two in `tests/test_engine/test_boundaries.py`. They were not purged. |
+| 2 | Security | Telegram, root config, engine config, and the AgentRouter check still read credentials outside `engine/keys.py`. |
+| 3 | Correctness | The process on port 8501 predates these commits. A look at that process is not a look at this footer. |
+| 4 | Data quality | Closed trades still store realised P&L as NULL. Deal history is not exposed, so the performance section still has no win/loss row. |
+| 5 | Data quality | The single AgentRouter check and the single Infoway check both returned HTTP 401, class auth rejected. Dexter stays on the fixture. |
+
