@@ -33,6 +33,33 @@ def _resolves(host: str) -> bool:
     return True
 
 
+def failure_class(*, key_present: bool, http_status: object) -> str:
+    """Documented AgentRouter classes only.
+
+    github.com/agentrouter-org/docs start.md sets the base URL and the key.
+    It has no status table. The operator portal FAQ at co.agentrouter.org says
+    a 401 means check the key, and an Anthropic base URL that includes /v1
+    returns 404. A missing HTTP status is network. Other codes stay unclassified.
+    """
+    if not key_present:
+        return "missing key"
+    if isinstance(http_status, int):
+        if 200 <= http_status < 300:
+            return "none"
+        if http_status == 401:
+            return "auth rejected"
+        if http_status == 404:
+            return "wrong endpoint"
+        return "unclassified"
+    return "network"
+
+
+def error_code(http_status: object) -> str:
+    if isinstance(http_status, int) and not 200 <= http_status < 300:
+        return str(http_status)
+    return "none"
+
+
 def main() -> None:
     load_dotenv(_ENV_PATH)
     base = os.environ.get("AGENTROUTER_BASE_URL", _DEFAULT_BASE).strip() or _DEFAULT_BASE
@@ -46,7 +73,10 @@ def main() -> None:
     print(f"host resolves: {'yes' if resolves else 'no'}")
 
     if not present or not resolves:
-        print("HTTP status: N/A")
+        status: object = "N/A"
+        print(f"HTTP status: {status}")
+        print(f"error code: {error_code(status)}")
+        print(f"failure class: {failure_class(key_present=present, http_status=status)}")
         print("FAIL")
         return
 
@@ -76,9 +106,11 @@ def main() -> None:
             ok = 200 <= status < 300 and "choices" in body
     except urllib.error.HTTPError as exc:
         status = exc.code
-    except Exception:
+    except (urllib.error.URLError, TimeoutError, OSError):
         status = "N/A"
     print(f"HTTP status: {status}")
+    print(f"error code: {error_code(status)}")
+    print(f"failure class: {failure_class(key_present=present, http_status=status)}")
     print("PASS" if ok else "FAIL")
 
 

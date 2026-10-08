@@ -419,6 +419,60 @@ def budget_snapshot(
     return count, settings.daily_cap
 
 
+# Official REST table:
+# https://docs.infoway.io/en-docs/getting-started/error-codes/rest-api-error-codes.md
+# HTTP status and business ret are different number spaces. ret 500 is both
+# "server error" and "Apikey not exists", so it is not mapped to auth.
+# 510/511/512 are WebSocket codes and are not mapped here.
+_INFOWAY_RET = {
+    501: "rate or plan limit",
+    502: "rate or plan limit",
+    503: "rate or plan limit",
+    504: "rate or plan limit",
+    505: "rate or plan limit",
+    509: "auth rejected",
+    513: "rate or plan limit",
+    514: "auth rejected",
+}
+_INFOWAY_HTTP = {
+    401: "auth rejected",
+    404: "wrong endpoint",
+    429: "rate or plan limit",
+    524: "network",
+}
+
+
+def infoway_failure_class(
+    *,
+    configured: bool,
+    http_status: int | None,
+    ret: int | None,
+    transport_failed: bool,
+    ok: bool,
+) -> str:
+    """One of the documented classes, or unclassified. Success is none."""
+    if not configured:
+        return "missing key"
+    if ok:
+        return "none"
+    if ret is not None and int(ret) != 200:
+        return _INFOWAY_RET.get(int(ret), "unclassified")
+    if http_status is not None and not 200 <= int(http_status) < 300:
+        return _INFOWAY_HTTP.get(int(http_status), "unclassified")
+    if transport_failed:
+        return "network"
+    return "unclassified"
+
+
+def infoway_error_code(*, http_status: int | None, ret: int | None) -> str:
+    """Short code only. Never a message body."""
+    if ret is not None and int(ret) != 200:
+        return str(int(ret))
+    if http_status is not None and not 200 <= int(http_status) < 300:
+        return str(int(http_status))
+    return "none"
+
+
 def smoke_quote(symbol: str = "EURUSD") -> tuple[str, float | None]:
     """One live read. Returns status and latency only."""
     clear_cache()
@@ -431,10 +485,25 @@ def smoke_report(symbol: str = "EURUSD") -> dict[str, object]:
     clear_cache()
     result = fetch_quote(symbol, refresh=True)
     latency_ms = None if result.latency_s is None else round(result.latency_s * 1000.0, 1)
+    configured = result.status != "not_configured"
+    transport_failed = (
+        result.http_status is None
+        and result.ret_code is None
+        and result.status == "degraded"
+        and result.detail in {"timeout", "request failed"}
+    )
     return {
-        "key_present": result.status != "not_configured",
+        "key_present": configured,
         "http_status": result.http_status,
         "ret": result.ret_code,
+        "error_code": infoway_error_code(http_status=result.http_status, ret=result.ret_code),
+        "failure_class": infoway_failure_class(
+            configured=configured,
+            http_status=result.http_status,
+            ret=result.ret_code,
+            transport_failed=transport_failed,
+            ok=result.ok,
+        ),
         "latency_ms": latency_ms,
         "result": "PASS" if result.ok else "FAIL",
     }
