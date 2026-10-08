@@ -18,6 +18,7 @@ HEX_RE = re.compile(r"^#[0-9A-Fa-f]{6}$")
 MAX_PREFS_BYTES = 16_384
 HUE_WARN_DEGREES = 40.0
 AA_TEXT = 4.5
+AA_MARK = 3.0
 DEFAULT_PREFS_PATH = Path(__file__).resolve().parents[1] / "data" / "ui_prefs.json"
 
 _ROLES = (
@@ -169,14 +170,29 @@ def _tint_passes(colour: str, backgrounds: tuple[str, ...], text: str) -> bool:
     return True
 
 
+def _mark_passes(colour: str, backgrounds: tuple[str, ...]) -> bool:
+    """The colour itself must stay visible on every background, not only as a tint."""
+    return all(contrast_ratio(colour, background) >= AA_MARK for background in backgrounds)
+
+
+def _mark_ratio(colour: str, backgrounds: tuple[str, ...]) -> float:
+    if not backgrounds:
+        return 0.0
+    return min(contrast_ratio(colour, background) for background in backgrounds)
+
+
 def adjust_for_contrast(
     colour: str, backgrounds: tuple[str, ...], *, text: str | None = None
 ) -> tuple[str, str | None]:
-    """Move lightness to the nearest value whose active tint keeps text at AA."""
+    """Move lightness until the tint keeps text at AA and the colour clears the background.
+
+    A near-black accent on a dark panel used to pass: page text on a 22% tint
+    stayed readable, while the accent itself disappeared into the panel.
+    """
     ink = text or TOKENS["text"]
-    if _tint_passes(colour, backgrounds, ink):
-        return colour.upper(), None
     hue, saturation, light = _hsl(colour)
+    if _tint_passes(colour, backgrounds, ink) and _mark_passes(colour, backgrounds):
+        return colour.upper(), None
     best = colour.upper()
     best_gap = math.inf
     best_ratio = 0.0
@@ -185,15 +201,13 @@ def adjust_for_contrast(
         candidate = _from_hsl(hue, saturation, candidate_light)
         if not _tint_passes(candidate, backgrounds, ink):
             continue
+        if not _mark_passes(candidate, backgrounds):
+            continue
         gap = abs(candidate_light - light)
         if gap < best_gap:
             best_gap = gap
             best = candidate
-            ratios = [
-                contrast_ratio(ink, mix(candidate, background, NAV_ACTIVE_MIX))
-                for background in backgrounds
-            ]
-            best_ratio = min(ratios)
+            best_ratio = _mark_ratio(candidate, backgrounds)
     if best_gap is math.inf:
         return colour.upper(), "No lightness keeps this hue readable. The previous colour stays."
     return best, (

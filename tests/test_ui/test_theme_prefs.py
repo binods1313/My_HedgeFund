@@ -32,9 +32,13 @@ def test_contrast_auto_adjust_reaches_aa() -> None:
     assert "Lightness moved" in note
     fill = mix(adjusted, "#5A5A62", 0.22)
     assert contrast_ratio(TOKENS["text"], fill) >= 4.5
+    # Near-black on the dark panel used to pass, because only the tint was checked.
     kept, quiet = adjust_for_contrast("#050505", (TOKENS["bg"], TOKENS["panel"]), text=TOKENS["text"])
-    assert quiet is None
-    assert kept == "#050505"
+    assert quiet is not None
+    assert "Contrast" in quiet and ":1" in quiet
+    assert kept != "#050505"
+    assert contrast_ratio(kept, TOKENS["bg"]) >= 3.0
+    assert contrast_ratio(kept, TOKENS["panel"]) >= 3.0
 
 
 def test_hue_guard_warns_when_gain_and_loss_are_close() -> None:
