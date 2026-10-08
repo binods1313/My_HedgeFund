@@ -90,6 +90,13 @@ def _sentiment(symbol: str) -> dict:
     return found if isinstance(found, dict) and found else {}
 
 
+def _agent_version(agent_id: str) -> str:
+    """Agent 02 is version 2 after the MACD signal fix. Every other writer stays at 1."""
+    if agent_id == "02":
+        return "2"
+    return "1"
+
+
 def _record(conn, *, symbol: str, timeframe: str, bar_time: str, agent_id: str, result: object, config_hash: str) -> bool:
     """Persist a valid prediction. A degraded result is status only."""
     ok = bool(getattr(result, "ok", False))
@@ -101,7 +108,7 @@ def _record(conn, *, symbol: str, timeframe: str, bar_time: str, agent_id: str, 
             "timeframe": timeframe,
             "bar_time": bar_time,
             "agent_id": agent_id,
-            "agent_version": "1",
+            "agent_version": _agent_version(agent_id),
             "status": "ok" if ok else "degraded",
             "reason": None if ok else (str(reason) if reason else "degraded"),
         },
@@ -127,7 +134,7 @@ def _record(conn, *, symbol: str, timeframe: str, bar_time: str, agent_id: str, 
             "timeframe": timeframe,
             "bar_time": bar_time,
             "agent_id": agent_id,
-            "agent_version": "1",
+            "agent_version": _agent_version(agent_id),
             "direction": direction_of(label),
             "score": stored_score,
             "confidence": float(getattr(result, "confidence", 0.0) or 0.0),

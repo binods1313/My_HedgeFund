@@ -13,7 +13,9 @@ from learning.calibrate import by_bucket, had_edge, summarise, wilson_interval
 from learning.ledger import (
     connect,
     link_journal,
+    mark_buggy_agent02_macd,
     record_prediction,
+    record_shadow_status,
     resolve_open,
     samples_for,
 )
@@ -370,4 +372,108 @@ def test_existing_ledger_gains_status_table_without_a_version_bump(tmp_path: Pat
     assert conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'shadow_status'"
     ).fetchone()
+    conn.close()
+
+
+def test_agent_02_shadow_rows_use_version_2(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from learning.shadow import _agent_version, _record
+
+    assert _agent_version("02") == "2"
+    assert _agent_version("01") == "1"
+    assert _agent_version("dexter") == "1"
+    conn = connect(tmp_path / "learning.db")
+    recorded = _record(
+        conn,
+        symbol="EURUSD",
+        timeframe="H1",
+        bar_time="t0",
+        agent_id="02",
+        result=SimpleNamespace(
+            ok=True, error=None, label="BULLISH",
+            score=60, confidence=0.5, features={"histogram": 0.1},
+        ),
+        config_hash="abc",
+    )
+    assert recorded is True
+    assert conn.execute("SELECT agent_version FROM predictions").fetchone()["agent_version"] == "2"
+    assert conn.execute("SELECT agent_version FROM shadow_status").fetchone()["agent_version"] == "2"
+    conn.close()
+
+
+def test_mark_buggy_agent02_keeps_rows_and_outcomes(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "learning.db")
+    prediction_id = record_prediction(
+        conn,
+        {
+            "symbol": "EURUSD",
+            "timeframe": "H1",
+            "bar_time": "t0",
+            "agent_id": "02",
+            "agent_version": "1",
+            "direction": "long",
+            "score": 50,
+            "confidence": 0.4,
+            "features_json": '{"features": {"histogram": 0.0}}',
+            "config_hash": "abc",
+        },
+    )
+    record_shadow_status(
+        conn,
+        {
+            "symbol": "EURUSD",
+            "timeframe": "H1",
+            "bar_time": "t0",
+            "agent_id": "02",
+            "agent_version": "1",
+            "status": "ok",
+            "reason": None,
+        },
+    )
+    record_prediction(
+        conn,
+        {
+            "symbol": "EURUSD",
+            "timeframe": "H1",
+            "bar_time": "t1",
+            "agent_id": "01",
+            "agent_version": "1",
+            "direction": "flat",
+            "score": 50,
+            "confidence": 0.2,
+            "features_json": "{}",
+            "config_hash": "abc",
+        },
+    )
+    conn.execute(
+        """
+        INSERT INTO outcomes (
+            prediction_id, horizon_bars, forward_return, hit, mfe, mae,
+            r_multiple_at_rr, resolved_at
+        ) VALUES (?, 1, 0.1, 1, 0.1, 0.0, 1.0, 't')
+        """,
+        (prediction_id,),
+    )
+    conn.commit()
+    marked = mark_buggy_agent02_macd(conn)
+    assert marked == {"predictions": 1, "shadow_status": 1, "skipped": 0}
+    kept = conn.execute(
+        "SELECT agent_version, features_json FROM predictions WHERE id = ?",
+        (prediction_id,),
+    ).fetchone()
+    assert kept["agent_version"] == "1.macd0"
+    assert kept["features_json"] == '{"features": {"histogram": 0.0}}'
+    assert conn.execute(
+        "SELECT agent_version FROM shadow_status WHERE agent_id = '02'"
+    ).fetchone()["agent_version"] == "1.macd0"
+    assert conn.execute(
+        "SELECT agent_version FROM predictions WHERE agent_id = '01'"
+    ).fetchone()["agent_version"] == "1"
+    assert conn.execute(
+        "SELECT prediction_id FROM outcomes WHERE prediction_id = ?",
+        (prediction_id,),
+    ).fetchone()["prediction_id"] == prediction_id
+    assert conn.execute("SELECT COUNT(*) AS n FROM predictions").fetchone()["n"] == 2
+    assert mark_buggy_agent02_macd(conn) == {"predictions": 0, "shadow_status": 0, "skipped": 0}
     conn.close()

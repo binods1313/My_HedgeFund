@@ -54,25 +54,50 @@ def test_future_bar_does_not_change_closed_values() -> None:
     close = [1, 2, 3, 4, 5, 6, 7, 8]
     high = [item + 0.5 for item in close]
     low = [item - 0.5 for item in close]
+    before_line, before_signal, before_hist = macd(close, fast=3, slow=4, signal=2)
     before = {
         "ema": ema(close, 3),
         "rsi": rsi(close, 3),
-        "macd": macd(close, fast=3, slow=4, signal=2)[0],
+        "macd": before_line,
+        "macd_signal": before_signal,
+        "macd_hist": before_hist,
         "atr": atr(high, low, close, 3),
         "bb": bollinger(close, 3, 2)[0],
     }
     mutated = close[:-1] + [1000]
     high[-1] = 1000
     low[-1] = 900
+    after_line, after_signal, after_hist = macd(mutated, fast=3, slow=4, signal=2)
     after = {
         "ema": ema(mutated, 3),
         "rsi": rsi(mutated, 3),
-        "macd": macd(mutated, fast=3, slow=4, signal=2)[0],
+        "macd": after_line,
+        "macd_signal": after_signal,
+        "macd_hist": after_hist,
         "atr": atr(high, low, mutated, 3),
         "bb": bollinger(mutated, 3, 2)[0],
     }
     for name in before:
         assert before[name][:-1] == after[name][:-1]
+    closed = len(close) - 1
+    assert macd_cross_signals(before_line, before_signal, upto=closed) == macd_cross_signals(
+        after_line, after_signal, upto=closed
+    )
+
+
+def test_chart_macd_signal_is_an_ema_of_the_line() -> None:
+    # A straight series can make MACD constant, so the signal matches it.
+    # This series bends, so the signal and the histogram both move.
+    values = [1, 3, 2, 5, 4, 8, 6, 9, 7, 10]
+    line, signal, hist = macd(values, fast=3, slow=4, signal=2)
+    paired = [
+        (left, right, bar)
+        for left, right, bar in zip(line, signal, hist)
+        if bar is not None
+    ]
+    assert paired
+    assert any(left != right for left, right, _bar in paired)
+    assert any(bar != 0 for _left, _right, bar in paired)
 
 
 def test_signal_rules_and_closed_bar_cutoff() -> None:

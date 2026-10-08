@@ -10,14 +10,30 @@ import numpy as np
 
 def _ema_last(prices: np.ndarray, period: int) -> float:
     """Last EMA value. The previous convolve used a missing numpy name."""
+    return float(_ema_series(prices, period)[-1])
+
+
+def _ema_series(prices: np.ndarray, period: int) -> np.ndarray:
+    """Causal EMA. Seed is the first value, matching pandas ewm(adjust=False)."""
     alpha = 2.0 / (period + 1.0)
-    value = float(prices[0])
-    for price in prices[1:]:
-        value = alpha * float(price) + (1.0 - alpha) * value
-    return value
+    out = np.empty(len(prices), dtype=float)
+    out[0] = float(prices[0])
+    for index in range(1, len(prices)):
+        out[index] = alpha * float(prices[index]) + (1.0 - alpha) * out[index - 1]
+    return out
+
+
+def macd_series(
+    prices: np.ndarray, fast: int = 12, slow: int = 26, signal: int = 9
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """MACD line, EMA(signal) of that line, and histogram. Index i uses prices through i."""
+    line = _ema_series(prices, fast) - _ema_series(prices, slow)
+    signal_line = _ema_series(line, signal)
+    return line, signal_line, line - signal_line
 
 
 AGENT_ID = "02"
+AGENT_VERSION = "2"
 AGENT_NAME = "Technical Agent"
 LAYER = "RESEARCH"
 
@@ -73,12 +89,11 @@ def run(context: dict[str, Any]) -> AgentResult:
         rs = avg_gain / avg_loss if avg_loss != 0 else 100
         rsi = 100 - (100 / (1 + rs))
 
-        # MACD from the same EMA. One value has no 9-bar signal series.
-        ema_12 = _ema_last(prices, 12)
-        ema_26 = _ema_last(prices, 26)
-        macd = ema_12 - ema_26
-        signal_line = macd
-        histogram = macd - signal_line
+        # Signal is EMA(9) of the MACD line. A copy of the line makes the histogram 0.
+        macd_line, signal_series, histogram_series = macd_series(prices)
+        macd = float(macd_line[-1])
+        signal_line = float(signal_series[-1])
+        histogram = float(histogram_series[-1])
 
         # Trend determination
         bullish_signals = sum([
@@ -107,6 +122,7 @@ def run(context: dict[str, Any]) -> AgentResult:
             "ema_slow": float(ema_slow),
             "rsi": float(rsi),
             "macd": float(macd),
+            "signal": float(signal_line),
             "histogram": float(histogram),
             "bullish_signals": bullish_signals,
             "bearish_signals": bearish_signals,

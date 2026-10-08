@@ -172,6 +172,54 @@ def record_prediction(conn: sqlite3.Connection, row: dict) -> int:
     return int(found["id"])
 
 
+BUGGY_AGENT02_VERSION = "1"
+MARKED_AGENT02_VERSION = "1.macd0"
+_MARK_TABLES = ("predictions", "shadow_status")
+
+
+def mark_buggy_agent02_macd(conn: sqlite3.Connection) -> dict[str, int]:
+    """Retag agent 02 rows written while the signal line copied the MACD line.
+
+    The marker is agent_version 1.macd0. Rows, features_json, and outcomes stay.
+    A second call changes nothing. This does not run from connect().
+    """
+    marked = {"predictions": 0, "shadow_status": 0, "skipped": 0}
+    for table in _MARK_TABLES:
+        rows = conn.execute(
+            f"""
+            SELECT id, symbol, timeframe, bar_time
+            FROM {table}
+            WHERE agent_id = ? AND agent_version = ?
+            """,
+            ("02", BUGGY_AGENT02_VERSION),
+        ).fetchall()
+        for row in rows:
+            clash = conn.execute(
+                f"""
+                SELECT 1 FROM {table}
+                WHERE symbol = ? AND timeframe = ? AND bar_time = ?
+                  AND agent_id = ? AND agent_version = ?
+                """,
+                (
+                    row["symbol"],
+                    row["timeframe"],
+                    row["bar_time"],
+                    "02",
+                    MARKED_AGENT02_VERSION,
+                ),
+            ).fetchone()
+            if clash is not None:
+                marked["skipped"] += 1
+                continue
+            conn.execute(
+                f"UPDATE {table} SET agent_version = ? WHERE id = ?",
+                (MARKED_AGENT02_VERSION, row["id"]),
+            )
+            marked[table] += 1
+    conn.commit()
+    return marked
+
+
 def record_shadow_status(conn: sqlite3.Connection, row: dict) -> None:
     """Store ok or degraded separately from predictions used for calibration."""
     conn.execute(
