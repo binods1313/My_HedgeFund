@@ -207,7 +207,7 @@ Loads runtime secrets from environment variables and prefixes them with known na
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_CHAT_ID`
 
-This file is intentionally environment-driven so credentials are not hardcoded into source files. Secrets are never printed or logged.
+This file is intentionally environment-driven so credentials are not hardcoded into source files. Secrets are never printed or logged. Updated to include AGENTROUTER_API_KEY and reflect TASK 3 changes.
 
 ### `config_loader.py`
 
