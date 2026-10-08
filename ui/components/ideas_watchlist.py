@@ -84,18 +84,20 @@ def ideas_frame(ideas: list[Idea]) -> pd.DataFrame:
 
 
 def render_ideas_watchlist() -> None:
-    st.subheader("Ideas watchlist")
-    st.caption(
-        "Typed by hand and stored on this machine. Read only. "
-        "Not an order and not an agent score."
-    )
-    source = st.text_input("Trader or source", key="w_idea_source", max_chars=80)
-    symbol = st.text_input("Idea symbol", key="w_idea_symbol", max_chars=32)
-    direction = st.selectbox("Idea direction", ["long", "short", "watch"], key="w_idea_direction")
-    note = st.text_area("Idea note", key="w_idea_note", max_chars=240)
-    if st.button("Add idea", key="btn_idea_add"):
-        try:
-            add_idea(source, symbol, str(direction), note)
-        except ValidationError:
-            st.caption("Enter a source, a symbol, and one of long, short, or watch.")
-    render_html_table(ideas_frame(load_ideas()), empty="No ideas yet")
+    with st.container(key="ideas-watchlist"):
+        st.subheader("Ideas watchlist")
+        st.caption(
+            "On the Exchange page, under the chart and the secondary-data panel. "
+            "Typed by hand and stored on this machine. Read only. "
+            "Not an order and not an agent score."
+        )
+        source = st.text_input("Trader or source", key="w_idea_source", max_chars=80)
+        symbol = st.text_input("Idea symbol", key="w_idea_symbol", max_chars=32)
+        direction = st.selectbox("Idea direction", ["long", "short", "watch"], key="w_idea_direction")
+        note = st.text_area("Idea note", key="w_idea_note", max_chars=240)
+        if st.button("Add idea", key="btn_idea_add"):
+            try:
+                add_idea(source, symbol, str(direction), note)
+            except ValidationError:
+                st.caption("Enter a source, a symbol, and one of long, short, or watch.")
+        render_html_table(ideas_frame(load_ideas()), empty="No ideas yet")

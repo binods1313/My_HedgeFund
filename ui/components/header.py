@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import math
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -9,10 +10,11 @@ import streamlit as st
 from formatting import format_margin_level, format_money
 from ui.components.auxiliary_views import render_portfolio_view
 from ui.components.cards import accent_card
+from ui.components.enable_ai import render_enable_ai
 from ui.components.nav import TAB_LABELS, render_navigation
 from ui.components.snapshot import load_shared_snapshot, tickets_without_stop
 from ui.components.theme_studio import render_theme_studio
-from ui.services.news import countdown_text, next_upcoming_high_impact
+from ui.services.news import header_chip_text
 from ui.state import persist_asset_category, persist_selected_asset
 
 CATEGORY_LABELS = {
@@ -83,8 +85,9 @@ def _draw_status(snapshot) -> None:
     with status_cols[0]:
         connection = "CONNECTED" if account.connected else "DISCONNECTED"
         connection_class = "live" if account.connected else "offline"
+        mode = html.escape(str(account.mode or "—"))
         st.markdown(
-            f'<span class="status-badge {connection_class}">{connection} · {account.mode or "—"}</span>',
+            f'<span class="status-badge {connection_class}">{connection} · {mode}</span>',
             unsafe_allow_html=True,
         )
     with status_cols[1]:
@@ -99,9 +102,10 @@ def _draw_status(snapshot) -> None:
         else:
             engine_class = "active"
         st.markdown(
-            f'<span class="status-badge {engine_class}">ENGINE · {state}</span>',
+            f'<span class="status-badge {engine_class}">ENGINE · {html.escape(state)}</span>',
             unsafe_allow_html=True,
         )
+        render_enable_ai(account.mode)
     with status_cols[2]:
         st.caption(datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%H:%M:%S IST"))
         render_theme_studio()
@@ -118,12 +122,11 @@ def _draw_status(snapshot) -> None:
             st.caption(f"{asset}  ·  {quote.get('reason') or 'Quote unavailable'}")
         else:
             st.caption("Market quote · —")
-        next_event = next_upcoming_high_impact(snapshot.news.events)
-        if next_event:
-            st.markdown(
-                f'<span class="news-countdown">{countdown_text(next_event)}</span>',
-                unsafe_allow_html=True,
-            )
+        chip = html.escape(header_chip_text(snapshot.news.events))
+        st.markdown(
+            f'<span class="news-countdown">{chip}</span>',
+            unsafe_allow_html=True,
+        )
 
 
 def _draw_metrics(snapshot) -> None:

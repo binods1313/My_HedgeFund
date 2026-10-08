@@ -669,6 +669,9 @@ class TestTokenParameterAlias:
         'def __init__(self, token: str = "hunter2xyz") -> None:',
         'self._token = "Xq7SampleNotRealPwd9z"',
         'token = "Xq7SampleNotRealPwd9z"',
+        'secret = "Xq7SampleNotRealPwd9z"',
+        'password = "Xq7SampleNotRealPwd9z"',
+        'api_key = "Xq7SampleNotRealPwd9z"',
     ])
     def test_quoted_token_is_still_a_secret(self, line):
         pattern = dict(ss.PATTERNS)["credential_assignment"]

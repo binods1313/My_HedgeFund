@@ -16,6 +16,7 @@ from ui.theme_prefs import (
     Palette,
     guard_palette,
     load_palette,
+    parse_imported_palette,
     preset_palette,
     reset_palette,
     save_palette,
@@ -92,7 +93,7 @@ def _role_fields() -> None:
             )
             typed = str(st.session_state.get(f"w_theme_{role}_hex", ""))
             if typed and HEX_RE.fullmatch(typed) is None:
-                st.caption(f"{label} must be #RRGGBB")
+                st.error(f"{label} must be #RRGGBB")
 
 
 def _copy_hex(role: str) -> None:
@@ -139,11 +140,11 @@ def _material(palette: Palette) -> dict[str, object]:
 def _commit_draft() -> None:
     draft = _draft()
     if draft is None:
-        st.caption("A colour is not #RRGGBB yet. The saved palette stays.")
+        st.error("A colour is not #RRGGBB yet. The saved palette stays.")
         return
     guarded, notes = guard_palette(draft, _BACKGROUNDS)
     for note in notes:
-        st.caption(note)
+        st.warning(note)
     if _material(guarded) != _material(draft):
         _install(guarded)
         return
@@ -164,7 +165,7 @@ def _install(palette: Palette) -> None:
 
 def _preview() -> None:
     for note in st.session_state.get("_theme_notes") or []:
-        st.caption(note)
+        st.warning(note)
     active = tokens()
     st.html(
         "<div style='display:flex;gap:8px;align-items:center;flex-wrap:wrap'>"
@@ -202,9 +203,8 @@ def _file_row() -> None:
 
 def _import_raw(raw: str) -> None:
     try:
-        payload = json.loads(raw)
-        palette = Palette.model_validate(payload)
+        palette = parse_imported_palette(raw)
     except (json.JSONDecodeError, ValueError):
-        st.caption("Import rejected. The saved palette stays.")
+        st.error("Import rejected. The saved palette stays.")
         return
     _install(palette)

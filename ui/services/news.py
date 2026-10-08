@@ -6,7 +6,7 @@ import random
 import re
 import time
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
@@ -29,6 +29,7 @@ except Exception:  # pragma: no cover - streamlit optional at import time
 DEFAULT_FEED_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.xml"
 CACHE_PATH = Path(__file__).resolve().parents[2] / "data" / "news_cache.json"
 MAX_RETRIES = 2
+HIGH_IMPACT_CHIP_HOURS = 24
 MAX_BODY_BYTES = 2 * 1024 * 1024
 # The feed has no offset field; the observed 12:30pm USD/CAD release aligns with UTC.
 SOURCE_TIMEZONE = timezone.utc
@@ -381,3 +382,23 @@ def countdown_text(event: NewsEvent, now: datetime | None = None) -> str:
     hours, remainder = divmod(seconds, 3600)
     minutes, seconds = divmod(remainder, 60)
     return f"{event.currency} {event.title} in {hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+def header_chip_event(events: list[NewsEvent], now: datetime | None = None) -> NewsEvent | None:
+    """Next High-impact event only when it falls inside the chip window."""
+    current = _as_utc(now or datetime.now(timezone.utc))
+    event = next_upcoming_high_impact(events, current)
+    if event is None or event.when_utc is None:
+        return None
+    stamp = _as_utc(event.when_utc)
+    if stamp > current + timedelta(hours=HIGH_IMPACT_CHIP_HOURS):
+        return None
+    return event
+
+
+def header_chip_text(events: list[NewsEvent], now: datetime | None = None) -> str:
+    """Header chip. The empty state is a sentence, so the row is never a blank gap."""
+    event = header_chip_event(events, now)
+    if event is None:
+        return f"No high-impact event in the next {HIGH_IMPACT_CHIP_HOURS}h"
+    return countdown_text(event, now)

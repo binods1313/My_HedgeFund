@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from ui.theme import NAV_ACTIVE_MIX, PRESETS, TOKENS
 
 HEX_RE = re.compile(r"^#[0-9A-Fa-f]{6}$")
+MAX_PREFS_BYTES = 16_384
 HUE_WARN_DEGREES = 40.0
 AA_TEXT = 4.5
 DEFAULT_PREFS_PATH = Path(__file__).resolve().parents[1] / "data" / "ui_prefs.json"
@@ -196,8 +197,8 @@ def adjust_for_contrast(
     if best_gap is math.inf:
         return colour.upper(), "No lightness keeps this hue readable. The previous colour stays."
     return best, (
-        f"Lightness moved from {light:.2f} to {best_gap + light if False else _hsl(best)[2]:.2f} "
-        f"so text on the tint reaches {best_ratio:.2f}:1."
+        f"Adjusted to {best}. Contrast {best_ratio:.2f}:1. "
+        f"Lightness moved from {light:.2f} to {_hsl(best)[2]:.2f}."
     )
 
 
@@ -220,10 +221,22 @@ def load_palette(path: Path | None = None) -> Palette:
     if not target.exists():
         return default_palette()
     try:
+        if target.stat().st_size > MAX_PREFS_BYTES:
+            return default_palette()
         payload = json.loads(target.read_text(encoding="utf-8"))
         return Palette.model_validate(payload)
     except (OSError, json.JSONDecodeError, ValidationError, ValueError):
         return default_palette()
+
+
+def parse_imported_palette(raw: str) -> Palette:
+    """Reject oversized JSON, unknown keys, and any colour that is not #RRGGBB."""
+    if len(raw.encode("utf-8")) > MAX_PREFS_BYTES:
+        raise ValueError("import is too large")
+    payload = json.loads(raw)
+    if not isinstance(payload, dict):
+        raise ValueError("import must be an object")
+    return Palette.model_validate(payload)
 
 
 def save_palette(palette: Palette, path: Path | None = None) -> None:

@@ -539,37 +539,61 @@ def _markers(fig: go.Figure, frame: pd.DataFrame, pack: dict) -> None:
             ), row=1, col=1)
 
 
-def _pattern_markers(fig: go.Figure, frame: pd.DataFrame, patterns: list) -> None:
-    if not patterns or frame.empty or "open" not in frame:
-        return
+def pattern_mark_specs(frame: pd.DataFrame, patterns: list) -> list[dict]:
+    """Marks for one candle frame. The same input always returns the same specs.
+
+    Session state is not an input. A reload or a symbol change rebuilds the
+    frame, then this function draws that frame's marks again.
+    """
+    if not patterns or frame.empty or "open" not in frame.columns:
+        return []
     opens = [float(value) for value in frame["open"]]
     highs = [float(value) for value in frame["high"]]
     lows = [float(value) for value in frame["low"]]
     closes = [float(value) for value in frame["close"]]
-    buckets: dict[str, list] = {"bullish": [], "bearish": [], "neutral": []}
-    for hit in patterns[-_MARK_LIMIT:]:
-        buckets.get(hit.bias, buckets["neutral"]).append(hit)
     styles = {
         "bullish": (TOKENS["gain"], "triangle-up", "low"),
         "bearish": (TOKENS["loss"], "triangle-down", "high"),
         "neutral": (TOKENS["warn"], "circle", "high"),
     }
-    for bias, rows in buckets.items():
-        if not rows:
-            continue
-        colour, symbol, column = styles[bias]
-        hovers = []
-        for hit in rows:
-            hovers.append(
+    specs: list[dict] = []
+    for hit in patterns[-_MARK_LIMIT:]:
+        bias = hit.bias if hit.bias in styles else "neutral"
+        _colour, symbol, column = styles[bias]
+        specs.append({
+            "index": int(hit.index),
+            "name": hit.name,
+            "bias": bias,
+            "symbol": symbol,
+            "column": column,
+            "y": float(frame[column].iloc[hit.index]),
+            "hover": (
                 f"<b>{marker_label(hit.name)} · {hit.name}</b><br>{sentiment_text(hit.name)}<br>"
                 + describe_trigger(opens, highs, lows, closes, hit.index, hit.name)
-            )
+            ),
+        })
+    return specs
+
+
+def _pattern_markers(fig: go.Figure, frame: pd.DataFrame, patterns: list) -> None:
+    specs = pattern_mark_specs(frame, patterns)
+    if not specs:
+        return
+    styles = {
+        "bullish": (TOKENS["gain"], "triangle-up"),
+        "bearish": (TOKENS["loss"], "triangle-down"),
+        "neutral": (TOKENS["warn"], "circle"),
+    }
+    for bias, (colour, symbol) in styles.items():
+        rows = [spec for spec in specs if spec["bias"] == bias]
+        if not rows:
+            continue
         fig.add_trace(go.Scatter(
-            x=[frame["time"].iloc[hit.index] for hit in rows],
-            y=[float(frame[column].iloc[hit.index]) for hit in rows],
+            x=[frame["time"].iloc[spec["index"]] for spec in rows],
+            y=[spec["y"] for spec in rows],
             mode="markers",
             marker={"size": 9, "color": colour, "symbol": symbol},
-            hovertext=hovers,
+            hovertext=[spec["hover"] for spec in rows],
             hoverinfo="text",
             name=f"Pattern {bias}",
             showlegend=False,

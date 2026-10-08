@@ -6,6 +6,7 @@ Facts come from the shared run snapshot and are never fetched here.
 
 from __future__ import annotations
 
+import html
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -50,10 +51,15 @@ def render_navigation(snapshot: RunSnapshot) -> str:
                 )
                 if label == active:
                     st.html(
-                        f'<span class="hf-nav-current" data-nav="{slug}" aria-current="page" aria-selected="true"></span>'
+                        f'<span class="hf-nav-current" data-nav="{html.escape(slug)}"'
+                        f' aria-current="page">Current page</span>'
                     )
             with pop_col:
-                with st.popover("▾", help=f"Quick facts for {label}", key=f"pop-{slug}"):
+                with st.popover(
+                    "Facts",
+                    help=f"Quick facts for {label}",
+                    key=f"pop-{slug}",
+                ):
                     _render_facts(slug, snapshot)
                     st.button(
                         f"Open {label}",
@@ -107,6 +113,7 @@ def _exchange_facts(snapshot: RunSnapshot) -> None:
     _line("24h change", "—" if change in (None, "") else change)
     age = quote.get("tick_age_s")
     _line("Data age", f"{age}s" if age is not None else "—")
+    _line("Ideas watchlist", "On Exchange, under the chart")
     event = next_upcoming_high_impact(snapshot.news.events)
     _line("Next high-impact event", countdown_text(event) if event else "—")
 
