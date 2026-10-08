@@ -280,3 +280,37 @@ Dexter's client starts `bun` with an argument list, `shell=False`, a scrubbed en
 ### Not built
 
 Pending orders, realised P&L, and the strategy library are design documents only: `docs/design/pending_orders.md`, `docs/design/realised_pnl.md`, and `docs/design/strategy_library_and_backtest.md`. `docs/qa_recipe.md` is the Playwright recipe. Phases B and E stay partial until a person signs the browser checklist. The process on port 8501 was not restarted.
+
+## Task 10
+
+`docs/Instructions_2.md` section 13. The instruction files, `config.yaml`, and `engine/` were not edited. The three operator approvals are NO, so realised P&L, the strategy library, and pending orders stay documents.
+
+### Theme Studio
+
+`adjust_for_contrast` now requires both checks. Page text must still clear 4.5:1 on a 22 percent mix of the colour into each background, and the colour itself must clear 3:1 on every background. A near-black swatch such as `#101010` shows the ratio and the adjusted hex. The shipped palette still opens with no notes. An invalid hex shows `A colour is not #RRGGBB yet. The saved palette stays.` and does not save. Reset to default and Export JSON are the file-row buttons.
+
+### Cards
+
+Broker tick volume defaults to Bar and can switch to Line. Margin allocation defaults to Donut and can switch to Bar. The engine equity curve defaults to Line and can switch to Area. Hover templates carry the numbers. Pie slices use `textinfo="none"`. Each card states safe, caution, or risk in words. Volume with no ticks is caution. Margin under 100 is risk, under 200 is caution, and otherwise safe. Equity up is safe, down is risk, and flat is caution. The inline SVG icons keep the class `hf-fn-icon`. The slow conic motifs stay in `ui/theme.py`, and `prefers-reduced-motion: reduce` still sets those animations to none.
+
+### Portfolio performance
+
+`render_portfolio_view` calls `render_performance` inside the existing account-metrics fragment. The pure math is `ui/performance.py`. The window is All, Last 30, or Last 7. The caption is `from equity snapshots`. Equity change and max drawdown use the cleaned snapshot series. Sharpe uses simple returns between successive snapshots, annualised with `sqrt(252)`, and the sentence says each step is a snapshot, not a session close. Fewer than 30 points shows `—`. Win/loss is added only when a realised series is passed. The production call passes none, so the row is absent.
+
+### Margin notice
+
+The banner in `ui/components/alert_banner.py` stays. `render_margin_notice` runs before the banner's early return, so dismissing one signature does not hide the other. The notice uses `MARGIN_WARN_LEVEL` (100.0), the same warn level as the pre-submit check. `config.yaml` has a display threshold `display.margin_level_na_below` and no warn percent. The notice is `st.warning` plus `Dismiss margin notice`. There is no `<audio>` element. At or above 100, and when the level is missing, the notice is absent.
+
+### Chart and equity curve
+
+`price_trace` returns a candlestick, an area scatter, or `go.Ohlc` for Bar. The figure builder adds that trace. The equity card shows y-axis ticks when at least two points exist. `equity_axis_range` keeps the visible span at least 0.05 percent of the midpoint, and at least 1. The digit-free direction sentence stays. A second caption shows the money change and the percent over the window.
+
+### Narrow layout
+
+Below 420px, `section.main` and `.block-container` set `overflow-x: hidden`. A horizontal block that contains a `nav-` key becomes a two-column grid, and those buttons use `white-space: normal`. Header metric labels wrap. Nav keys stay `nav-{slug}` and `nav-{slug}-on`. The facts popover key stays `pop-{slug}` and the label stays `Facts`.
+
+Kilo, on a restarted process, at 390px: the nav is a two-column grid; button `white-space` is `normal`; the full labels from Exchange through Research Desk are visible; header metric labels wrap with no ellipsis; `documentElement.scrollWidth` equals `clientWidth`; `getComputedStyle` is read after the widget is real, not a skeleton; `prefers-reduced-motion` stops the card `::after` spin. React Aria nodes are `[data-testid="stSelectbox"] [role="group"]`, `[data-testid="stMultiSelect"] [data-tag]`, and `[role="listbox"] [role="option"]`. Do not click submit, close, or confirm.
+
+### News chip
+
+When no High-impact event is inside 24 hours, the header still renders `news-countdown` and the text is `No high-impact event in the next 24h`. The span is not removed.

@@ -488,3 +488,63 @@ Exit 0. The prompt expected one worktree hit on `docs/Instructions_2.md` line 5.
 | 4 | Correctness | The process on port 8501 predates this commit. A look at that process is not a look at this UI. |
 | 5 | Data quality | Closed trades still store realised P&L as NULL, so learning cannot attach a money result. |
 | 6 | Data quality | Infoway's one smoke was HTTP 401. Dexter stays on the fixture until its own env file exists. |
+
+## TASK 10 — Instructions_2.md section 13
+
+`docs/Instructions*.md` was not edited. `.env` was not edited. `config.yaml` was not edited. No new Python dependency was added. Nothing was pushed. `engine/` was not edited.
+
+### Approvals
+`APPROVE_REALISED_PNL_MIGRATION`, `APPROVE_STRATEGY_LIBRARY_AND_BACKTEST`, and `APPROVE_PENDING_ORDERS_PAPER` are all NO. Realised P&L, the strategy library, the backtest, and pending orders were not implemented.
+
+### Pytest
+```
+$ .\.venv\Scripts\python.exe -m pytest -q --basetemp=.pytest_tmp
+1269 passed, 6 skipped in 72.96s (0:01:12)
+```
+Exit 0. This run is the Task 10 tree before this progress note. The nine tests above the Task 9 count of 1260 are in `tests/test_ui/test_task10.py`. The note is documentation only.
+
+### Secret scan
+```
+Scanner self-test : PASS
+History hits      : 204
+Worktree hits     : 0
+.git/config hits  : 0
+```
+Exit 0. The Task 9 note said 201 history hits. This re-measure is 204. The three extra hits are `credential_assignment` rows in `tests/test_secret_scan.py` at `9b2f624`. That file is in `SELF_REFERENTIAL_FILES`, so the worktree scan skips it. The scanner was not changed and was not weakened. Values are not copied here.
+
+### Task 9 evidence
+- Order-path isolation is `tests/test_ui/test_order_path_isolation.py::test_research_clients_are_not_reachable_from_the_order_path`. It is inside the green run. `learning/`, `engine.research`, `ui.services.dexter_client`, and `ui.services.infoway_client` must stay unreachable from `execution.py`, `engine/__main__.py`, `engine/executor.py`, `engine/approval_flow.py`, `engine/commands.py`, `engine/risk.py`, `engine/gateway.py`, and `engine/state.py`.
+- `git diff c54fa2d..HEAD --stat -- engine/` is 24 files, 3099 insertions, 23 deletions. `engine/risk.py`, `engine/gateway.py`, `engine/state.py`, and `engine/commands.py` are absent from that stat. `engine/executor.py` and `engine/__main__.py` did change in that range, before this task. They were not edited here.
+- Header with no High-impact event inside 24 hours: `No high-impact event in the next 24h`. `HIGH_IMPACT_CHIP_HOURS` is 24.
+- Ideas watchlist file: gitignored `data/ideas_watchlist.json`. It renders on Exchange under the chart in container `ideas-watchlist`.
+- Enable AI is `ui/components/enable_ai.py`. It queues `ENABLE_AI` only after confirm, and only in PAPER. LIVE caption: `Disabled in LIVE mode. Paper mode only.` Rendering does not send it.
+
+### What landed
+- A near-black Theme Studio colour now shows the contrast ratio and an adjusted hex. The check requires the colour itself to clear 3:1 on each background, not only page text on a 22 percent tint. The shipped palette is not rewritten on open. Invalid hex still shows an inline error and does not save. Reset to default and Export JSON stay in the file row.
+- Broker tick volume, margin allocation, and the engine equity curve each have a view toggle, hover numbers, a text tone (safe, caution, or risk), an inline SVG icon, and the existing slow motif. Reduced motion already stops the motif.
+- Portfolio performance uses equity snapshots only: change over All / Last 30 / Last 7, max drawdown, and Sharpe. Sharpe is `—` under 30 points. Annualisation is `sqrt(252)` on simple returns between snapshots, and the sentence says each step is a snapshot, not a session close. Win/loss is omitted while realised P&L is absent.
+- The banner stays. A separate sound-free notice appears when margin level is below 100.0, the warn level the pre-submit check already uses. `config.yaml` has no margin-warn percent. Dismiss hides that notice only. There is no audio element.
+- Chart style Bar is an OHLC trace (open tick left, close tick right). Candlestick and Area stay candlestick and scatter.
+- The equity curve shows y-axis tick labels, a digit-free direction sentence, and a money caption with the change over the window. The visible y span is at least 0.05 percent of equity.
+- At 420px the nav becomes a two-column grid, nav labels wrap, metric labels wrap, and the page hides horizontal overflow.
+- The empty news chip stays in the `news-countdown` slot.
+
+### Could not
+- Implement realised P&L, the strategy library, the backtest, or pending orders. The approval flags are NO.
+- Browser-check the new UI. The Streamlit process on port 8501 was left running and is older than these commits. Submit, close, Deploy, and Confirm Enable AI were not clicked. A second Streamlit was not started. Kilo's checks are listed in `docs/ui.md`.
+- Edit `docs/Instructions*.md`, `.env`, or `config.yaml`.
+- Weaken the secret scanner, add a content exception, gitignore an already-tracked instruction file, or run `git filter-repo` on the history hits.
+- Sign off phases B and E. They stay partial until a person completes the browser checklist.
+- Move credential reads in root `config.py`, `engine/config.py`, `engine/notifications/telegram_service.py`, and `scripts/check_agentrouter.py` into `engine/keys.py`.
+- Retry the Infoway request. The one smoke was HTTP 401. A live Dexter smoke was not run.
+
+### Open risks
+
+| Rank | Kind | Risk |
+| --- | --- | --- |
+| 1 | Security | History now has 204 secret-scan hits in old commits, three more than the Task 9 note, all in the self-referential scanner test at `9b2f624`. They were not purged. |
+| 2 | Security | Telegram, root config, engine config, and the AgentRouter check script still read credentials outside `engine/keys.py`. |
+| 3 | Correctness | Agent 02's MACD histogram is 0 because the signal line equals the MACD line. The score stays advisory and shadow-only. |
+| 4 | Correctness | The process on port 8501 predates these commits. A look at that process is not a look at this UI. |
+| 5 | Data quality | Closed trades still store realised P&L as NULL. The performance section therefore has no win/loss row. |
+| 6 | Data quality | Infoway's one smoke was HTTP 401. Dexter stays on the fixture until its own env file exists. |
