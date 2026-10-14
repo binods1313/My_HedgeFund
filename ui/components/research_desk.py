@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import sqlite3
 from datetime import datetime, timezone
@@ -10,7 +11,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from config_ext_loader import load_config_ext
-from engine.research import AGENT_IDS
+from engine.research import AGENT_IDS, AGENT_MODULES
 from learning.calibrate import by_bucket, had_edge, summarise
 from learning.ledger import connect, latest_predictions, list_proposals, samples_for, set_proposal_status
 from learning.propose import apply_proposal, current_values, list_versions, rollback_to
@@ -37,6 +38,22 @@ _NAMES = {
     "10": "Execution adapter",
 }
 _DETERMINISTIC = {"09", "10"}
+
+#: §A5 implementation-status vocabulary for the analysis cards. The engine
+#: loop wires no research module today, so "Implemented, live" never renders
+#: yet; it is reserved for a module the engine actually invokes. "Not
+#: implemented" is the rule for a true placeholder whose run() is a stub. The
+#: old single word "OFF" wrongly implied a module did not exist, so it is gone.
+_STATUS_LIVE = "Implemented, live"
+_STATUS_DISABLED = "Implemented but disabled"
+_STATUS_DETERMINISTIC = "Deterministic"
+_STATUS_NOT_IMPLEMENTED = "Not implemented"
+_STATUS_WORDS = (
+    _STATUS_LIVE,
+    _STATUS_DISABLED,
+    _STATUS_DETERMINISTIC,
+    _STATUS_NOT_IMPLEMENTED,
+)
 
 
 def render_research_desk(whitelist: object) -> None:
@@ -91,25 +108,52 @@ def _latest(conn: sqlite3.Connection | None, symbol: str) -> dict[str, sqlite3.R
 
 
 def _agent_cards(conn, rows: dict, horizon: int, minimum: int) -> None:
-    st.subheader("Agents")
+    st.subheader("Analysis")
     columns = st.columns(2)
     for index, agent_id in enumerate(AGENT_IDS):
         with columns[index % 2]:
             with accent_card("research", f"agent-{agent_id}"):
-                st.text(f"{agent_id} {_NAMES.get(agent_id, 'Agent')}")
+                st.text(f"{agent_id} {_NAMES.get(agent_id, 'Analysis')}")
+                st.text(_implementation_status(agent_id))
                 if agent_id in _DETERMINISTIC:
-                    st.text("OFF")
                     st.caption("deterministic, no learning")
                     continue
                 row = rows.get(agent_id)
                 if row is None:
-                    st.text("OFF")
                     st.caption("no closed-bar record yet")
                     continue
                 status = _status(row)
                 st.text(f"{status} · {row['direction']} · score {_score(row['score'])}")
                 st.caption(f"age {_age(str(row['ts']))}")
                 st.caption(_track(conn, agent_id, horizon, minimum))
+
+
+def _implementation_status(agent_id: str) -> str:
+    """The §A5 word for a module, from its code -- never the empty ledger.
+
+    The engine loop calls no research module today, so nothing is live yet.
+    A module whose ``run`` is a true placeholder reads "Not implemented";
+    the two deterministic adapters read "Deterministic"; every other real
+    module reads "Implemented but disabled" because it has no live caller.
+    """
+    module = AGENT_MODULES.get(agent_id)
+    if module is None or _is_stub(module):
+        return _STATUS_NOT_IMPLEMENTED
+    if agent_id in _DETERMINISTIC:
+        return _STATUS_DETERMINISTIC
+    return _STATUS_DISABLED
+
+
+def _is_stub(module: object) -> bool:
+    """True when a module's ``run`` only raises, i.e. it is a placeholder."""
+    run = getattr(module, "run", None)
+    if run is None:
+        return True
+    try:
+        source = inspect.getsource(run)
+    except (OSError, TypeError):
+        return False
+    return "NotImplementedError" in source
 
 
 def _status(row: sqlite3.Row) -> str:
@@ -174,9 +218,9 @@ def _dexter_card(conn, horizon: int, minimum: int) -> None:
     calls = "unreadable" if count is None else f"{count} / {cap}"
     live_key = name_is_set(DEXTER_ROOT / ".env", "FINANCIAL_DATASETS_API_KEY")
     with accent_card("research", "dexter"):
-        st.text("Dexter")
+        st.text("Shadow research")
         if report is None:
-            st.text("No Dexter read yet.")
+            st.text("No shadow read yet.")
         else:
             st.text(f"{report.symbol} · {report.status}")
             st.text(report.summary)
@@ -185,7 +229,7 @@ def _dexter_card(conn, horizon: int, minimum: int) -> None:
         st.caption(f"calls today {calls}")
         if report is None or report.model == "fixture" or not live_key:
             st.caption("fixture")
-        st.caption("source: Dexter")
+        st.caption("source: shadow process")
         if conn is not None:
             samples = samples_for(conn, "dexter", horizon)
             edge = had_edge(samples, minimum=minimum)
@@ -196,10 +240,12 @@ def _dexter_card(conn, horizon: int, minimum: int) -> None:
 def _reliability(conn, horizon: int, minimum: int) -> None:
     st.subheader("Reliability")
     agent_id = st.selectbox(
-        "Agent",
-        [item for item in AGENT_IDS if item not in _DETERMINISTIC] + ["dexter"],
+    "Analysis",
+        [item for item in AGENT_IDS if item not in _DETERMINISTIC] + ["shadow"],
         key="research_reliability_agent",
     )
+    if agent_id == "shadow":
+        agent_id = "dexter"
     if conn is None:
         st.caption("No resolved samples yet.")
         return
