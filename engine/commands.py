@@ -198,9 +198,36 @@ class CommandProcessor:
                               result=f"closed {closed} position(s)")
 
     def _close_everything(self) -> int:
+        """Close every position this system owns. Never a foreign one.
+
+        Two independent guarantees keep a foreign position out of the sweep.
+        The guard never writes a foreign-magic position into ``positions``, so
+        normally there is nothing to filter. The filter below is the second
+        lock: it re-checks the magic on the row being closed, so even a
+        position that reached the journal by some other route -- a manual
+        insert, a future reconcile change, a restored backup -- is skipped and
+        journalled as skipped rather than closed. The magic-234000 positions
+        are somebody else's money and a halt must not touch them.
+        """
+        from engine.account_guard import MANAGED_MAGIC
+
         if self.executor is None:
             return 0
-        tickets = [int(p["ticket"]) for p in self.journal.positions()]
+        tickets: list[int] = []
+        for position in self.journal.positions():
+            ticket = int(position["ticket"])
+            magic = position.get("magic")
+            if magic is not None and int(magic) != MANAGED_MAGIC:
+                self.journal.log_event(
+                    "command",
+                    f"emergency sweep skipped ticket {ticket}: magic {magic} "
+                    f"is not ours ({MANAGED_MAGIC})",
+                    severity="WARNING", source="commands",
+                    context={"ticket": ticket, "position_magic": magic,
+                             "managed_magic": MANAGED_MAGIC,
+                             "decision": "not closed by a managed sweep"})
+                continue
+            tickets.append(ticket)
         closed = 0
         for ticket in tickets:
             try:

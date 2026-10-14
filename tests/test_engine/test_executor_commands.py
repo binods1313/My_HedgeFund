@@ -15,6 +15,7 @@ import types
 
 import pytest
 
+from engine.account_guard import FOREIGN_MAGIC, MANAGED_MAGIC
 from engine.commands import (
     COMMAND_CLOSE_ALL,
     COMMAND_CLOSE_POSITION,
@@ -457,6 +458,99 @@ class TestCommandChannel:
         proc.poll_once()
         messages = [e["message"] for e in journal.recent_events(50, "command")]
         assert any(COMMAND_ENABLE_AI in m for m in messages)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The emergency sweep never closes a foreign position
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestEmergencySweepOwnership:
+
+    def _processor(self, journal, sm, executor=None):
+        return CommandProcessor(journal, sm, executor)
+
+    def _mine(self, journal, executor, ticket):
+        journal.upsert_position(
+            ticket=ticket, symbol="EURUSD", side="BUY", volume=0.01,
+            price_open=1.09500, price_current=1.09500, magic=MANAGED_MAGIC)
+
+    def test_a_foreign_magic_position_is_never_closed_by_the_halt(self, journal, sm):
+        """The magic-234000 positions are somebody else's money.
+
+        A halt is raised under pressure, and the sweep it triggers must not be
+        able to close a position this system did not open. The guard already
+        keeps foreign positions out of the journal; this row was inserted
+        directly, which is how a restored backup or a manual write would look,
+        and the sweep still refuses it.
+        """
+        ex = PaperExecutor(journal=journal, tick_provider=ticks)
+        proc = self._processor(journal, sm, ex)
+
+        journal.upsert_position(
+            ticket=9990001, symbol="EURUSD", side="BUY", volume=0.10,
+            price_open=1.09500, price_current=1.09500, magic=FOREIGN_MAGIC)
+        self._mine(journal, ex, 9990002)
+
+        sm.transition(STATE_IDLE, "ENABLE_AI")
+        journal.enqueue_command(COMMAND_EMERGENCY_STOP,
+                                {"close_positions": True})
+        outcome = proc.poll_once()[0][1]
+        assert outcome.ok
+
+        rows = journal.query("SELECT ticket FROM positions")
+        remaining = {int(r["ticket"]) for r in rows}
+        assert 9990001 in remaining, "the foreign position was closed"
+        assert 9990002 not in remaining, "the managed position was not closed"
+
+    def test_the_skip_is_journalled_not_silent(self, journal, sm):
+        """A refused close must leave a trace an operator can find.
+
+        Silence here would be indistinguishable from a sweep that simply did
+        not see the position, which is the one thing an operator cannot
+        investigate after the fact.
+        """
+        ex = PaperExecutor(journal=journal, tick_provider=ticks)
+        proc = self._processor(journal, sm, ex)
+        journal.upsert_position(
+            ticket=9990003, symbol="XAUUSD", side="BUY", volume=0.05,
+            price_open=2400.00, price_current=2400.00, magic=FOREIGN_MAGIC)
+
+        sm.transition(STATE_IDLE, "ENABLE_AI")
+        journal.enqueue_command(COMMAND_EMERGENCY_STOP, {"close_positions": True})
+        proc.poll_once()
+
+        messages = [e["message"] for e in journal.recent_events(50, "command")]
+        assert any("skipped" in m and "9990003" in m for m in messages), (
+            "the refusal to close a foreign position must be journalled")
+
+    def test_a_halt_only_stop_touches_no_position(self, journal, sm):
+        """The unchecked box means no sweep at all, foreign or managed."""
+        ex = PaperExecutor(journal=journal, tick_provider=ticks)
+        proc = self._processor(journal, sm, ex)
+        self._mine(journal, ex, 9990004)
+
+        sm.transition(STATE_IDLE, "ENABLE_AI")
+        journal.enqueue_command(COMMAND_EMERGENCY_STOP,
+                                {"close_positions": False, "source": "ui"})
+        outcome = proc.poll_once()[0][1]
+
+        assert outcome.ok
+        assert "closed 0" in outcome.result
+        assert journal.open_position_count() == 1
+
+    def test_a_halt_works_in_live_mode(self, journal, sm):
+        """No mode disables the halt, including LIVE.
+
+        The UI no longer gates on mode, and the command handler never did --
+        this pins both halves so the guarantee is stated in a test rather than
+        inferred from an absence.
+        """
+        proc = self._processor(journal, sm)
+        sm.transition(STATE_IDLE, "ENABLE_AI")
+        journal.enqueue_command(COMMAND_EMERGENCY_STOP, {"close_positions": False})
+        outcome = proc.poll_once()[0][1]
+        assert outcome.ok
+        assert sm.state == STATE_EMERGENCY_STOP
 
     def test_known_commands_are_declared(self):
         assert COMMAND_ENABLE_AI in KNOWN_COMMANDS
