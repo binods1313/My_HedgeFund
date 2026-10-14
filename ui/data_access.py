@@ -6,6 +6,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from contextlib import closing
 
@@ -58,30 +59,55 @@ class AccountSnapshot:
     connected: bool
     mode: str
     engine_state: str
-    heartbeat_age_s: float | None
-    currency: str
-    balance: float | None
-    equity: float | None
-    margin_used: float | None
-    free_margin: float | None
-    margin_level: float | None
-    open_pnl: float | None
-    open_risk: float | None
-    fetched_at: datetime
+    heartbeat_age_s: float | None = None
+    currency: str = ""
+    balance: float | None = None
+    equity: float | None = None
+    margin_used: float | None = None
+    free_margin: float | None = None
+    margin_level: float | None = None
+    open_pnl: float | None = None
+    open_risk: float | None = None
+    #: Is the engine process alive? Derived from heartbeat freshness and its
+    #: connected flag, and kept separate from `engine_state`, which is the
+    #: *trading* state the readiness gate consumes. An engine heartbeating with
+    #: trading switched OFF is online; showing "OFFLINE" for it is what made a
+    #: healthy engine look dead on the dashboard.
+    engine_online: bool = False
+    fetched_at: datetime | None = None
 
 
 POSITION_COLUMNS = (
     "ticket", "symbol", "side", "lots", "entry", "current", "sl", "tp",
-    "pnl", "risk_usd", "opened_at",
+    "pnl", "risk_usd", "opened_at", "magic", "managed",
 )
+
+
+def _is_our_magic(magic: Any) -> bool:
+    """True when a position carries our engine's magic number.
+
+    A position with a foreign or unreadable magic is not ours, so the default
+    for anything unclear is `False` -- the safe direction, because it withholds
+    controls rather than granting them. This never raises on a non-numeric
+    value: it returns False instead.
+    """
+    try:
+        from engine.config import load_engine_config
+        ours = int(load_engine_config().engine.magic_number)
+        return magic is not None and int(magic) == ours
+    except (TypeError, ValueError, Exception):
+        # A magic that cannot be parsed, or a config that cannot be loaded,
+        # means we cannot prove the position is ours -- so it is not.
+        return False
 
 
 def _degraded_snapshot() -> AccountSnapshot:
     return AccountSnapshot(
         connected=False,
         mode="PAPER",
-        engine_state="offline",
-        heartbeat_age_s=None,
+          engine_state="offline",
+          engine_online=False,
+          heartbeat_age_s=None,
         currency="",
         balance=None,
         equity=None,
@@ -94,12 +120,32 @@ def _degraded_snapshot() -> AccountSnapshot:
     )
 
 
-def _read_engine_status() -> tuple[str, float | None, str | None]:
-    """Read the engine-owned state and heartbeat without opening a writer."""
+def _configured_db_path() -> Path:
+    """The one journal path, read from config and nowhere else.
+
+    Every reader in the UI goes through this. A literal here would mean the
+    dashboard reads one journal while the engine writes another, which is
+    invisible until the numbers stop agreeing with the broker.
+    """
+    from engine.config import load_engine_config
     from engine.journal import resolve_db_path
+    return Path(resolve_db_path(load_engine_config().engine.db_path))
+
+
+def _read_engine_status() -> tuple[str, float | None, str | None, bool]:
+    """Read the journal's engine state, heartbeat freshness, mode and liveness.
+
+    The first element is the *trading* state the journal records, which is what
+    the order-readiness gate consumes. The fourth is whether the engine process
+    is alive, which is a different question: a heartbeating engine with trading
+    switched OFF (`state=OFF`) is running, not offline. Reporting "offline" for
+    it is what made a healthy engine look dead on the dashboard.
+
+    Returns `(state, age, mode, online)`.
+    """
     from engine.state import OFFLINE_AFTER_SECONDS
 
-    db_path = Path(resolve_db_path())
+    db_path = _configured_db_path()
     if not db_path.exists():
         return "offline", None, None
 
@@ -113,17 +159,18 @@ def _read_engine_status() -> tuple[str, float | None, str | None]:
         ).fetchone()
 
     if not state_row:
-        return "offline", None, None
+        return "offline", None, None, False
     state = str(state_row[0] or "OFF").upper()
     mode = str(state_row[1] or "").upper() or None
     if not heartbeat_row:
-        return "offline", None, mode
+        return "offline", None, mode, False
     timestamp = datetime.fromisoformat(str(heartbeat_row[0]))
     if timestamp.tzinfo is None:
         timestamp = timestamp.replace(tzinfo=timezone.utc)
     age = max(0.0, (datetime.now(timezone.utc) - timestamp).total_seconds())
-    if age > OFFLINE_AFTER_SECONDS or not bool(heartbeat_row[1]):
-        return "offline", age, mode
+    online = bool(heartbeat_row[1]) and age <= OFFLINE_AFTER_SECONDS
+    if not online:
+        return "offline", age, mode, False
 
     mapped_state = {
         "OFF": "offline",
@@ -131,7 +178,7 @@ def _read_engine_status() -> tuple[str, float | None, str | None]:
         "PAUSED": "paused",
         "EMERGENCY_STOP": "halted",
     }.get(state, state.lower())
-    return mapped_state, age, mode
+    return mapped_state, age, mode, True
 
 
 def _broker_mode() -> str:
@@ -207,10 +254,8 @@ def get_required_margin(asset: str, direction: str, lots: float) -> float | None
 
 
 def _read_journal_frame(query: str, columns: tuple[str, ...], limit: int) -> pd.DataFrame:
-    from engine.journal import resolve_db_path
-
     try:
-        db_path = Path(resolve_db_path())
+        db_path = _configured_db_path()
         if not db_path.exists():
             return pd.DataFrame(columns=columns)
         row_limit = max(1, min(int(limit), 1000))
@@ -281,6 +326,13 @@ def get_active_positions() -> pd.DataFrame:
                 "pnl": pos.get("profit"),
                 "risk_usd": math.inf if risk is not None and not risk.protected else risk.risk_amount if risk else None,
                 "opened_at": opened_at,
+                # A position whose magic is not ours is somebody else's. The
+                # flag travels with the row so the UI can show it under
+                # "Not managed by this system" and offer no controls: the
+                # dashboard must never present a close or edit button that
+                # would act on another system's trade.
+                "magic": pos.get("magic"),
+                "managed": _is_our_magic(pos.get("magic")),
             })
         return pd.DataFrame(rows, columns=POSITION_COLUMNS)
     except Exception as exc:
@@ -318,12 +370,14 @@ def get_account_snapshot() -> AccountSnapshot:
         }
         risk = compute_open_risk(positions, risk_infos, equity or 0.0, currency)
         open_risk = math.inf if risk.has_unprotected else risk.total_risk_amount
-        engine_state, heartbeat_age_s, engine_mode = _read_engine_status()
+        engine_state, heartbeat_age_s, engine_mode, engine_online = (
+            _read_engine_status())
 
         return AccountSnapshot(
             connected=True,
             mode=engine_mode if engine_mode in {"LIVE", "PAPER"} else _broker_mode(),
             engine_state=engine_state,
+            engine_online=engine_online,
             heartbeat_age_s=heartbeat_age_s,
             currency=currency,
             balance=_float_or_none(telemetry.get("balance")),
@@ -477,6 +531,64 @@ def _highest_journal_ticket(journal: Journal) -> int:
     return int(row["highest"])
 
 
+def _journal_account_matches() -> Result | None:
+    """Refuse a broker write unless the terminal is on the journal's account.
+
+    Returns None when it is safe to proceed, or a Result carrying the refusal.
+    The check reads the journal's `journal_account` row and the live account,
+    and treats anything unreadable as a mismatch -- including a missing
+    fingerprint, which is how a journal left over from another account looks
+    until it is stamped. Currency comes from the broker's `currency` field and
+    nowhere else, so a EUR account is not silently treated as USD.
+
+    This is the UI half of the engine's AccountGuard. Without it a dashboard
+    left open across an account switch would submit an order against the wrong
+    account, and the journal would record it as this system's own.
+    """
+    try:
+        telemetry = data_engine.get_account_telemetry() or {}
+        live_login = telemetry.get("login")
+        live_currency = telemetry.get("currency")
+
+        if not telemetry.get("connected") or live_login in (None, "N/A", ""):
+            # Not a mismatch: a terminal that is not answering cannot confirm
+            # any account, and the operator's fix is reconnection, not a
+            # login change. Mirrors the engine-side TerminalOffline split.
+            return Result(False, "TERMINAL_OFFLINE",
+                          "Broker or terminal is not answering; order not "
+                          "submitted.")
+
+        from engine.account_guard import Fingerprint, fingerprint_from_account
+        live = fingerprint_from_account(
+            SimpleNamespace(login=live_login, currency=live_currency,
+                            server=telemetry.get("server")))
+        if live.login is None:
+            return Result(False, "TERMINAL_OFFLINE",
+                          "Broker or terminal is not answering; order not "
+                          "submitted.")
+
+        from engine.journal import Journal
+        journal = Journal(_configured_db_path())
+        try:
+            stored = journal.get_account_fingerprint()
+        finally:
+            journal.close()
+
+        if not stored or stored.get("login") is None:
+            return Result(False, "ACCOUNT_MISMATCH",
+                          "This journal has no account fingerprint; "
+                          "order not submitted.")
+        if not live.matches(Fingerprint(
+                login=stored.get("login"), currency=stored.get("currency"))):
+            return Result(False, "ACCOUNT_MISMATCH",
+                          "Account mismatch; order not submitted.")
+        return None
+    except Exception as exc:
+        LOG.warning("account fingerprint check failed: %s", exc)
+        return Result(False, "ACCOUNT_MISMATCH",
+                      "Account could not be verified; order not submitted.")
+
+
 def submit_order(asset: str, direction: str, lots: float,
                  sl: float | None = None, tp: float | None = None,
                  *, leg: Any = None) -> Result:
@@ -523,6 +635,10 @@ def submit_order(asset: str, direction: str, lots: float,
     if not snapshot.connected:
         return Result(False, "BROKER_OFFLINE",
                       "Broker is not connected; order not submitted.")
+
+    mismatch = _journal_account_matches()
+    if mismatch is not None:
+        return mismatch
 
     info = data_engine.get_symbol_info_safe(asset)
     if not info:
@@ -671,6 +787,9 @@ def submit_order(asset: str, direction: str, lots: float,
 
 def close_position(ticket: int) -> Result:
     """Close a position through the existing engine path and surface any refusal cleanly."""
+    mismatch = _journal_account_matches()
+    if mismatch is not None:
+        return mismatch
     try:
         payload = broker_close_position(int(ticket))
     except Exception as exc:
@@ -682,4 +801,207 @@ def close_position(ticket: int) -> Result:
         return Result(False, "BROKER_ERROR", "Broker returned an invalid close result", int(ticket))
     if not payload.get("success", False):
         return Result(False, str(payload.get("status", "CLOSE_FAILED")), str(payload.get("message", "Close failed")), int(ticket))
+
+
+# -- read-only journal tables (Journal tab) ---------------------------------
+
+#: The tables the Journal tab may open. A whitelist, not a user-supplied name:
+#: an arbitrary table name would turn a read-only view into a read-any-file
+#: primitive, and every query is built from these fixed strings instead.
+JOURNAL_TABLES: dict[str, tuple[str, ...]] = {
+    "signals": ("id", "symbol", "direction", "score", "bar_ts", "ts"),
+    "risk_decisions": ("id", "trade_id", "symbol", "approved",
+                       "reasons_json", "ts"),
+    "llm_calls": ("id", "decision", "confidence", "ok", "latency_ms",
+                  "error", "ts"),   # `provider` is excluded on purpose: it
+                                    # stores a vendor name, and no vendor
+                                    # name may reach an operator.
+    "scan_results": ("id", "symbols_json", "ranked_json", "ts"),
+    "trades": ("id", "ticket", "symbol", "side", "volume", "entry_price",
+               "exit_price", "sl", "tp", "status", "magic", "ts",
+               "updated_at"),
+    "positions": ("ticket", "symbol", "side", "volume", "price_open",
+                  "price_current", "sl", "tp", "profit", "magic",
+                  "updated_at"),
+    # The lifecycle chain is the events table restricted to the categories
+    # `Journal.log_lifecycle` writes, with the decision ID lifted out of the
+    # context JSON so it can be filtered and shown as a column.
+    "lifecycle": ("id", "ts", "category", "severity", "message",
+                  "decision_id"),
+}
+
+#: Tables that have a symbol column the filter can apply to. The others
+#: genuinely do not dimension by symbol; the filter is refused rather than
+#: silently ignored, because a filter that does nothing is a lie about the
+#: data on screen.
+_SYMBOL_TABLES = frozenset({"signals", "risk_decisions", "trades", "positions"})
+
+#: Lifecycle categories, in the order the chain reads best. Mirrors
+#: `Journal.LIFECYCLE_CATEGORIES`; the query is built from this tuple so a
+#: new category has exactly one place to be added.
+_LIFECYCLE_CATEGORIES = (
+    "signal_generated", "signal_rejected", "risk_approved", "risk_rejected",
+    "order_sent", "order_filled", "order_modified", "order_closed",
+    "spread_filter_blocked", "news_filter_blocked", "mt5_reconnect",
+)
+
+
+
+def read_journal_table(
+    name: str,
+    *,
+    db_path: Path | None = None,
+    limit: int = 200,
+    symbol: str | None = None,
+    decision_id: str | None = None,
+) -> pd.DataFrame:
+    """Read one journal table read-only. Never creates or mutates a database.
+
+    ``name`` must be one of :data:`JOURNAL_TABLES`; anything else raises
+    ``ValueError`` rather than being coerced, so a typo surfaces instead of
+    rendering an empty table that looks like "no data".
+
+    ``symbol`` filters the four tables that carry a symbol column;
+    ``decision_id`` filters the lifecycle chain via the decision ID stored in
+    each row's context JSON. Both raise ``ValueError`` when applied to a
+    table they do not fit -- a filter that silently does nothing would show
+    an operator an unfiltered list under a filtered heading.
+    """
+    if name not in JOURNAL_TABLES:
+        raise ValueError(
+            f"unknown journal table {name!r}; expected one of "
+            f"{sorted(JOURNAL_TABLES)}"
+        )
+    columns = JOURNAL_TABLES[name]
+    if symbol and name not in _SYMBOL_TABLES:
+        raise ValueError(f"table {name!r} has no symbol column to filter by")
+    if decision_id and name != "lifecycle":
+        raise ValueError(
+            "decision IDs live in the lifecycle chain; "
+            f"table {name!r} does not carry them"
+        )
+
+    where = ""
+    params: list[Any] = []
+    if name == "lifecycle":
+        placeholders = ", ".join("?" for _ in _LIFECYCLE_CATEGORIES)
+        where = f"WHERE category IN ({placeholders})"
+        params.extend(_LIFECYCLE_CATEGORIES)
+        if decision_id:
+            where += " AND json_extract(context_json, '$.decision_id') = ?"
+            params.append(str(decision_id))
+        if symbol:
+            where += " AND json_extract(context_json, '$.symbol') = ?"
+            params.append(str(symbol))
+        query = (
+            "SELECT id, ts, category, severity, message, "
+            "json_extract(context_json, '$.decision_id') AS decision_id "
+            f"FROM events {where} ORDER BY id DESC LIMIT ?"
+        )
+    else:
+        selected = ", ".join(columns)
+        clauses: list[str] = []
+        if symbol:
+            clauses.append("symbol = ?")
+            params.append(str(symbol))
+        if clauses:
+            where = "WHERE " + " AND ".join(clauses)
+        # `positions` is keyed by ticket and has no `id` column; ordering by
+        # a column the table does not have would fail the whole read.
+        order = "ticket" if name == "positions" else "id"
+        query = (f"SELECT {selected} FROM {name} {where} "
+                 f"ORDER BY {order} DESC LIMIT ?")
+
+    try:
+        target = db_path if db_path is not None else _configured_db_path()
+        if not target.exists():
+            return pd.DataFrame(columns=columns)
+        row_limit = max(1, min(int(limit), 1000))
+        with closing(sqlite3.connect(
+                target.as_uri() + "?mode=ro", uri=True)) as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA query_only = ON")
+            rows = conn.execute(query, (*params, row_limit)).fetchall()
+        return pd.DataFrame([dict(row) for row in rows], columns=columns)
+    except sqlite3.Error as exc:
+        LOG.warning("read-only journal read failed for %s: %s", name, exc)
+        return pd.DataFrame(columns=columns)
+
+
+
+def system_status(db_path: Path | None = None) -> dict[str, Any]:
+    """Read-only system facts for the System Status card.
+
+    Everything here is read from the journal itself -- never from a live
+    process, never from the broker -- so the card can be trusted exactly as
+    far as the journal can, and no further. The account login is masked to
+    its last four digits: a full login in a UI screenshot is a credential
+    fragment nobody needs to share.
+    """
+    target = db_path if db_path is not None else _configured_db_path()
+    status: dict[str, Any] = {
+        "journal_path": str(target),
+        "journal_exists": target.exists(),
+        "engine_state": None,
+        "mode": None,
+        "engine_online": False,
+        "heartbeat_age_s": None,
+        "schema_version": None,
+        "account_login_masked": None,
+        "account_currency": None,
+        "pending_commands": None,
+    }
+    if not target.exists():
+        return status
+    try:
+        with closing(sqlite3.connect(
+                target.as_uri() + "?mode=ro", uri=True)) as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA query_only = ON")
+            version = conn.execute(
+                "SELECT MAX(version) AS v FROM schema_version").fetchone()
+            state = conn.execute(
+                "SELECT state, mode FROM engine_state WHERE id = 1"
+            ).fetchone()
+            heartbeat = conn.execute(
+                "SELECT ts, connected FROM heartbeats ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            account = conn.execute(
+                "SELECT login, currency FROM journal_account WHERE id = 1"
+            ).fetchone()
+            pending = conn.execute(
+                "SELECT COUNT(*) AS n FROM commands WHERE status = 'PENDING'"
+            ).fetchone()
+    except sqlite3.Error as exc:
+        LOG.warning("system status read failed: %s", exc)
+        return status
+
+    from engine.state import OFFLINE_AFTER_SECONDS
+
+    status["schema_version"] = version["v"] if version else None
+    if state:
+        status["engine_state"] = str(state["state"] or "").upper() or None
+        status["mode"] = str(state["mode"] or "").upper() or None
+    if heartbeat:
+        try:
+            stamp = datetime.fromisoformat(str(heartbeat["ts"]))
+        except ValueError:
+            stamp = None
+        if stamp is not None:
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=timezone.utc)
+            age = (datetime.now(timezone.utc) - stamp).total_seconds()
+            status["heartbeat_age_s"] = max(0.0, age)
+            status["engine_online"] = (
+                bool(heartbeat["connected"])
+                and age <= OFFLINE_AFTER_SECONDS
+            )
+    if account and account["login"] is not None:
+        digits = str(account["login"])[-4:]
+        status["account_login_masked"] = f"****{digits}"
+        status["account_currency"] = account["currency"]
+    if pending is not None:
+        status["pending_commands"] = int(pending["n"])
+    return status
+
     return Result(True, "OK", str(payload.get("message", "Position closed")), int(ticket))

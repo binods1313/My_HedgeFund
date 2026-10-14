@@ -11,6 +11,7 @@ from formatting import format_margin_level, format_money
 from ui.components.auxiliary_views import render_portfolio_view
 from ui.components.cards import accent_card
 from ui.components.enable_ai import render_enable_ai
+from ui.components.emergency_stop import render_emergency_stop
 from ui.components.nav import TAB_LABELS, render_navigation
 from ui.components.snapshot import load_shared_snapshot, tickets_without_stop
 from ui.components.theme_studio import render_theme_studio
@@ -90,22 +91,34 @@ def _draw_status(snapshot) -> None:
             f'<span class="status-badge {connection_class}">{connection} · {mode}</span>',
             unsafe_allow_html=True,
         )
-    with status_cols[1]:
-        state = (account.engine_state or "offline").upper()
-        age = account.heartbeat_age_s
-        if age is not None and age > 15:
-            state = "STALE"
-        if state in {"HALTED", "PAUSED", "EMERGENCY_STOP"}:
-            engine_class = "halted"
-        elif state in {"STALE", "OFFLINE"}:
-            engine_class = "stale"
-        else:
-            engine_class = "active"
-        st.markdown(
-            f'<span class="status-badge {engine_class}">ENGINE · {html.escape(state)}</span>',
-            unsafe_allow_html=True,
-        )
+        with status_cols[1]:
+            # Two distinct facts, deliberately not merged: whether the engine
+            # process is alive (liveness) and what its trading state is
+            # (`engine_state`). A heartbeating engine with trading OFF is
+            # running; the old code collapsed both into one badge and showed
+            # OFFLINE for a healthy engine.
+            state = (account.engine_state or "offline").upper()
+            age = account.heartbeat_age_s
+            alive = bool(getattr(account, "engine_online", False))
+            if not alive:
+                label = "STALE" if age is not None else "OFFLINE"
+            elif state in {"HALTED", "PAUSED", "EMERGENCY_STOP"}:
+                label = state
+            else:
+                label = "ONLINE"
+            if label in {"HALTED", "PAUSED", "EMERGENCY_STOP"}:
+                engine_class = "halted"
+            elif label in {"STALE", "OFFLINE"}:
+                engine_class = "stale"
+            else:
+                engine_class = "active"
+            st.markdown(
+                f'<span class="status-badge {engine_class}">ENGINE Â· '
+                f'{html.escape(label)}</span>',
+                unsafe_allow_html=True,
+            )
         render_enable_ai(account.mode)
+        render_emergency_stop(account.mode, account.engine_state)
     with status_cols[2]:
         st.caption(datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%H:%M:%S IST"))
         render_theme_studio()

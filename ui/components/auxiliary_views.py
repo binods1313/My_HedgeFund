@@ -7,6 +7,7 @@ import streamlit as st
 from formatting import format_money
 from ui.components.cards import accent_card, render_html_table, render_journal_table
 from ui.components.data_cache import equity_history
+from ui.components.journal_tables import render_journal_tables, render_system_status
 from ui.components.snapshot import RunSnapshot
 from ui.equity_curve import clean_equity_points
 from ui.performance import performance_report, slice_window
@@ -76,7 +77,9 @@ def _portfolio_equity(snapshot: RunSnapshot) -> list[float]:
 
 def render_journal_view(snapshot: RunSnapshot) -> None:
     st.subheader("Engine journal")
+    render_system_status()
     with accent_card("cyan", "journal"):
         st.caption("READ-ONLY ENGINE EVENTS")
         st.caption("Relative times such as 2h ago. Hover a time for the absolute IST timestamp.")
         render_journal_table(snapshot.events)
+    render_journal_tables()
