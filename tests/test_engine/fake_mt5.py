@@ -76,7 +76,12 @@ class FakeCheckResult:
 
 
 class FakeAccount:
-    def __init__(self, trade_mode=0, login=999999999, currency="EUR"):
+    #: The login and currency reported. The account guard compares the login
+    #: against the configured MT5_LOGIN, so tests that build a real engine must
+    #: install a matching credential -- see matching_fake_login() below.
+
+    def __init__(self, trade_mode=0, login=999999999, currency="EUR",
+                 server="FakeBroker-Demo"):
         self.trade_mode = trade_mode
         self.login = login
         self.server = "MetaQuotes-Demo"
@@ -88,6 +93,18 @@ class FakeAccount:
         self.margin_free = 100000.0
         self.margin_level = 0.0
 
+
+#: The login FakeMT5's account reports. A test that builds a real engine must
+#: configure the same login, or the account guard correctly refuses and the
+#: test fails for a reason that has nothing to do with what it is testing.
+FAKE_LOGIN = 999999999
+FAKE_SERVER = "MetaQuotes-Demo"
+
+
+def matching_fake_login(monkeypatch) -> None:
+    """Configure MT5_LOGIN / MT5_SERVER to match FakeMT5's own account."""
+    monkeypatch.setenv("MT5_LOGIN", str(FAKE_LOGIN))
+    monkeypatch.setenv("MT5_SERVER", FAKE_SERVER)
 
 # Behaviour switches, set per test.
 BEHAVIOUR_NORMAL = "normal"

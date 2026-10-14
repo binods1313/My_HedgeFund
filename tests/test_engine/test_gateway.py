@@ -32,6 +32,7 @@ from engine.gateway import (
 )
 from engine.journal import Journal
 from tests.test_engine.fake_mt5 import (
+    matching_fake_login,
     BEHAVIOUR_HANG,
     BEHAVIOUR_INITIALIZE_FAILS,
     BEHAVIOUR_LOGIN_FAILS,
@@ -746,17 +747,28 @@ class TestStartupOrdering:
         )
         try:
             result = engine.reconcile_positions()
-            assert result["error"] == "not connected", (
+            # The account guard is checked first: with no live account there is
+            # no way to know whose positions are being reconciled, so that
+            # refusal precedes the connectivity one. Both are fail-closed; the
+            # order matters, because a connected-but-wrong-account reconcile
+            # would delete journal rows for tickets that exist only on another
+            # account.
+            assert result["error"] in {"account mismatch", "not connected"}, (
                 "a disconnected reconcile must say so rather than silently "
                 "reporting no positions"
             )
-            events = [e["message"] for e in engine.journal.recent_events(50)]
-            assert any("not connected" in m for m in events), (
-                "the skipped reconcile must be recorded"
+            assert result["adopted"] == [] and result["vanished"] == [], (
+                "an unreconciled journal must not report adoptions or vanishings"
             )
+            events = [e["message"] for e in engine.journal.recent_events(50)]
+            assert (any("not connected" in m for m in events)
+                    or any("account fingerprint" in m for m in events)), (
+                        "the skipped reconcile must be recorded"
+                    )
         finally:
             engine.gateway.stop()
             engine.journal.close()
+
 
 
 class TestClosePosition:

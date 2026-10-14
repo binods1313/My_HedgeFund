@@ -83,6 +83,58 @@ class TestRiskAmount:
         no_stop = intent(sl=0.0)
         assert no_stop.has_stop is False
 
+
+class TestStopLossIsMandatory:
+    """The gate must REFUSE an unstoppable order, not merely flag it.
+
+    Both positions the reconcile dropped on 2026-10-12 (USDCAD ticket
+    10726505976, GBPUSD ticket 10745483547) were open with sl=0.0 and tp=0.0,
+    and each was carrying a loss. `has_stop` being False was already true; what
+    had never been asserted is that `evaluate()` actually blocks on it.
+    """
+
+    def test_the_risk_gate_refuses_an_order_with_no_stop(self):
+        decision = engine().evaluate(intent(sl=0.0), account())
+        assert decision.approved is False, (
+            "an order without a stop loss must be refused by the risk gate"
+        )
+
+    def test_the_refusal_names_the_missing_stop(self):
+        decision = engine().evaluate(intent(sl=0.0), account())
+        assert "order has no stop loss, so its worst case is undefined" \
+            in decision.violations
+
+    def test_a_short_without_a_stop_is_refused_too(self):
+        """A short can hide behind "above" pricing; the distance still counts."""
+        bare = OrderIntent(symbol="EURUSD", side="SELL", volume=0.10,
+                           entry_price=1.10000, stop_loss=0.0,
+                           tick_value=1.0, tick_size=0.00001)
+        assert engine().evaluate(bare, account()).approved is False
+
+    def test_the_missing_stop_short_circuits_the_other_checks(self):
+        """The refusal must not depend on any other limit being breached.
+
+        The account here is healthy on every axis, so if the order is still
+        blocked then the missing stop alone did it -- and the engine never
+        reached the per-trade, exposure or drawdown arithmetic.
+        """
+        decision = engine().evaluate(intent(volume=0.10, sl=0.0), account())
+        assert decision.approved is False
+        assert decision.violations == [
+            "order has no stop loss, so its worst case is undefined"
+        ], (
+            "a short-circuit means this is the only violation reported; "
+            "further checks would be evaluated against an undefined worst case"
+        )
+
+    def test_supplying_a_stop_and_nothing_else_approves(self):
+        """The stop is the only thing standing between this order and approval.
+
+        Proves the test above is refusing for the right reason: identical
+        order, identical account, one stop loss added, and it passes.
+        """
+        assert engine().evaluate(intent(), account()).approved is True
+
     def test_zero_tick_value_is_refused_at_construction(self):
         """Without a tick spec the risk cannot be computed, so the order is
         malformed rather than merely risky."""
@@ -616,3 +668,73 @@ class TestDecisionJournal:
 from pathlib import Path  # noqa: E402  (used by config tests above)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
+class TestHasStopNeverRaises:
+    """An unusable stop is False, never an exception.
+
+    Every value below reaches the engine in practice: MT5 reports a missing
+    stop as ``0.0``; both positions the reconcile dropped carried ``0.0``; the
+    order form hands through whatever the operator typed. The fail-closed path
+    is the one path that must not throw, because a crash there looks like an
+    engine fault rather than a refused order.
+    """
+
+    @pytest.mark.parametrize("stop", [
+        None, "", "   ", "0", "0.0", 0, 0.0, -1, -0.0001, "abc", "abc",
+        float("nan"), float("inf") * 0,
+    ], ids=str)
+    def test_invalid_stops_return_false(self, stop):
+        bare = OrderIntent(symbol="EURUSD", side="BUY", volume=0.10,
+                           entry_price=1.10000, stop_loss=stop,
+                           tick_value=1.0, tick_size=0.00001)
+        assert bare.has_stop is False, (
+            "an unusable stop must read as no stop, not raise"
+        )
+
+    @pytest.mark.parametrize("stop", [1.09500, "1.095", 0.00001, 1.11111],
+                             ids=str)
+    def test_valid_stops_return_true(self, stop):
+        good = OrderIntent(symbol="EURUSD", side="BUY", volume=0.10,
+                           entry_price=1.10000, stop_loss=stop,
+                           tick_value=1.0, tick_size=0.00001)
+        assert good.has_stop is True
+
+    def test_a_stop_at_the_entry_is_not_a_stop(self):
+        """Zero distance is an unbounded order wearing a stop's clothes."""
+        at_entry = OrderIntent(symbol="EURUSD", side="BUY", volume=0.10,
+                               entry_price=1.10000, stop_loss=1.10000,
+                               tick_value=1.0, tick_size=0.00001)
+        assert at_entry.has_stop is False
+
+    def test_a_zero_stop_does_not_report_a_distance(self):
+        """``abs(1.1 - 0.0)`` is 1.1 -- a risk distance taken to price zero.
+
+        Both positions the reconcile dropped carried ``sl=0.0``. Reporting a
+        distance for them would have sized a position against a stop that did
+        not exist, which is the precise failure this guards.
+        """
+        zero = OrderIntent(symbol="EURUSD", side="BUY", volume=0.10,
+                           entry_price=1.10000, stop_loss=0.0,
+                           tick_value=1.0, tick_size=0.00001)
+        assert zero.stop_distance == 0.0
+
+    def test_stop_distance_never_raises_either(self):
+        for stop in (None, "", "abc", float("nan")):
+            bare = OrderIntent(symbol="EURUSD", side="BUY", volume=0.10,
+                               entry_price=1.10000, stop_loss=stop,
+                               tick_value=1.0, tick_size=0.00001)
+            assert bare.stop_distance == 0.0
+
+    def test_the_risk_gate_still_refuses_an_invalid_stop(self):
+        """The gate decision, not just the flag."""
+        bare = OrderIntent(symbol="EURUSD", side="BUY", volume=0.10,
+                           entry_price=1.10000, stop_loss="0",
+                           tick_value=1.0, tick_size=0.00001)
+        assert engine().evaluate(bare, account()).approved is False
+
+    def test_a_nan_entry_price_is_also_safe(self):
+        """NaN poisons both sides; it must not produce a spurious approval."""
+        bare = OrderIntent(symbol="EURUSD", side="BUY", volume=0.10,
+                           entry_price=float("nan"), stop_loss=1.095,
+                           tick_value=1.0, tick_size=0.00001)
+        assert bare.has_stop is False

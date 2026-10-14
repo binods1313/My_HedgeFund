@@ -243,7 +243,7 @@ engine:
   offline_after_seconds: 15      # UI shows ENGINE OFFLINE once a heartbeat is older
   command_poll_seconds: 1
   reconcile_on_start: true       # adopt broker positions matching our magic number
-  db_path: data/engine.db       # resolved to an absolute path under the project root
+  db_path: data/engine_5057151780.db       # resolved to an absolute path under the project root
   backup_dir: backups
   gateway:
     call_timeout_seconds: 10

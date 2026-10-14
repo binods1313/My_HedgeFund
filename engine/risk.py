@@ -132,6 +132,41 @@ class AccountState:
             raise RiskConfigError("unprotected_positions must not be negative")
 
 
+def _as_float_or_none(value: object) -> float | None:
+    """Coerce to float, or None when the value is unusable.
+
+    Handles None, the empty string, whitespace, non-numeric text and NaN. NaN
+    is the quiet one: ``float("nan")`` succeeds, and every comparison against
+    NaN is False, so a NaN stop would make ``stop_loss > 0`` False for the
+    wrong reason rather than being recognised as missing.
+    """
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number:          # NaN is not equal to itself
+        return None
+    return number
+
+
+def _safe_stop_distance(entry: object, stop: object) -> float:
+    """Absolute entry-to-stop distance, or 0.0 when there is no stop.
+
+    A stop of zero, negative, or unparsable means *no stop*, and the distance to
+    a price of zero is meaningless -- ``abs(1.1 - 0.0)`` would report 1.1 as a
+    risk distance, which sized an order against a stop that does not exist.
+    0.0 is the safe answer: it makes ``has_stop`` False and blocks the order,
+    which is what an unknown distance should do.
+    """
+    entry_value = _as_float_or_none(entry)
+    stop_value = _as_float_or_none(stop)
+    if entry_value is None or stop_value is None or stop_value <= 0:
+        return 0.0
+    return abs(entry_value - stop_value)
+
+
 @dataclass(frozen=True)
 class OrderIntent:
     """What the caller wants to trade."""
@@ -204,11 +239,28 @@ class OrderIntent:
 
     @property
     def stop_distance(self) -> float:
-        return abs(self.entry_price - self.stop_loss)
+        """Absolute entry-to-stop distance. Never raises.
+
+        Both positions the reconcile dropped on 2026-10-12 carried ``sl=0.0``;
+        an order form with a blank or non-numeric stop reaches the same place.
+        An unknown distance yields 0.0, which fails ``has_stop``.
+        """
+        return _safe_stop_distance(self.entry_price, self.stop_loss)
 
     @property
     def has_stop(self) -> bool:
-        return self.stop_loss > 0 and self.stop_distance > 0
+        """A usable stop loss, or False for anything undefined.
+
+        Never raises. This is the fail-closed path: a stop that arrives as
+        None, "", "0", NaN, whitespace or a negative number means "no stop"
+        and must return False, not convert a readable refusal into a crash.
+        Both real positions that crossed the reconcile were open with no stop,
+        so this boundary is exercised in production, not only in theory.
+        """
+        stop = _as_float_or_none(self.stop_loss)
+        if stop is None or stop <= 0:
+            return False
+        return self.stop_distance > 0
 
 
 @dataclass(frozen=True)

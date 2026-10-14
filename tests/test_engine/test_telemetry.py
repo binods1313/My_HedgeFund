@@ -15,6 +15,7 @@ from engine.__main__ import build_engine
 from engine.journal import Journal
 from engine.state import StateMachine
 from tests.test_engine.fake_mt5 import (
+    matching_fake_login,
     BEHAVIOUR_INITIALIZE_FAILS,
     FakeMT5,
     FakePosition,
@@ -154,6 +155,113 @@ class TestTelemetryGapsAreDetectable:
                 "SELECT * FROM equity_snapshots ORDER BY id DESC LIMIT 1")
             assert row is not None, "a connected engine must record equity"
             assert row["equity"] is not None
+        finally:
+            engine.gateway.shutdown_terminal()
+            engine.gateway.stop()
+            engine.journal.close()
+
+
+class ConnectedButEmptyMT5(FakeMT5):
+    """Connected gateway whose account read yields nothing *after* startup.
+
+    Models the live failure recorded between 2026-10-07 and 2026-10-10: the
+    terminal was attached and heartbeating, but account_info() yielded None, so
+    the engine ran for days while writing no equity at all.
+
+    The first call must succeed, otherwise the account guard blocks telemetry
+    at startup and this test would assert on the wrong gate. That is the
+    guard's job and it is covered in test_account_guard.py; what this exercises
+    is the gap that opens later, on a gateway the guard already verified.
+    """
+
+    def account_info(self):
+        self._log("account_info")
+        if getattr(self, "_account_calls", 0) >= 1:
+            return None
+        self._account_calls = 1
+        return super().account_info()
+
+
+class TestConnectedButAccountlessIsVisible:
+    """A gateway that reports connected while the account read is empty."""
+
+    def _engine(self, tmp_path, name):
+        engine = build_engine(root=REPO_ROOT,
+                              journal_path=tmp_path / name,
+                              mt5_module=ConnectedButEmptyMT5())
+        assert engine.gateway.connected is True
+        return engine
+
+    def test_no_equity_is_written_but_the_gap_is_journalled(self, tmp_path):
+        engine = self._engine(tmp_path, "empty_account.db")
+        try:
+            engine._write_telemetry()
+            n = engine.journal.query_one(
+                "SELECT COUNT(*) n FROM equity_snapshots")["n"]
+            assert n == 0, (
+                "no equity snapshot may be fabricated from a missing account"
+            )
+            warnings = [e for e in engine.journal.recent_events(50)
+                        if e["category"] == "telemetry"
+                        and e["severity"] == "WARNING"]
+            assert warnings, (
+                "a connected engine that writes no equity must say so; the "
+                "production gap produced heartbeats and silence for days"
+            )
+            assert any("account_info" in e["message"] for e in warnings), (
+                "the warning must name the empty account read: "
+                + str([e["message"] for e in warnings])
+            )
+        finally:
+            engine.gateway.shutdown_terminal()
+            engine.gateway.stop()
+            engine.journal.close()
+
+    def test_the_warning_is_repeated_bounded_not_silenced(self, tmp_path):
+        """The gap repeats every loop; the journal must not flood."""
+        engine = self._engine(tmp_path, "repeat_account.db")
+        try:
+            for _ in range(4):
+                engine._write_telemetry()
+            warnings = [e for e in engine.journal.recent_events(50)
+                        if e["category"] == "telemetry"]
+            assert len(warnings) == 1, (
+                "four consecutive gaps in one run must log once, not four "
+                f"times; got {len(warnings)}"
+            )
+            # The process is still alive and still failing, which the journal
+            # shows through the heartbeats rather than a WARNING storm.
+            engine.state.heartbeat(connected=engine.gateway.connected)
+            assert engine.journal.last_heartbeat()["connected"] == 1
+        finally:
+            engine.gateway.shutdown_terminal()
+            engine.gateway.stop()
+            engine.journal.close()
+
+    def test_a_raising_account_read_is_also_journalled(self, tmp_path):
+        class RaisingMT5(FakeMT5):
+            """Fails only after startup, so the guard has already verified."""
+
+            def account_info(self):
+                self._log("account_info")
+                if getattr(self, "_account_calls", 0) >= 1:
+                    raise RuntimeError("terminal gone mid-call")
+                self._account_calls = 1
+                return super().account_info()
+
+        engine = build_engine(root=REPO_ROOT,
+                              journal_path=tmp_path / "raising.db",
+                              mt5_module=RaisingMT5())
+        assert engine.gateway.connected is True
+        try:
+            engine._write_telemetry()   # must not raise
+            n = engine.journal.query_one(
+                "SELECT COUNT(*) n FROM equity_snapshots")["n"]
+            assert n == 0
+            warnings = [e for e in engine.journal.recent_events(50)
+                        if e["category"] == "telemetry"]
+            assert warnings, "an exception in the account read must be visible"
+            assert any("raised" in e["message"] for e in warnings)
         finally:
             engine.gateway.shutdown_terminal()
             engine.gateway.stop()
