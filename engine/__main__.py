@@ -28,6 +28,13 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from engine.account_guard import (
+    AccountGuard,
+    AccountMismatch,
+    Fingerprint,
+    classify_foreign_positions,
+)
+import logging
 from engine.commands import CommandProcessor
 from engine.config import (
     MODE_LIVE,
@@ -53,6 +60,34 @@ from engine.notifications import (
     pending_trade_count,
 )
 
+def _warn_foreign_positions(journal, positions, *, magic: int) -> list:
+    """Journal foreign positions once per run, never adopt them.
+
+    A position with a magic number that is not ours is somebody else's trade.
+    It is counted for exposure and margin by the risk gate, but the engine must
+    never manage, modify, close or trail it -- and it must not be written into
+    the positions table, where it would look like ours.
+    """
+    foreign = classify_foreign_positions(positions, magic=magic)
+    if foreign:
+        journal.log_event(
+            "reconcile", "foreign positions present",
+            severity="WARNING", source="engine",
+            context={
+                "count": len(foreign),
+                "source": "positions exist on the account with a magic "
+                          "number this engine does not own",
+                "tickets": [row["ticket"] for row in foreign],
+                "symbols": [row["symbol"] for row in foreign],
+                "note": "counted for exposure and margin; not managed, "
+                        "not modified, not closed",
+            })
+    return foreign
+
+
+logger = logging.getLogger(__name__)
+
+
 BANNER = "=" * 68
 
 
@@ -68,11 +103,18 @@ class Engine:
     commands: CommandProcessor
     risk: RiskEngine
     equity_tracker: EquityTracker = None
+    guard: AccountGuard | None = None
+    _account_verified: bool = False
+    _was_connected: bool = False
     _running: bool = True
     _epoch_cache: int | None = None
     _telegram_initialized: bool = False
     _telegram_poll_task = None
     _telegram_stop_event = None
+    #: A repeating telemetry gap is journalled at most this often, in seconds.
+    _telemetry_warn_every: float = 300.0
+    #: reason -> monotonic time the reason was last journalled.
+    _telemetry_warnings: dict | None = None
 
     def request_stop(self) -> None:
         self._running = False
@@ -174,15 +216,55 @@ class Engine:
 
     # -- telemetry -------------------------------------------------------
 
+    def _warn_telemetry(self, reason: str, detail: str) -> None:
+        """Record a telemetry gap in the journal, without flooding it.
+
+        Between 2026-10-07 and 2026-10-10 the engine kept heartbeating while
+        `account_info()` returned nothing: heartbeats continued, equity
+        snapshots stopped, and no event explained why. The gap must be visible
+        to an operator reading the journal, but it must not be written once per
+        loop iteration, so each reason is logged at most every 5 minutes.
+        """
+        if self._telemetry_warnings is None:
+            self._telemetry_warnings = {}
+        now = time.monotonic()
+        last = self._telemetry_warnings.get(reason, 0.0)
+        if last and now - last < self._telemetry_warn_every:
+            return
+        self._telemetry_warnings[reason] = now
+        self.journal.log_event(
+            "telemetry", detail, severity="WARNING", source="engine",
+            context={"reason": reason})
+
     def _write_telemetry(self) -> None:
-        """Account, positions and equity into the DB for the UI to read."""
+        """Account, positions and equity into the DB for the UI to read.
+
+        Blocked while the account fingerprint is unverified: writing account B's
+        equity into account A's journal is the mix the whole guard exists to
+        prevent, and it would look exactly like legitimate data afterwards.
+        """
+        if self.guard is not None and not self.guard.may_write_telemetry():
+            return
         if not self.gateway.connected:
             return
         try:
             account = self.gateway.account_info()
-        except Exception:   # noqa: BLE001 - telemetry must never kill the loop
+        except Exception as exc:   # noqa: BLE001 - telemetry must never kill the loop
+            self._warn_telemetry(
+                "account_read_failed",
+                "gateway is connected but the account read raised",
+            )
+            self.journal.log_event(
+                "telemetry", "account read raised", severity="WARNING",
+                source="engine",
+                context={"error": f"{type(exc).__name__}: {exc}"})
             return
         if account is None:
+            self._warn_telemetry(
+                "account_empty",
+                "gateway is connected but account_info() returned nothing; "
+                "no equity snapshot was written",
+            )
             return
 
         equity = float(getattr(account, "equity", 0.0) or 0.0)
@@ -322,7 +404,21 @@ class Engine:
         is the larger risk. A position the broker has and we do not is adopted
         with an events row; one we have and the broker does not is marked
         closed_externally rather than silently deleted.
+
+        Never called directly by the loop: use `_reconcile()`, which gates this
+        on the account fingerprint. Called on a mismatched account it deletes
+        journal rows whose only real change is that they belong to another
+        account.
         """
+        if self.guard is not None and not self.guard.may_reconcile():
+            self.journal.log_event(
+                "reconcile", "blocked: account fingerprint does not match",
+                severity="WARNING",
+                context={"reason": self.guard.mismatch_reason})
+            return {"adopted": [], "vanished": [], "error": "account mismatch"}
+        return self._reconcile_positions_unlocked()
+
+    def _reconcile_positions_unlocked(self) -> dict:
         magic = self.config.engine.magic_number
         known = {int(p["ticket"]): p for p in self.journal.positions()}
         adopted, vanished = [], []
@@ -344,6 +440,11 @@ class Engine:
                 "reconcile", "could not read broker positions",
                 severity="WARNING", context={"error": str(exc)})
             return {"adopted": [], "vanished": [], "error": str(exc)}
+
+        # Report the positions that are not ours whenever they are seen, so an
+        # operator reading the reconcile outcome finds them next to the
+        # adoptions rather than having to infer them from exposure alone.
+        _warn_foreign_positions(self.journal, positions, magic=magic)
 
         for pos in positions:
             ticket = int(getattr(pos, "ticket", 0))
@@ -373,6 +474,15 @@ class Engine:
                                    "absent from the journal"})
 
         for ticket, row in known.items():
+            # Simulated PAPER fills carry our magic but never exist at the
+            # broker: their tickets come from the 9M sequence, not from MT5.
+            # Treating them as "absent at the broker" and deleting them is
+            # exactly the false-reconcile this gate proves must not happen.
+            # Only rows the broker could have produced (a matching trade in
+            # `trades` with broker != PAPER) are eligible for the vanished
+            # path; simulated rows are owned by the PAPER executor alone.
+            if self._is_simulated_position(ticket):
+                continue
             if ticket not in {int(p.ticket) for p in positions
                               if getattr(p, "magic", None) == magic}:
                 vanished.append(ticket)
@@ -384,6 +494,26 @@ class Engine:
                 self.journal.delete_position(ticket)
 
         return {"adopted": adopted, "vanished": vanished, "error": None}
+
+    def _is_simulated_position(self, ticket: int) -> bool:
+        """True when the ticket is a PAPER simulation, not a broker fill.
+
+        Simulated tickets come from PaperExecutor's 9M sequence and the
+        matching `trades` row carries broker='PAPER'. Either marker alone
+        is enough: a real broker ticket never reaches 9M, and a LIVE row
+        never carries the PAPER broker tag.
+        """
+        try:
+            if int(ticket) >= 9_000_000:
+                return True
+        except (TypeError, ValueError):
+            return False
+        try:
+            rows = self.journal.query(
+                "SELECT broker FROM trades WHERE ticket = ?", (int(ticket),))
+        except Exception:  # noqa: BLE001 - unreadable trades = not simulated
+            return False
+        return bool(rows) and str(rows[0]["broker"]).upper() == "PAPER"
 
     # -- backup ----------------------------------------------------------
 
@@ -410,9 +540,70 @@ class Engine:
 
     # -- loop ------------------------------------------------------------
 
+    def _verify_account(self, phase: str) -> bool:
+        """Check the account fingerprint. Heartbeats continue either way.
+
+        Returns True when the terminal is on the account this journal was made
+        for. While False the engine still heartbeats, because the dashboard
+        must be able to show "Account mismatch" rather than "offline" -- a
+        heartbeat that stops is indistinguishable from a crash, and an operator
+        cannot tell a mismatch from a dead process.
+        """
+        if self.guard is None:
+            return False
+        try:
+            self.guard.check(self.gateway.account_info(), phase=phase)
+            return True
+        except AccountMismatch:
+            return False
+        except Exception as exc:   # noqa: BLE001 - guard must never kill the loop
+            logger.warning("account guard raised during %s: %s", phase, exc)
+            return False
+
+    def _verify_account_transitions(self) -> bool:
+        """Verify on the transitions that matter: connect and reconnect.
+
+        A steady-state check every iteration would be redundant, but the
+        moments that change the answer are the moments the link comes back:
+        the terminal was logged out, someone switched accounts, or MT5 was
+        reinitialised. All three look identical from here -- a link that was
+        down is now up -- so all three get the same treatment: verify, and if
+        it does not match, block everything that writes.
+        """
+        connected = bool(self.gateway.connected)
+        if connected and not self._was_connected:
+            self._was_connected = True
+            return self._verify_account("reconnect")
+        if not connected:
+            self._was_connected = False
+            return self._account_verified
+        return self._account_verified
+
+    def _reconcile(self) -> dict:
+        """Reconcile, but only on a matching account fingerprint.
+
+        Reconcile is the one routine that deletes journal rows, and after an
+        account switch every journal ticket looks absent at the broker, so an
+        unguarded call wipes the positions table. Gating it is therefore the
+        whole point of the guard, not defence in depth.
+        """
+        if self.guard is not None and not self.guard.may_reconcile():
+            self.journal.log_event(
+                "reconcile", "blocked: account fingerprint does not match",
+                severity="WARNING",
+                context={"reason": self.guard.mismatch_reason})
+            return {"adopted": [], "vanished": [], "error": "account mismatch"}
+        return self.reconcile_positions()
+
     def run_once(self) -> None:
         """One iteration: commands, heartbeat, telemetry."""
         self.commands.poll_once()
+        # A reconnect (or reinitialisation) is the moment the account answer
+        # changes, so it is checked there rather than every iteration.
+        self._verify_account_transitions()
+        # Session refresh keeps a long-lived process honest: a swap that happens
+        # with no disconnect at all is otherwise invisible.
+        self._account_verified = self._verify_account("session_refresh")
         self.state.heartbeat(connected=self.gateway.connected)
         self._write_telemetry()
 
@@ -449,6 +640,10 @@ class Engine:
                                        severity="ERROR",
                                        context={"error": f"{type(exc).__name__}: {exc}"})
 
+            # The heartbeat, telemetry and backup gates live inside the loop.
+            # They were once indented at method level instead, which put the
+            # rate limit *and the sleep* after the loop, so the loop ran with no
+            # throttle at all and wrote several hundred heartbeats a second.
             now = time.monotonic()
             if now - last_heartbeat >= heartbeat:
                 last_heartbeat = now
@@ -544,6 +739,58 @@ def build_engine(*, config_path: Path | str | None = None,
             context={"error": gateway.status.last_error or "unknown"},
         )
 
+    # -- account guard ---------------------------------------------------
+    # Built after the gateway, because the guard perches on the thing it
+    # verifies. The configured fingerprint comes from the environment, so a
+    # terminal logged into a different account fails here rather than after it
+    # has already written telemetry into someone else's journal.
+    expected_account = gateway.account_info() if gateway.connected else None
+    guard = AccountGuard(
+        journal=journal,
+        configured=Fingerprint(
+            login=credentials["login"],
+            server=credentials["server"],
+        ),
+        magic=config.engine.magic_number,
+    )
+    startup_verified = False
+    try:
+        guard.check(expected_account, phase="startup")
+        startup_verified = True
+    except AccountMismatch:
+        # Fail closed and keep running: the loop still heartbeats so the
+        # dashboard reads "Account mismatch" instead of "offline", but no
+        # telemetry, reconcile or order can proceed.
+        startup_verified = False
+    except Exception as exc:   # noqa: BLE001 - an unreadable account blocks start
+        journal.log_event(
+            "account", "account read failed during startup verification",
+            severity="WARNING", source="engine",
+            context={"error": f"{type(exc).__name__}: {exc}"})
+        startup_verified = False
+
+    # Foreign positions are journalled once, at startup, and then left alone.
+    if startup_verified:
+        try:
+            _warn_foreign_positions(
+                journal, gateway.positions_get() or [],
+                magic=config.engine.magic_number)
+        except Exception as exc:   # noqa: BLE001 - reporting must not abort start
+            journal.log_event(
+                "reconcile", "foreign position scan failed",
+                severity="WARNING",
+                context={"error": f"{type(exc).__name__}: {exc}"})
+
+        # Mirror the fingerprint onto engine_state so the account strip and the
+        # state row are read together. journal_account stays authoritative.
+        state_machine.journal.set_state(
+            state_machine.state,
+            reason="account fingerprint verified at startup",
+            mode=config.mode,
+            account_login=guard.fingerprint.login,
+            account_currency=guard.fingerprint.currency,
+        )
+
     def tick_provider(symbol: str):
         if not gateway.connected:
             return None
@@ -586,7 +833,128 @@ def build_engine(*, config_path: Path | str | None = None,
     return Engine(config=config, journal=journal, state=state_machine,
                   gateway=gateway, executor=executor, commands=commands,
                   risk=risk, equity_tracker=equity_tracker,
+                  guard=guard, _account_verified=startup_verified,
                   _telegram_initialized=telegram_initialized)
+
+
+def _mask_login(login) -> str:
+    """Last four digits, at most. Never the whole login, never the password.
+
+    A login is enough to log an account into a terminal, so printing it in a
+    log or a screenshot is a disclosure. Four digits are enough to tell an
+    operator whether they are looking at the account they meant.
+    """
+    digits = str(login) if login is not None else ""
+    return ("****" + digits[-4:]) if len(digits) >= 4 else digits
+
+
+def _report_account_check(engine) -> None:
+    """Report match / mismatch only. No credentials, no password, no full login."""
+    guard = engine.guard
+    if guard is None:
+        print("[account]  not verified: guard was not constructed")
+        return
+
+    row = engine.journal.get_account_fingerprint()
+    if row:
+        journal_login, journal_currency = row["login"], row["currency"]
+        journal_server = row["server"]
+    else:
+        journal_login = journal_currency = journal_server = None
+
+    print(f"[account]  terminal  {_mask_login(guard.fingerprint.login)}"
+          f" | {guard.fingerprint.currency or 'unknown'}"
+          f" | {guard.fingerprint.server}")
+    print(f"[account]  journal   {_mask_login(journal_login)}"
+          f" | {journal_currency or 'unknown'}"
+          f" | {journal_server}")
+
+    if guard.mismatch_reason:
+        print(f"[account]  MISMATCH -- {guard.mismatch_reason}")
+        print("[account]  trading, reconcile, telemetry and orders are blocked")
+        return
+
+    if not guard.fingerprint.login:
+        print("[account]  no account is logged in")
+        print("[account]  trading, reconcile, telemetry and orders are blocked")
+        return
+
+    print("[account]  MATCH")
+
+
+# Handles held by this process, keyed by resolved lock path. Windows
+# `msvcrt.locking` is per-handle: two opens in one process do NOT
+# conflict, so without this registry the unit test (and any in-process
+# second engine) would sail through. Cross-process exclusion still
+# comes from the OS lock below.
+_HELD_INSTANCE_LOCKS: dict[str, object] = {}
+
+
+def _acquire_single_instance_lock(config) -> object | None:
+    """Refuse a second engine on the same journal. Returns the lock handle.
+
+    Uses an exclusive lock file next to the journal path. A second
+    `python -m engine` pointing at the same journal gets None and the
+    caller exits with a journaled reason instead of running. Two
+    writers on one SQLite journal is how the pid-5516/pid-35972
+    double-heartbeat happened.
+    """
+    import os
+
+    db_path = config.db_path
+    lock_path = db_path.parent / (db_path.stem + ".lock")
+    key = str(lock_path.resolve()) if hasattr(lock_path, "resolve") else str(lock_path)
+    if key in _HELD_INSTANCE_LOCKS:
+        return None
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(lock_path, "a+b")  # noqa: PTH123 - lock handle, not data
+    except OSError:
+        return None
+    try:
+        if os.name == "nt":
+            import msvcrt
+            try:
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            except OSError:
+                handle.close()
+                return None
+        else:
+            import fcntl
+            try:
+                fcntl.flock(handle.fileno(),
+                            fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                handle.close()
+                return None
+    except (ImportError, OSError):
+        try:
+            handle.close()
+        except OSError:
+            pass
+        return None
+    try:
+        handle.seek(0)
+        handle.truncate()
+        handle.write(f"{os.getpid()}".encode())
+        handle.flush()
+    except OSError:
+        pass
+    _HELD_INSTANCE_LOCKS[key] = handle
+    return handle
+
+
+def _release_single_instance_lock(config) -> None:
+    """Release a lock held by this process (tests / shutdown)."""
+    db_path = config.db_path
+    lock_path = db_path.parent / (db_path.stem + ".lock")
+    key = str(lock_path.resolve()) if hasattr(lock_path, "resolve") else str(lock_path)
+    handle = _HELD_INSTANCE_LOCKS.pop(key, None)
+    if handle is not None:
+        try:
+            handle.close()
+        except OSError:
+            pass
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -620,9 +988,22 @@ def main(argv: list[str] | None = None) -> int:
           f"offline_after={config.engine.offline_after_seconds}s")
     print(f"[config] magic={config.engine.magic_number}")
 
-    if args.check_config:
-        print("[config] OK")
-        return 0
+    _instance_lock = _acquire_single_instance_lock(config)
+    if _instance_lock is None:
+        print(f"[FATAL] another engine is already running on {config.db_path}; "
+              f"refusing to start a second writer")
+        try:
+            journal = Journal(config.db_path)
+            try:
+                journal.log_event(
+                    "engine", "second engine refused by single-instance lock",
+                    severity="WARNING", source="engine",
+                    context={"db": str(config.db_path)})
+            finally:
+                journal.close()
+        except Exception:  # noqa: BLE001 - refusal must stand on its own
+            pass
+        return 4
 
     ring = keyring()
     for line in ring.describe_all():
@@ -639,6 +1020,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[FATAL] startup failed: {type(exc).__name__}: {exc}")
         return 1
 
+    # Account verification comes after the engine is assembled, because it
+    # needs a gateway to ask. It is placed before every other start gate so a
+    # mismatch is the first thing an operator sees, not the last.
+    _report_account_check(engine)
+    if args.check_config:
+        print("[config] OK")
+        engine.gateway.stop()
+        engine.journal.close()
+        return 0
+
     if config.is_live and not args.live:
         print("[FATAL] mode is LIVE but --live was not supplied; refusing")
         engine.shutdown()
@@ -653,7 +1044,9 @@ def main(argv: list[str] | None = None) -> int:
         signal.signal(signal.SIGTERM, handle_signal)
 
     if engine.config.engine.reconcile_on_start:
-        result = engine.reconcile_positions()
+        # Gated on the account fingerprint inside _reconcile(); a mismatch
+        # returns an error and deletes nothing.
+        result = engine._reconcile()
         if result.get("adopted"):
             print(f"[engine] adopted {len(result['adopted'])} position(s)")
         if result.get("vanished"):

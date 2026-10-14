@@ -336,11 +336,29 @@ class PaperExecutor(Executor):
                  request.sl, request.tp, TRADE_OPEN, request.magic, "PAPER",
                  position["ts"], position["ts"]),
             )
+            decision_id = getattr(risk_approved, "decision_id", "") or ""
             self.journal.log_event("trade", "paper order filled",
                                    source="executor",
                                    context={"ticket": ticket,
                                             "symbol": request.symbol,
-                                            "price": price})
+                                            "price": price,
+                                            "decision_id": decision_id})
+            if decision_id:
+                self.journal.log_lifecycle(
+                    Journal.LIFECYCLE_ORDER_SENT,
+                    f"TEST PAPER order sent {request.symbol} "
+                    f"{request.side} @{price}" if "TEST" in (request.comment or "")
+                    else f"paper order sent {request.symbol} "
+                    f"{request.side} @{price}",
+                    decision_id=decision_id, source="executor",
+                    context={"ticket": ticket, "symbol": request.symbol,
+                             "price": price})
+                self.journal.log_lifecycle(
+                    Journal.LIFECYCLE_ORDER_FILLED,
+                    f"paper order filled {request.symbol} ticket={ticket}",
+                    decision_id=decision_id, source="executor",
+                    context={"ticket": ticket, "symbol": request.symbol,
+                             "price": price})
 
         return ExecutionResult(ok=True, status=TRADE_OPEN, ticket=ticket,
                                price=price, mode=MODE_PAPER,

@@ -356,6 +356,9 @@ def get_account_telemetry() -> dict:
     term = mt5.terminal_info()
 
     if acc is None:
+        # Degraded path. Never invent a currency: the HUD previously inlined a
+        # hardcoded "USD" here and showed a $ sign on an account that had not
+        # been read. None means "unknown", and the UI renders it as such.
         return {
             "connected": False,
             "login": "N/A",
@@ -366,7 +369,7 @@ def get_account_telemetry() -> dict:
             "margin": 0.0,
             "margin_free": 0.0,
             "margin_level": 0.0,
-            "currency": "USD",
+            "currency": None,
             "leverage": 100,
             "trade_allowed": False,
         }

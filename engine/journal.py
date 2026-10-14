@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 # Bump when adding a migration. Never edit a shipped migration in place.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # -- state machine values, mirrored from engine.state -------------------------
 STATE_OFF = "OFF"
@@ -220,7 +220,27 @@ MIGRATION_1 = [
     "CREATE INDEX IF NOT EXISTS idx_equity_ts ON equity_snapshots (ts)",
 ]
 
-MIGRATIONS: dict[int, list[str]] = {1: MIGRATION_1}
+MIGRATION_2 = [
+    """
+    -- The account this journal belongs to. One row, enforced by the CHECK.
+    -- A journal written for account A and later attached to account B is the
+    -- failure mode this table exists to make impossible to do silently.
+    CREATE TABLE IF NOT EXISTS journal_account (
+        id              INTEGER PRIMARY KEY CHECK (id = 1),
+        login           INTEGER,
+        currency        TEXT,
+        server          TEXT,
+        magic           INTEGER,
+        recorded_at     TEXT NOT NULL
+    )
+    """,
+    # Mirrored onto engine_state so a single SELECT can render the account
+    # strip alongside the engine state. Not authoritative: journal_account is.
+    "ALTER TABLE engine_state ADD COLUMN account_login INTEGER",
+    "ALTER TABLE engine_state ADD COLUMN account_currency TEXT",
+]
+
+MIGRATIONS: dict[int, list[str]] = {1: MIGRATION_1, 2: MIGRATION_2}
 
 
 def utc_now_iso() -> str:
@@ -350,14 +370,67 @@ class Journal:
 
     # -- engine state ----------------------------------------------------
 
-    def set_state(self, state: str, *, reason: str = "", mode: str = "PAPER") -> None:
+    def set_state(self, state: str, *, reason: str = "", mode: str = "PAPER",
+                  account_login: int | None = None,
+                  account_currency: str | None = None) -> None:
+        """Record engine state, and optionally the account it applies to.
+
+        The account columns are written whenever the caller knows them, so the
+        UI can show the fingerprint next to the state without a second query.
+        When unknown they are written as NULL rather than guessed: an engine
+        that stamps an unverified login onto its own state row is the exact
+        bug this whole mechanism exists to prevent.
+        """
         self.execute(
-            "INSERT INTO engine_state (id, state, mode, reason, updated_at) "
-            "VALUES (1, ?, ?, ?, ?) "
-            "ON CONFLICT(id) DO UPDATE SET state=excluded.state, mode=excluded.mode, "
-            "reason=excluded.reason, updated_at=excluded.updated_at",
-            (state, mode, reason, utc_now_iso()),
+            "INSERT INTO engine_state (id, state, mode, reason, updated_at, "
+            "account_login, account_currency) VALUES (1, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(id) DO UPDATE SET state=excluded.state, "
+            "mode=excluded.mode, reason=excluded.reason, "
+            "updated_at=excluded.updated_at, "
+            "account_login=COALESCE(excluded.account_login, "
+            "engine_state.account_login), "
+            "account_currency=COALESCE(excluded.account_currency, "
+            "engine_state.account_currency)",
+            (state, mode, reason, utc_now_iso(), account_login,
+             account_currency),
         )
+
+    # -- account fingerprint ------------------------------------------------
+
+    def set_account_fingerprint(self, *, login: int | None = None,
+                                currency: str | None = None,
+                                server: str | None = None,
+                                magic: int | None = None) -> None:
+        """Stamp the account this journal belongs to.
+
+        Called once at startup after the guard has confirmed the logged-in
+        account. Deliberately not called on a mismatch: a journal for account A
+        must never be re-stamped for account B.
+
+        A NULL login is never written. The old form, ``INSERT OR REPLACE``
+        with default-NULL arguments, blanked the stamp from any racing writer
+        that had no account to record -- and a journal stamped with NULLs then
+        reads as unstamped, letting the *next* account adopt it. A stamp
+        requires a login; a writer that has none has nothing to stamp.
+        """
+        if login is None:
+            # The NULL-stamp race, closed at the write itself: no login means
+            # no identity, and a row of NULLs would read as "unstamped".
+            return
+        self.execute(
+            "INSERT OR REPLACE INTO journal_account "
+            "(id, login, currency, server, magic, recorded_at) "
+            "VALUES (1, ?, ?, ?, ?, ?)",
+            (login, currency, server, magic, utc_now_iso()),
+        )
+
+    def get_account_fingerprint(self) -> dict | None:
+        """The account this journal was created for, or None if unset."""
+        if self.current_version() < 2:
+            return None
+        return self.query_one(
+            "SELECT login, currency, server, magic, recorded_at "
+            "FROM journal_account WHERE id = 1")
 
     def get_state(self) -> dict | None:
         row = self.query_one("SELECT * FROM engine_state WHERE id = 1")
@@ -486,6 +559,60 @@ class Journal:
         )
         return int(cur.lastrowid)
 
+    # -- trade lifecycle events (§3 gate: one decision ID, real timestamps) --
+
+    #: Event categories the Journal page filters on. Kept as constants so
+    #: producers and the UI cannot drift apart by typo.
+    LIFECYCLE_SIGNAL_GENERATED = "signal_generated"
+    LIFECYCLE_SIGNAL_REJECTED = "signal_rejected"
+    LIFECYCLE_RISK_APPROVED = "risk_approved"
+    LIFECYCLE_RISK_REJECTED = "risk_rejected"
+    LIFECYCLE_ORDER_SENT = "order_sent"
+    LIFECYCLE_ORDER_FILLED = "order_filled"
+    LIFECYCLE_ORDER_MODIFIED = "order_modified"
+    LIFECYCLE_ORDER_CLOSED = "order_closed"
+    LIFECYCLE_MT5_RECONNECT = "mt5_reconnect"
+    LIFECYCLE_SPREAD_BLOCKED = "spread_filter_blocked"
+    LIFECYCLE_NEWS_BLOCKED = "news_filter_blocked"
+
+    LIFECYCLE_CATEGORIES = frozenset({
+        LIFECYCLE_SIGNAL_GENERATED, LIFECYCLE_SIGNAL_REJECTED,
+        LIFECYCLE_RISK_APPROVED, LIFECYCLE_RISK_REJECTED,
+        LIFECYCLE_ORDER_SENT, LIFECYCLE_ORDER_FILLED,
+        LIFECYCLE_ORDER_MODIFIED, LIFECYCLE_ORDER_CLOSED,
+        LIFECYCLE_MT5_RECONNECT, LIFECYCLE_SPREAD_BLOCKED,
+        LIFECYCLE_NEWS_BLOCKED,
+    })
+
+    def log_lifecycle(self, category: str, message: str, *,
+                      decision_id: str | None = None,
+                      severity: str = "INFO", source: str = "engine",
+                      context: dict | None = None) -> int:
+        """Write one linked lifecycle row. Every row carries decision_id."""
+        if category not in self.LIFECYCLE_CATEGORIES:
+            raise ValueError(f"unknown lifecycle category {category!r}")
+        payload = dict(context or {})
+        if decision_id is not None:
+            payload["decision_id"] = decision_id
+        return self.log_event(category, message, severity=severity,
+                              source=source, context=payload)
+
+    def lifecycle_chain(self, decision_id: str) -> list[dict]:
+        """All lifecycle rows for one decision ID, oldest first."""
+        rows = self.query(
+            "SELECT * FROM events ORDER BY id ASC",
+        )
+        out = []
+        for row in rows:
+            try:
+                ctx = json.loads(row["context_json"] or "{}")
+            except (TypeError, ValueError):
+                continue
+            if (row["category"] in self.LIFECYCLE_CATEGORIES
+                    and ctx.get("decision_id") == decision_id):
+                out.append(dict(row))
+        return out
+
 
 def project_root() -> Path:
     """Absolute project root, derived from this file's location.
@@ -496,14 +623,26 @@ def project_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
-def resolve_db_path(configured: str | None = None) -> Path:
-    """Resolve the database path to an absolute location under the project root.
+def resolve_db_path(configured: str) -> Path:
+    """Resolve the *configured* database path to an absolute location.
 
-    A configured relative path is anchored to the project root. An absolute path
-    is honoured as given, so a deployment can put the database elsewhere.
+    A configured relative path is anchored to the project root; an absolute
+    path is honoured as given, so a deployment can put the database elsewhere.
+
+    The argument is deliberately mandatory. It used to default to a hardcoded
+    `data/engine.db`, and four call sites in the UI passed nothing, so they
+    silently kept reading the old journal the moment `config.yaml` pointed at a
+    new one. Requiring the value makes that mistake impossible to write: a
+    caller must say which journal it means, and there is exactly one place that
+    decides -- `engine/config.py`, reading `config.yaml`.
     """
     if configured is None:
-        return project_root() / "data" / "engine.db"
+        raise TypeError(
+            "resolve_db_path() requires the configured journal path from "
+            "engine.config.load_engine_config().engine.db_path; there is no "
+            "default, because a silent default is how two processes end up "
+            "reading different journals."
+        )
     candidate = Path(configured)
     if candidate.is_absolute():
         return candidate
