@@ -21,6 +21,19 @@ yarn.lock
 *.db
 *.sqlite
 
+# Journal archives and their SQLite sidecars. The `*.db` rule above matches
+# the journals themselves but NOT these: an archive is named
+# `engine.db.acct-<login>.<date>.archive`, so the extension is `.archive`, and
+# a sidecar ends in `.db-shm` / `.db-wal`. Left unignored they would be staged
+# -- roughly 50 MB of account history per archive set, which is exactly the
+# kind of thing that must never reach a remote.
+backups/
+*.db-archive
+*.archive-shm
+*.archive-wal
+*.db-shm
+*.db-wal
+
 # Logs
 logs/
 *.log
@@ -79,6 +92,7 @@ data/learning_weights/
 data/shadow_mode.on
 .pytest_tmp/
 .tmp/
+.tmp_run/
 pytest_*.txt
 output.txt
 *.db-shm
