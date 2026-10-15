@@ -1,4 +1,9 @@
-"""Background shadow thread. It never calls Streamlit and never places an order."""
+"""Background shadow thread. It never calls Streamlit and never places an order.
+
+``config_ext.yaml`` ``shadow.enabled`` is not consulted here. The thread
+runs only while ``data/shadow_mode.on`` exists, and each pass calls
+``run_cycle(enabled=True)``. The yaml flag is inert.
+"""
 
 from __future__ import annotations
 

@@ -20,4 +20,6 @@ learning:
   shrinkage: 0.5
   drift_window: 30
 shadow:
+  # Inert. The Research Desk toggle (data/shadow_mode.on) starts a cycle.
+  # This value is loaded and then ignored by learning.runtime.
   enabled: false

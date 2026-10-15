@@ -56,7 +56,14 @@ class LearningSettings(StrictModel):
 
 
 class ShadowSettings(StrictModel):
-    """Default off. The Research Desk toggle is what starts a cycle."""
+    """Parsed from ``config_ext.yaml`` and currently inert.
+
+    ``shadow.enabled`` is loaded and validated. Nothing in the shadow loop
+    reads it. ``learning.runtime.ensure_thread`` starts a cycle only when
+    the Research Desk toggle writes ``data/shadow_mode.on``, and that loop
+    calls ``run_cycle(enabled=True)`` directly. Changing this flag does not
+    start, stop, or skip a cycle.
+    """
 
     enabled: bool = False
 
