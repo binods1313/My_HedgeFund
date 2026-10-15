@@ -265,7 +265,15 @@ button[role="tab"][aria-selected="true"] {{ color: var(--text); border-bottom: 2
 .sev-info {{ color: var(--accent-cyan); border-color: color-mix(in srgb, var(--accent-cyan) 45%, transparent); }}
 .sev-warn {{ color: var(--accent-amber); border-color: color-mix(in srgb, var(--accent-amber) 45%, transparent); }}
 .sev-error {{ color: var(--accent-red); border-color: color-mix(in srgb, var(--accent-red) 45%, transparent); }}
+/* A blocked account is not a routine note: filled, so it is the first thing
+   the eye lands on in a journal that is otherwise rows of muted spans. */
+.sev-critical {{
+  color: var(--panel); background: var(--accent-red);
+  border-color: var(--accent-red);
+}}
+.sev-unknown {{ color: var(--muted); border-color: var(--muted); border-style: dashed; }}
 .hf-rel {{ cursor: help; border-bottom: 1px dotted var(--muted); }}
+.hf-repeat {{ color: var(--muted); font-size: .62rem; letter-spacing: .02em; }}
 [data-testid="stNumberInput"] > div > div input, [data-baseweb="select"] > div > div {{ color: var(--text); }}
 [data-testid="stNumberInput"] > div > div input::placeholder, [data-baseweb="select"] > div > div input::placeholder {{ color: var(--muted); }}
 .stButton > button[kind="secondary"] {{
@@ -284,6 +292,10 @@ button[role="tab"][aria-selected="true"] {{ color: var(--text); border-bottom: 2
 .status-badge.live, .status-badge.active {{ color:var(--gain); border-color:color-mix(in srgb, var(--gain) 35%, transparent); background:color-mix(in srgb, var(--gain) 7%, transparent); }}
 .status-badge.offline, .status-badge.halted {{ color:var(--loss); border-color:color-mix(in srgb, var(--loss) 35%, transparent); background:color-mix(in srgb, var(--loss) 7%, transparent); }}
 .status-badge.stale {{ color:var(--warn); border-color:color-mix(in srgb, var(--warn) 35%, transparent); background:color-mix(in srgb, var(--warn) 7%, transparent); }}
+.hf-line2 {{ display:grid; grid-template-columns: 1.2fr 2.4fr auto; gap:.5rem; align-items:center; padding:.42rem .62rem; border:1px solid var(--border); border-radius:9px; background:var(--panel-glass); margin-top:.3rem; }}
+.hf-label {{ font-size:.6rem; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); margin-bottom:.28rem; }}
+.status-grid {{ display:inline-flex; flex-wrap:wrap; gap:.22rem; align-items:center; }}
+.status-shimmer {{ font-size:.62rem; color:var(--muted); }}
 .news-countdown {{ display:inline-block; margin-top:0; padding:.25rem .5rem; border-radius:6px; background:color-mix(in srgb, var(--loss) 9%, transparent); color:var(--loss); border:1px solid color-mix(in srgb, var(--loss) 30%, transparent); font-family:var(--font-mono); font-size:.72rem; }}
 .news-impact.high {{ color:var(--loss); border-color:color-mix(in srgb, var(--loss) 45%, transparent); }}
 .news-impact.medium {{ color:var(--warn); border-color:color-mix(in srgb, var(--warn) 45%, transparent); }}

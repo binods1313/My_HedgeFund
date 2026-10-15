@@ -115,6 +115,7 @@ def _agent_cards(conn, rows: dict, horizon: int, minimum: int) -> None:
             with accent_card("research", f"agent-{agent_id}"):
                 st.text(f"{agent_id} {_NAMES.get(agent_id, 'Analysis')}")
                 st.text(_implementation_status(agent_id))
+                st.caption(_disabled_reason(agent_id))
                 if agent_id in _DETERMINISTIC:
                     st.caption("deterministic, no learning")
                     continue
@@ -126,6 +127,28 @@ def _agent_cards(conn, rows: dict, horizon: int, minimum: int) -> None:
                 st.text(f"{status} · {row['direction']} · score {_score(row['score'])}")
                 st.caption(f"age {_age(str(row['ts']))}")
                 st.caption(_track(conn, agent_id, horizon, minimum))
+
+
+#: Agent 06 reads fundamentals through the Dexter adapter, which needs this key.
+_AGENT_KEYS: dict[str, str] = {"06": "FINANCIAL_DATASETS_API_KEY"}
+
+
+def _disabled_reason(agent_id: str) -> str:
+    """Why a card is not live, stated from code and config -- never a guess.
+
+    Agents 01-08 make no model call and need no provider key; the only thing
+    missing is an engine loop that calls them. Agent 06 additionally needs its
+    data key, which is reported as not set when it is absent from ``.env``.
+    """
+    if agent_id in _DETERMINISTIC:
+        return "No decision yet" if agent_id == "09" else "No execution decision yet"
+    module = AGENT_MODULES.get(agent_id)
+    if module is None or _is_stub(module):
+        return "Not built yet"
+    key = _AGENT_KEYS.get(agent_id)
+    if key and not name_is_set(DEXTER_ROOT / ".env", key):
+        return f"Needs {key} (not set)"
+    return "Waiting for scan loop (not built yet)"
 
 
 def _implementation_status(agent_id: str) -> str:

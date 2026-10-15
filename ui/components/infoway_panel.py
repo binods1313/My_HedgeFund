@@ -21,22 +21,22 @@ def render_infoway_chip() -> None:
         age_text = "no read yet"
     with st.container(border=True):
         st.text("Secondary data (research only)")
-        st.caption(f"source: Infoway · data age {age_text} · calls today {calls}")
+        st.caption(f"source: market data · data age {age_text} · calls today {calls}")
         st.caption("MT5 is the only price source for orders.")
 
 
 def render_infoway_research(symbol: str | None) -> None:
     render_infoway_chip()
-    if st.button("Show Infoway quote", key="btn_infoway_quote"):
+    if st.button("Show market-data quote", key="btn_infoway_quote"):
         st.session_state["infoway_visible"] = True
     if not st.session_state.get("infoway_visible"):
         return
     if not symbol:
-        st.caption("Infoway · no symbol")
+        st.caption("Market data · no symbol")
         return
     result = fetch_quote(symbol)
     st.session_state["infoway_fetched_at"] = time.time()
     if result.status == "ok" and result.price:
-        st.caption(f"Infoway {result.symbol} · {result.price}")
+        st.caption(f"Market data · {result.symbol} · {result.price}")
     else:
-        st.caption(f"Infoway · {result.status}")
+        st.caption(f"Market data · {result.status}")

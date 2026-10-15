@@ -5,7 +5,6 @@ import uuid
 
 import streamlit as st
 
-from ai_brain import get_ai_decision
 from data_engine import TIMEFRAME_H4, TIMEFRAME_M15, get_technical_dataframe
 from engine.dryrun import run_dry_run
 from engine.sizing import LotSizer
@@ -112,9 +111,9 @@ def _format_gate_line(state: dict) -> str:
     """
     total = state.get("confluences_required")
     if not total:
-        return "Confluences: — | xAI Gate: NOT RUN"
+        return "Confluences: — | Validation Gate: NOT RUN"
     label = state.get("gate_label") or GATE_NOT_CONSULTED
-    return f"Confluences: {state.get('confluences', 0)}/{total} | xAI Gate: {label}"
+    return f"Confluences: {state.get('confluences', 0)}/{total} | Validation Gate: {label}"
 
 
 def render_ai_signals(whitelist: dict[str, list[str]]) -> None:
@@ -141,7 +140,7 @@ def render_ai_signals(whitelist: dict[str, list[str]]) -> None:
     decision_class = {"BUY": "buy", "SELL": "sell", "HOLD": "hold"}[decision]
 
     with st.container(border=True, key="card-violet-signals"):
-        st.subheader("AI Brain Reactor")
+        st.subheader("AI Signal Analysis")
         st.markdown(
             f'<div class="reactor-wrap"><div class="reactor-outer {decision_class}">'
             f'<div class="reactor-inner {decision_class}">{decision}</div></div></div>',
@@ -149,7 +148,7 @@ def render_ai_signals(whitelist: dict[str, list[str]]) -> None:
         )
         confidence = format_llm_confidence(state.get("confidence"), decision)
         st.markdown(f"**AI signal · {state.get('strength', 'NEUTRAL')}**")
-        st.caption(f"LLM-asserted display value: {confidence}. Not an execution gate.")
+        st.caption(f"AI-asserted display value: {confidence}. Not an execution gate.")
         details = st.columns(3, gap="small")
         with details[0]:
             st.metric("Target", state.get("symbol") or "—")
@@ -162,7 +161,7 @@ def render_ai_signals(whitelist: dict[str, list[str]]) -> None:
                    "confidence figure above, this one is an execution gate.")
         st.markdown("**Portfolio manager rationale**")
         st.write(state.get("reasoning") or "—")
-        st.caption("LLM assertions are informational and never bypass risk validation.")
+        st.caption("AI assertions are informational and never bypass risk validation.")
 
         if st.button(f"SCAN & EXECUTE · {asset or '—'}", key="btn_scan_execute", type="primary", width="stretch"):
             _run_scan(asset, whitelist)
@@ -238,7 +237,7 @@ def _run_scan(asset: str | None, whitelist: dict[str, list[str]]) -> None:
                         "status": "GATE_BLOCKED",
                         "message": (f"Blocked by the structural gate "
                                     f"({confluences}/{confluences_required} "
-                                    f"confluences · xAI {gate_label}): "
+                                    f"confluences · validation {gate_label}): "
                                     f"{gate_reason}"),
                         "ticket": None,
                     }

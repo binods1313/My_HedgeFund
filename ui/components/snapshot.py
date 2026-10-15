@@ -41,7 +41,9 @@ def load_shared_snapshot(*, refresh: bool = False) -> RunSnapshot:
     try:
         events = recent_events(0, 100)
     except Exception:
-        events = pd.DataFrame(columns=["id", "ts", "category", "severity", "source", "message"])
+        events = pd.DataFrame(
+            columns=["id", "ts", "category", "severity", "source", "message", "context_json"]
+        )
     news = fetch_news()
     asset = st.session_state.get("selected_asset")
     quote = dict(live_quote(asset, 0) if asset else {"valid": False, "reason": "No symbol selected"})

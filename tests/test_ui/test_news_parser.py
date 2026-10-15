@@ -138,6 +138,89 @@ def test_fetch_retries_429_and_5xx_twice_then_parses(monkeypatch, tmp_path) -> N
     assert (tmp_path / "news_cache.json").exists()
 
 
+def test_the_cached_function_returns_a_pickle_safe_payload() -> None:
+    """`st.cache_data` pickles its return value; it must not be a dataclass.
+
+    The cached function used to return a `FetchResult`, and the pickler write
+    failed in the running app. Streamlit catches that failure and relabels it
+    "Cannot serialize the return value", so `fetch_news` swallowed it into its
+    fallback and every page load silently hit the network. This asserts the
+    value handed to the cache is plain JSON-safe data, which is what makes the
+    cache able to fail loudly instead of by accident.
+    """
+    result = FetchResult(
+        [NewsEvent(currency="USD", title="Payrolls",
+                   when_utc=datetime(2026, 10, 9, 12, 30, tzinfo=timezone.utc),
+                   impact="High", forecast="200K", previous="150K",
+                   calendar_date=date(2026, 10, 9))],
+        datetime(2026, 10, 4, 12, 0, tzinfo=timezone.utc),
+        "ok", ["a warning"],
+    )
+
+    payload = news._result_to_payload(result)
+
+    # Only types pickle and JSON both handle without per-version behaviour.
+    def assert_plain(value) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                assert isinstance(key, str), f"non-str key {key!r}"
+                assert_plain(item)
+        elif isinstance(value, list):
+            for item in value:
+                assert_plain(item)
+        else:
+            assert value is None or isinstance(value, (str, bool, int, float)), (
+                f"cache payload holds {type(value).__name__}"
+            )
+
+    assert_plain(payload)
+    assert payload["fetched_at"] == "2026-10-04T12:00:00+00:00"
+    assert payload["events"][0]["when_utc"] == "2026-10-09T12:30:00+00:00"
+
+
+def test_payload_round_trip_preserves_every_field() -> None:
+    """The payload is the only serialisation now, so it must be lossless.
+
+    Both caches share this round-trip. If a field were dropped here it would
+    vanish from the in-memory cache and the on-disk cache at once, and no test
+    of either would notice.
+    """
+    event = NewsEvent(
+        currency="EUR", title="ECB", when_utc=datetime(2026, 10, 9, 6, 0, tzinfo=timezone.utc),
+        impact="High", forecast="3.75%", previous="3.50%", calendar_date=date(2026, 10, 9))
+    original = FetchResult([event], datetime(2026, 10, 4, 12, 0, tzinfo=timezone.utc),
+                           "ok", ["w"])
+
+    restored = news._payload_to_result(news._result_to_payload(original))
+
+    assert restored.fetched_at == original.fetched_at
+    assert restored.status == original.status
+    assert restored.warnings == original.warnings
+    assert len(restored.events) == 1
+    rebuilt = restored.events[0]
+    assert (rebuilt.currency, rebuilt.title, rebuilt.impact) == ("EUR", "ECB", "High")
+    assert rebuilt.when_utc == event.when_utc
+    assert rebuilt.calendar_date == event.calendar_date
+    assert (rebuilt.forecast, rebuilt.previous) == ("3.75%", "3.50%")
+
+
+def test_each_caller_gets_an_independent_result() -> None:
+    """`_fallback_result` mutates `warnings` in place.
+
+    A cached payload handed out as one shared object would let one caller's
+    prepended warning leak into another's. Rebuilding per call keeps callers
+    from mutating each other's result.
+    """
+    payload = news._result_to_payload(
+        FetchResult([], datetime(2026, 10, 4, 12, 0, tzinfo=timezone.utc), "ok", []))
+
+    first = news._payload_to_result(payload)
+    second = news._payload_to_result(payload)
+    first.warnings.append("only mine")
+
+    assert second.warnings == [], "one caller's warning leaked into another's"
+
+
 def test_html_fetch_falls_back_to_disk_cache(monkeypatch, tmp_path) -> None:
     cache_path = tmp_path / "news_cache.json"
     monkeypatch.setattr(news, "CACHE_PATH", cache_path)

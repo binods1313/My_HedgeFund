@@ -172,11 +172,20 @@ def _as_utc(value: datetime) -> datetime:
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
 
 
-def _write_cache(result: FetchResult) -> None:
-    payload = {
+def _result_to_payload(result: FetchResult) -> dict[str, Any]:
+    """A `FetchResult` reduced to plain JSON-safe types.
+
+    This is the single serialisation used by both caches. `st.cache_data`
+    pickles whatever a cached function returns, so the value it is handed must
+    be picklable without depending on dataclass or datetime behaviour; a dict
+    of str/bool/list/None always is. The on-disk JSON cache wants the same
+    shape, so both now share one round-trip instead of two that can drift.
+    """
+    return {
         "fetched_at": _as_utc(result.fetched_at).isoformat(),
         "status": result.status,
-        "warnings": result.warnings,
+        "warnings": list(result.warnings),
+        "cached": result.cached,
         "events": [
             {
                 "currency": event.currency,
@@ -190,6 +199,37 @@ def _write_cache(result: FetchResult) -> None:
             for event in result.events
         ],
     }
+
+
+def _payload_to_result(payload: dict[str, Any]) -> FetchResult:
+    """The inverse of `_result_to_payload`.
+
+    Rebuilt per call rather than shared: `st.cache_data` may hand the same
+    object to several callers, and `_fallback_result` mutates `warnings` in
+    place. Rebuilding makes each caller's result independent.
+    """
+    events: list[NewsEvent] = []
+    for item in payload.get("events", []):
+        when_text = item.get("when_utc")
+        events.append(
+            NewsEvent(
+                currency=str(item.get("currency", "")),
+                title=str(item.get("title", "")),
+                when_utc=_as_utc(datetime.fromisoformat(when_text)) if when_text else None,
+                impact=normalize_impact(item.get("impact")),
+                forecast=str(item.get("forecast", "")),
+                previous=str(item.get("previous", "")),
+                calendar_date=parse_calendar_date(item.get("calendar_date")),
+            )
+        )
+    fetched_at = _as_utc(datetime.fromisoformat(payload["fetched_at"]))
+    return FetchResult(
+        events, fetched_at, str(payload.get("status", "ok")),
+        list(payload.get("warnings", [])), cached=bool(payload.get("cached", False)))
+
+
+def _write_cache(result: FetchResult) -> None:
+    payload = _result_to_payload(result)
     try:
         CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
         temporary_path = CACHE_PATH.with_suffix(CACHE_PATH.suffix + ".tmp")
@@ -204,22 +244,14 @@ def _read_cache() -> FetchResult | None:
         return None
     try:
         payload = json.loads(CACHE_PATH.read_text(encoding="utf-8"))
-        events: list[NewsEvent] = []
-        for item in payload.get("events", []):
-            when_text = item.get("when_utc")
-            events.append(
-                NewsEvent(
-                    currency=str(item.get("currency", "")),
-                    title=str(item.get("title", "")),
-                    when_utc=_as_utc(datetime.fromisoformat(when_text)) if when_text else None,
-                    impact=normalize_impact(item.get("impact")),
-                    forecast=str(item.get("forecast", "")),
-                    previous=str(item.get("previous", "")),
-                    calendar_date=parse_calendar_date(item.get("calendar_date")),
-                )
-            )
-        fetched_at = _as_utc(datetime.fromisoformat(payload["fetched_at"]))
-        return FetchResult(events, fetched_at, "cached", list(payload.get("warnings", [])), cached=True)
+        # A row read back from disk is cached data by definition, whatever the
+        # stored flags said: `status` becomes "cached" and `cached` True. Both
+        # are forced here because callers distinguish a fresh fetch from a
+        # served-from-disk one by these two fields, and a payload written
+        # before this rule existed must still read back as cached.
+        payload["status"] = "cached"
+        payload["cached"] = True
+        return _payload_to_result(payload)
     except Exception as exc:
         LOG.warning("could not read calendar cache: %s", exc)
         return None
@@ -309,11 +341,21 @@ def _fetch_uncached(url: str, retries: int = MAX_RETRIES) -> FetchResult:
 
 if st is not None:
     @st.cache_data(ttl=300, show_spinner=False)
-    def _cached_fetch(url: str, retries: int) -> FetchResult:
-        return _fetch_uncached(url, retries)
+    def _cached_payload(url: str, retries: int) -> dict[str, Any]:
+        """Cache the JSON-safe payload, never the dataclass.
+
+        `st.cache_data` pickles whatever this returns. Handing it a `FetchResult`
+        put a custom class with `datetime` fields through that pickler, and the
+        write failed -- Streamlit's handler catches the failure and relabels it
+        as "Cannot serialize the return value", which sent every caller into
+        `fetch_news`'s fallback. A dict of str/bool/list/None pickles without
+        depending on dataclass or datetime behaviour, so the payload is what
+        gets cached; `_payload_to_result` rebuilds a fresh result per caller.
+        """
+        return _result_to_payload(_fetch_uncached(url, retries))
 else:  # Standard-Python use remains available in environments without Streamlit.
-    def _cached_fetch(url: str, retries: int) -> FetchResult:
-        return _fetch_uncached(url, retries)
+    def _cached_payload(url: str, retries: int) -> dict[str, Any]:
+        return _result_to_payload(_fetch_uncached(url, retries))
 
 
 def fetch_news(
@@ -325,7 +367,9 @@ def fetch_news(
     """Fetch the XML feed, returning typed cache/error results and never raising."""
     try:
         retry_count = max(0, min(int(retries), MAX_RETRIES))
-        return _cached_fetch(url, retry_count) if allow_cache else _fetch_uncached(url, retry_count)
+        if not allow_cache:
+            return _fetch_uncached(url, retry_count)
+        return _payload_to_result(_cached_payload(url, retry_count))
     except Exception as exc:
         LOG.warning("calendar fetch wrapper failed: %s", exc)
         return _fallback_result("fetch-error", ["Calendar feed unavailable"])

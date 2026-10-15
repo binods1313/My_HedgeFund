@@ -27,7 +27,8 @@ def render_pattern_matrix(
 ) -> None:
     st.markdown("**Pattern matrix**")
     st.caption(
-        "Display only. No agent is connected to this chart, so there is no confidence score. "
+        "Display only. This chart carries no automated evaluation, so there is "
+        "no confidence score. "
         "Deploy order copies side and stop into the order form and does not submit."
     )
     hidden = st.session_state.get("pattern_hidden") or []
@@ -55,7 +56,7 @@ def render_pattern_matrix(
                 st.caption(f"{when} · {pattern_group(hit.name)} · {hit.bias}")
                 st.caption(sentiment_text(hit.name))
                 st.caption(describe_trigger(opens, highs, lows, closes, hit.index, hit.name))
-                st.caption("Agent evaluation: not evaluated")
+                st.caption("Not evaluated")
                 chart_notes = notes.get(hit.index) or []
                 if chart_notes:
                     st.caption("Chart math: " + " · ".join(chart_notes))

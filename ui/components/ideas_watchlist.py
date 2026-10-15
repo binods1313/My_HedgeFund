@@ -89,7 +89,7 @@ def render_ideas_watchlist() -> None:
         st.caption(
             "On the Exchange page, under the chart and the secondary-data panel. "
             "Typed by hand and stored on this machine. Read only. "
-            "Not an order and not an agent score."
+            "Not an order and not a score."
         )
         source = st.text_input("Trader or source", key="w_idea_source", max_chars=80)
         symbol = st.text_input("Idea symbol", key="w_idea_symbol", max_chars=32)
