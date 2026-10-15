@@ -6,7 +6,7 @@ Defines clear ownership boundaries to prevent module duplication and ensure sing
 
 | Component | Owner | Purpose | Notes |
 |---|---|---|---|
-| i_brain.py | AI Brain Owner | LLM validation, confidence scoring. Deterministic unit-testable logic with no I/O/network. | Only place where LLM confidence affects trade permission. Cannot rival engine/brain. |
+| ai_brain.py | AI Brain Owner | LLM validation, confidence scoring. Deterministic unit-testable logic with no I/O/network. | Only place where LLM confidence affects trade permission. Cannot rival engine/brain. |
 | engine/brain.py | Engine Owner (Not Created Yet) | Execution-time brain for runtime strategy logic. | MUST NOT be created until Stage 2+ per instructions. One owner only - cannot duplicate ai_brain logic. |
 | engine/__main__.py | Engine Owner | Main engine loop, cycle polling, state machine transitions. | Handles commands, heartbeats, telemetry. Never calls strategy/risk/approval/exec in current state (as designed). |
 | engine/state.py | Engine Owner | State machine (OFF -> IDLE -> SCANNING -> EVALUATING -> WAITING_APPROVAL -> EXECUTING -> ERROR -> STOPPING -> OFF). | Transitions: ENABLE_AI takes OFF->IDLE only. |
