@@ -1,4 +1,12 @@
-"""LLM validation layer.
+"""DEPRECATED. Do not delete this module without a review.
+
+Not used by the engine. Not used by the UI. Retained temporarily.
+Retirement is planned after the migration and its tests are in place.
+Importing it from ``engine/`` or ``ui/`` is a mistake. The remaining
+imports are in tests. ``scripts/mutation_check.py`` names this file as a
+mutation target and does not import it.
+
+LLM validation layer.
 
 The LLM is NOT the strategy. Quantitative strategies produce a `signal_score`;
 this module can only validate that signal. It may REDUCE confidence or REJECT.
