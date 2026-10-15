@@ -207,6 +207,11 @@ class AccountGuard:
     #: The reason currently journalled, or None while verified. A *change* of
     #: reason always logs immediately; only repeats are windowed.
     _active_reason: str | None = None
+    #: ``terminal_offline`` or ``account_mismatch`` while a rejection stands.
+    _active_kind: str | None = None
+    #: Monotonic time the current outage or mismatch started. Recovery reports
+    #: the elapsed seconds once, then clears it.
+    _outage_started: float | None = None
 
     def check(self, account, *, phase: str = "startup") -> Fingerprint:
         """Verify one live account reading. Raises :class:`AccountMismatch`.
@@ -254,9 +259,35 @@ class AccountGuard:
                     f"({live.currency})",
                     live, stored)
 
+        previous_kind = self._active_kind
+        outage_started = self._outage_started
         self.mismatch_reason = None
         self._active_reason = None
+        self._active_kind = None
+        self._outage_started = None
         self._verified = live
+        if (previous_kind in ("terminal_offline", "account_mismatch")
+                and self.journal is not None):
+            # One event for the transition back to a matching fingerprint.
+            # A mismatch does not reach this branch unless the fingerprints
+            # now match: the rejects above returned first.
+            downtime = None
+            if outage_started is not None:
+                downtime = round(time.monotonic() - outage_started, 3)
+            self.journal.log_event(
+                "account",
+                "Terminal recovered",
+                severity="INFO",
+                source="engine",
+                context={
+                    "kind": "terminal_recovered",
+                    "from_kind": previous_kind,
+                    "phase": phase,
+                    "downtime_seconds": downtime,
+                    "login": live.login,
+                    "server": live.server,
+                },
+            )
         if self.journal is not None and stored is None:
             self.journal.set_account_fingerprint(
                 login=live.login, currency=live.currency,
@@ -297,6 +328,10 @@ class AccountGuard:
             if changed or not inside_window:
                 self._rejections[detail] = now
                 self._active_reason = detail
+                if self._outage_started is None:
+                    self._outage_started = now
+                self._active_kind = (
+                    "terminal_offline" if offline else "account_mismatch")
                 self.journal.log_event(
                     "account",
                     ("Terminal offline" if offline else "Account mismatch")

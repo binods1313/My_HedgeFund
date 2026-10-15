@@ -29,6 +29,11 @@ class GatewaySettings(StrictModel):
     reconnect_backoff_seconds: list[int] = Field(
         default_factory=lambda: [1, 2, 4, 8, 16, 30])
     order_lookback_seconds: int = Field(default=120, gt=0, le=3600)
+    #: How many times a None account_info() may force shutdown+reinitialize
+    #: before the gateway waits on the longest backoff only.
+    account_reinitialize_attempts: int = Field(default=3, gt=0, le=30)
+    #: Owner-thread calls that run longer than this are journalled as a stall.
+    watchdog_timeout_seconds: float = Field(default=30.0, gt=0, le=600)
 
     @model_validator(mode="after")
     def _backoff_increasing(self) -> "GatewaySettings":
@@ -105,6 +110,7 @@ class EngineConfig:
     #: Broker symbols the stage-1 scan reads. Empty means the cycle skips.
     scan_symbols: list[str] = field(default_factory=list)
     max_scan_seconds: float = 10.0
+    execution_mode: str = "approve_first"
 
     @property
     def db_path(self) -> Path:
@@ -137,6 +143,10 @@ class EngineConfig:
 
 MODE_PAPER = "PAPER"
 MODE_LIVE = "LIVE"
+#: The only execution mode this build implements. Auto execution is refused
+#: at config load. There is no code path that places an order because this
+#: value is set.
+EXECUTION_MODE_APPROVE_FIRST = "approve_first"
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -191,6 +201,8 @@ def load_engine_config(root: Path | str | None = None,
     if max_scan_seconds <= 0:
         raise ValueError("scanner.max_scan_seconds must be positive")
 
+    execution_mode = _parse_execution_mode(raw.get("execution_mode"))
+
     return EngineConfig(
         mode=mode,
         live_confirmation_required=bool(raw.get("live_confirmation_required", True)),
@@ -201,7 +213,26 @@ def load_engine_config(root: Path | str | None = None,
         config_path=cfg_path,
         scan_symbols=_flatten_whitelist(symbols_section.get("whitelist")),
         max_scan_seconds=max_scan_seconds,
+        execution_mode=execution_mode,
     )
+
+
+def _parse_execution_mode(value: Any) -> str:
+    """Accept only approve_first. Missing means that default.
+
+    ``auto_execute`` and any other string are a configuration error. This
+    function does not start trading.
+    """
+    if value is None or str(value).strip() == "":
+        return EXECUTION_MODE_APPROVE_FIRST
+    text = str(value).strip().lower()
+    if text != EXECUTION_MODE_APPROVE_FIRST:
+        raise ValueError(
+            f"execution_mode {text!r} is not valid. The only implemented "
+            f"mode is {EXECUTION_MODE_APPROVE_FIRST!r}. Auto execution is "
+            f"not implemented."
+        )
+    return text
 
 
 def _flatten_whitelist(whitelist: Any) -> list[str]:

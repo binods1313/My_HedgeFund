@@ -239,8 +239,10 @@ class StateMachine:
 
     # -- liveness ---------------------------------------------------------
 
-    def heartbeat(self, connected: bool = False) -> None:
-        self.journal.heartbeat(self._state, connected=connected)
+    def heartbeat(self, connected: bool = False,
+                  gateway_call_age: float | None = None) -> None:
+        self.journal.heartbeat(
+            self._state, connected=connected, gateway_call_age=gateway_call_age)
 
     def is_alive(self, offline_after: int = OFFLINE_AFTER_SECONDS) -> bool:
         """False when the newest heartbeat is older than `offline_after`."""

@@ -38,7 +38,10 @@ def test_last_trade_is_none_when_no_trade_rows(tmp_path):
 
 def test_scan_loop_and_signals_state_is_stated_not_implied(tmp_path):
     status = data_access.system_status(tmp_path / "absent.db")
-    assert status["scan_loop"] == "Not built yet"
+    assert status["scan_running"] is None
+    assert status["last_cycle_ts"] is None
+    assert status["symbols_scanned"] is None
+    assert "Not built yet" not in str(status["scan_loop"])
     assert status["signals"] == "No signals yet"
 
 

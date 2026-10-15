@@ -19,7 +19,7 @@ def enable_ai_availability(mode: str | None) -> tuple[bool, str]:
 def queue_enable_ai(db_path: Path | None = None) -> int:
     """Insert ENABLE_AI. The engine polls the row. This function does not trade."""
     from engine.commands import COMMAND_ENABLE_AI
-    from engine.journal import Journal
+    from engine.journal import Journal, SchemaTooOld
 
     # The caller may pass an explicit journal; otherwise the one configured path
     # is used. There is no default, because a default is how a UI button ends up
@@ -30,7 +30,10 @@ def queue_enable_ai(db_path: Path | None = None) -> int:
         from engine.journal import resolve_db_path
         target = resolve_db_path(load_engine_config().engine.db_path)
 
-    journal = Journal(target)
+    try:
+        journal = Journal(target, migrate=False)
+    except SchemaTooOld:
+        raise SchemaTooOld(SchemaTooOld.TEXT) from None
     try:
         return journal.enqueue_command(COMMAND_ENABLE_AI, {"source": "ui"})
     finally:

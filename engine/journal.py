@@ -261,6 +261,10 @@ MIGRATION_3 = [
     """,
     "CREATE INDEX IF NOT EXISTS idx_scan_symbols_cycle ON scan_symbols (cycle_id, symbol)",
     "CREATE INDEX IF NOT EXISTS idx_scan_results_cycle ON scan_results (cycle_id)",
+    # Age of the last successful gateway call, in seconds, at the moment the
+    # heartbeat was written. Added before this migration was applied to the
+    # live journal, so the live file still lands on version 3.
+    "ALTER TABLE heartbeats ADD COLUMN gateway_call_age_seconds REAL",
 ]
 
 MIGRATIONS: dict[int, list[str]] = {1: MIGRATION_1, 2: MIGRATION_2, 3: MIGRATION_3}
@@ -268,6 +272,17 @@ MIGRATIONS: dict[int, list[str]] = {1: MIGRATION_1, 2: MIGRATION_2, 3: MIGRATION
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+class SchemaTooOld(RuntimeError):
+    """The journal is older than this code. Callers must not migrate it.
+
+    The UI uses this. The engine is the only writer that may migrate, and
+    only after the operator has stopped the previous process and taken a
+    backup. The message is the exact string the dashboard shows.
+    """
+
+    TEXT = "Journal schema older than code"
 
 
 class SchemaTooNew(RuntimeError):
@@ -282,9 +297,11 @@ class Journal:
     not block.
     """
 
-    def __init__(self, path: str | Path, timeout: float = 10.0):
+    def __init__(self, path: str | Path, timeout: float = 10.0, *,
+                 migrate: bool = True):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        existed = self.path.exists()
         self._lock = threading.RLock()
         self._conn = sqlite3.connect(
             str(self.path), timeout=timeout, check_same_thread=False,
@@ -292,7 +309,10 @@ class Journal:
         )
         self._conn.row_factory = sqlite3.Row
         self._configure()
-        self.migrate()
+        if migrate:
+            self.migrate()
+        else:
+            self._refuse_schema_change(existed)
 
     def _configure(self) -> None:
         cur = self._conn.cursor()
@@ -345,6 +365,27 @@ class Journal:
                 else:
                     self._conn.execute("COMMIT")
         return self.current_version()
+
+    def _refuse_schema_change(self, existed: bool) -> None:
+        """Open a journal without migrating an existing file.
+
+        A path that does not exist yet is created at the current schema.
+        That is a new file, not an upgrade. An older file is left at its
+        own version and refused. A newer file is refused, same as migrate().
+        """
+        if not existed:
+            self.migrate()
+            return
+        current = self.current_version()
+        if current < SCHEMA_VERSION:
+            self.close()
+            raise SchemaTooOld(SchemaTooOld.TEXT)
+        if current > SCHEMA_VERSION:
+            raise SchemaTooNew(
+                f"Database at {self.path} is schema version {current}, but this "
+                f"engine understands at most {SCHEMA_VERSION}. Refusing to "
+                f"start: a newer engine has written this file."
+            )
 
     # -- core helpers ----------------------------------------------------
 
@@ -506,11 +547,15 @@ class Journal:
 
     # -- heartbeats ------------------------------------------------------
 
-    def heartbeat(self, state: str, *, connected: bool = False) -> None:
+    def heartbeat(self, state: str, *, connected: bool = False,
+                  gateway_call_age: float | None = None) -> None:
         import os as _os
         self.execute(
-            "INSERT INTO heartbeats (state, pid, connected, ts) VALUES (?, ?, ?, ?)",
-            (state, _os.getpid(), 1 if connected else 0, utc_now_iso()),
+            "INSERT INTO heartbeats "
+            "(state, pid, connected, ts, gateway_call_age_seconds) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (state, _os.getpid(), 1 if connected else 0, utc_now_iso(),
+             None if gateway_call_age is None else float(gateway_call_age)),
         )
 
     def last_heartbeat(self) -> dict | None:

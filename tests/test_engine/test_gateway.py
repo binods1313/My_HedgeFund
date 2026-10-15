@@ -108,10 +108,12 @@ class TestUninjectedGatewayResolvesMt5:
                      login=TEST_LOGIN, password=TEST_SECRET,
                      server=TEST_SERVER, journal=journal)
         try:
-            # No injection, and not connected: every helper must fail with the
+            # No injection, and not connected. account_info reports that as
+            # None. The other helpers must still fail with the
             # package-unavailable error, never with a NoneType attribute error.
+            assert gw.account_info() is None
+            assert gw.account_readable is False
             for name, call in (
-                ("account_info", lambda: gw.account_info()),
                 ("symbol_info", lambda: gw.symbol_info("EURUSD")),
                 ("symbol_info_tick", lambda: gw.symbol_info_tick("EURUSD")),
                 ("positions_get", lambda: gw.positions_get()),
@@ -254,8 +256,12 @@ class TestConnection:
                      journal=journal)
         try:
             assert gw.connected is False
+            # A disconnected account read is None, not a raised NotConnected.
+            # Other reads still raise so a caller cannot treat them as data.
+            assert gw.account_info() is None
+            assert gw.account_readable is False
             with pytest.raises(NotConnected):
-                gw.account_info()
+                gw.symbol_info("EURUSD")
         finally:
             gw.stop()
 

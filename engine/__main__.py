@@ -618,14 +618,27 @@ class Engine:
 
     def run_once(self) -> None:
         """One iteration: commands, heartbeat, telemetry, then one scan."""
+        gateway = getattr(self, "gateway", None)
+        if gateway is not None:
+            # Hand-built test engines use a stub with no watchdog. Production
+            # always has one. A missing method is not a stall.
+            poll = getattr(gateway, "poll_watchdog", None)
+            if poll is not None:
+                poll()
         self.commands.poll_once()
         # A reconnect (or reinitialisation) is the moment the account answer
         # changes, so it is checked there rather than every iteration.
         self._verify_account_transitions()
         # Session refresh keeps a long-lived process honest: a swap that happens
-        # with no disconnect at all is otherwise invisible.
+        # with no disconnect at all is otherwise invisible. Fingerprint
+        # verification runs before telemetry: a recovery event is written
+        # inside the guard, and equity stays blocked until that succeeds.
         self._account_verified = self._verify_account("session_refresh")
-        self.state.heartbeat(connected=self.gateway.connected)
+        readable = bool(getattr(self.gateway, "account_readable", False))
+        age = None
+        if hasattr(self.gateway, "last_success_age"):
+            age = self.gateway.last_success_age()
+        self.state.heartbeat(connected=readable, gateway_call_age=age)
         self._write_telemetry()
         # Scan stays inside the iteration, after the heartbeat, so a slow
         # cycle cannot skip the beat and a dedent cannot move it outside
@@ -726,6 +739,36 @@ def _broker_server_epoch(gateway) -> int | None:
     return None
 
 
+def _journal_execution_mode(journal: Journal, mode: str) -> None:
+    """Record approve_first when it changes. Does not place an order.
+
+    The same value on the next start writes nothing. A different previous
+    value writes one INFO row so the journal shows the change.
+    """
+    import json
+    rows = journal.query(
+        "SELECT context_json FROM events WHERE category = ? AND message = ? "
+        "ORDER BY id DESC LIMIT 1",
+        ("engine", "execution mode"),
+    )
+    previous = None
+    if rows:
+        try:
+            previous = json.loads(rows[0]["context_json"]).get("execution_mode")
+        except (TypeError, ValueError):
+            previous = None
+    if previous == mode:
+        return
+    journal.log_event(
+        "engine", "execution mode", severity="INFO", source="engine",
+        context={
+            "kind": "execution_mode",
+            "execution_mode": mode,
+            "previous": previous,
+        },
+    )
+
+
 def build_engine(*, config_path: Path | str | None = None,
                  root: Path | str | None = None,
                  mt5_module=None,
@@ -736,6 +779,7 @@ def build_engine(*, config_path: Path | str | None = None,
 
     db = Path(journal_path) if journal_path else config.db_path
     journal = Journal(db)
+    _journal_execution_mode(journal, config.execution_mode)
 
     state_machine = StateMachine(journal)
     state_machine.set_mode(config.mode)
@@ -750,6 +794,8 @@ def build_engine(*, config_path: Path | str | None = None,
         call_timeout=config.engine.gateway.call_timeout_seconds,
         backoff=tuple(config.engine.gateway.reconnect_backoff_seconds),
         order_lookback=config.engine.gateway.order_lookback_seconds,
+        max_account_reinitializes=config.engine.gateway.account_reinitialize_attempts,
+        watchdog_timeout=config.engine.gateway.watchdog_timeout_seconds,
         mt5_module=mt5_module,
         journal=journal,
     )

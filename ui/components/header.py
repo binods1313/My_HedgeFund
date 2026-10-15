@@ -37,6 +37,20 @@ _METRIC_ACCENTS = {
 }
 
 
+def _scan_badge(status: dict) -> str:
+    """The scan line the status card shows. Never the retired placeholder."""
+    notice = status.get("schema_notice")
+    if notice:
+        return str(notice)
+    if status.get("scan_loop"):
+        return str(status["scan_loop"])
+    return (
+        "scan_running=" + str(status.get("scan_running"))
+        + " last_cycle_ts=" + str(status.get("last_cycle_ts") or "—")
+        + " symbols_scanned=" + str(status.get("symbols_scanned"))
+    )
+
+
 def render_header(whitelist: dict[str, list[str]]) -> str | None:
     categories = [category for category, symbols in whitelist.items() if symbols]
     if categories:
@@ -122,11 +136,9 @@ def _draw_status(snapshot) -> None:
 
     # -- system status card (A3, honest wording) -----------------------------
     try:
-        from engine.journal import Journal
+        from ui.data_access import system_status
 
-        j = Journal(_configured_db_path())
-        status = j.system_status()
-        j.close()
+        status = system_status()
     except Exception:
         status = {}
 
@@ -155,7 +167,8 @@ def _draw_status(snapshot) -> None:
             + _badge(status.get("account_login_masked"), "green")
             + _badge(last_text, "cyan")
             + _badge("trades today " + trades_text, "green")
-            + _badge("Scan loop: " + str(status.get("scan_loop", "Not built yet")), "cyan")
+            + _badge(_scan_badge(status), "cyan")
+            + _badge("execution_mode=" + str(status.get("execution_mode") or "approve_first"), "cyan")
             + _badge(str(status.get("signals", "No signals yet")), "cyan")
             + '</div>'
             '<div class="status-shimmer">Heartbeat ' + str(age) + "s"

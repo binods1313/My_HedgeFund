@@ -50,7 +50,7 @@ def emergency_stop_availability(mode: str | None, engine_state: str | None) -> t
 def queue_emergency_stop(db_path: Path | None = None, *, close_positions: bool = True) -> int:
     """Insert EMERGENCY_STOP. The engine polls the row; this never trades."""
     from engine.commands import COMMAND_EMERGENCY_STOP
-    from engine.journal import Journal
+    from engine.journal import Journal, SchemaTooOld
 
     # Same resolution rule as ENABLE_AI: an explicit journal in tests, the one
     # configured path in production, and no implicit default in between.
@@ -60,7 +60,10 @@ def queue_emergency_stop(db_path: Path | None = None, *, close_positions: bool =
         from engine.journal import resolve_db_path
         target = resolve_db_path(load_engine_config().engine.db_path)
 
-    journal = Journal(target)
+    try:
+        journal = Journal(target, migrate=False)
+    except SchemaTooOld:
+        raise SchemaTooOld(SchemaTooOld.TEXT) from None
     try:
         return journal.enqueue_command(
             COMMAND_EMERGENCY_STOP,
@@ -77,7 +80,7 @@ def queue_reset_emergency(db_path: Path | None = None, *, confirmation: str) -> 
     rather than re-checking it here keeps a single authority for the rule.
     """
     from engine.commands import COMMAND_RESET_EMERGENCY
-    from engine.journal import Journal
+    from engine.journal import Journal, SchemaTooOld
 
     target = db_path
     if target is None:
@@ -85,7 +88,10 @@ def queue_reset_emergency(db_path: Path | None = None, *, confirmation: str) -> 
         from engine.journal import resolve_db_path
         target = resolve_db_path(load_engine_config().engine.db_path)
 
-    journal = Journal(target)
+    try:
+        journal = Journal(target, migrate=False)
+    except SchemaTooOld:
+        raise SchemaTooOld(SchemaTooOld.TEXT) from None
     try:
         return journal.enqueue_command(
             COMMAND_RESET_EMERGENCY,

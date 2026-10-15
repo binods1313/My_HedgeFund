@@ -443,16 +443,28 @@ class TestRejectionRateLimit:
         with pytest.raises(TerminalOffline):
             guard.check(None, phase="session_refresh")
         assert guard.check(LIVE_USD, phase="session_refresh") is not None
+        recovered = [
+            event for event in _events(journal)
+            if json.loads(event["context_json"]).get("kind") == "terminal_recovered"
+        ]
+        assert len(recovered) == 1
+        assert recovered[0]["severity"] == "INFO"
 
         # Back within the same window: the outage ended and began again, which
-        # is exactly the change an operator needs to see. Recovery itself is
-        # not journalled -- the two incidents are the two outages.
+        # is exactly the change an operator needs to see. The recovery row is
+        # the one between the two offline rows, and it does not swallow the
+        # second outage.
         clock[0] += 30.0
         with pytest.raises(TerminalOffline):
             guard.check(None, phase="session_refresh")
-        assert len(_events(journal)) == 2, (
+        kinds = [
+            json.loads(event["context_json"]).get("kind")
+            for event in _events(journal)
+        ]
+        assert kinds.count("terminal_offline") == 2, (
             "a recurrence after recovery must not be swallowed as a repeat"
         )
+        assert kinds.count("terminal_recovered") == 1
         newest = json.loads(_events(journal)[0]["context_json"])
         assert newest["repeat"] is False
 

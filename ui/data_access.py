@@ -576,8 +576,11 @@ def _journal_account_matches() -> Result | None:
                           "Broker or terminal is not answering; order not "
                           "submitted.")
 
-        from engine.journal import Journal
-        journal = Journal(_configured_db_path())
+        from engine.journal import Journal, SchemaTooOld
+        try:
+            journal = Journal(_configured_db_path(), migrate=False)
+        except SchemaTooOld:
+            return Result(False, "SCHEMA_OLD", SchemaTooOld.TEXT)
         try:
             stored = journal.get_account_fingerprint()
         finally:
@@ -701,7 +704,11 @@ def submit_order(asset: str, direction: str, lots: float,
         if tp_price <= 0:
             tp_price = None
 
-    journal = Journal(config.db_path)
+    from engine.journal import SchemaTooOld
+    try:
+        journal = Journal(config.db_path, migrate=False)
+    except SchemaTooOld:
+        return Result(False, "SCHEMA_OLD", SchemaTooOld.TEXT)
     try:
         # -- account baselines ------------------------------------------
         # The journal supplies the day-open and peak the broker cannot; the
@@ -969,8 +976,12 @@ def system_status(db_path: Path | None = None) -> dict[str, Any]:
         # None means "unknown" (journal unreadable or not read). A real zero is
         # only reported after the trades table was actually counted.
         "trades_today": None,
-        # The loop that would produce signals and scans is not built yet.
-        "scan_loop": "Not built yet",
+        "scan_loop": "no journal",
+        "scan_running": None,
+        "last_cycle_ts": None,
+        "symbols_scanned": None,
+        "schema_notice": None,
+        "execution_mode": None,
         "signals": "No signals yet",
     }
     if not target.exists():
@@ -982,6 +993,18 @@ def system_status(db_path: Path | None = None) -> dict[str, Any]:
             conn.execute("PRAGMA query_only = ON")
             version = conn.execute(
                 "SELECT MAX(version) AS v FROM schema_version").fetchone()
+            from engine.journal import SCHEMA_VERSION
+            ver = int(version["v"]) if version and version["v"] is not None else 0
+            schema_old = ver < SCHEMA_VERSION
+            scan_row = None
+            if not schema_old:
+                try:
+                    scan_row = conn.execute(
+                        "SELECT ts, status, symbol_count FROM scan_results "
+                        "ORDER BY id DESC LIMIT 1"
+                    ).fetchone()
+                except sqlite3.OperationalError:
+                    scan_row = None
             state = conn.execute(
                 "SELECT state, mode FROM engine_state WHERE id = 1"
             ).fetchone()
@@ -1027,6 +1050,31 @@ def system_status(db_path: Path | None = None) -> dict[str, Any]:
     status["trades_today"] = int(counted["n"]) if counted else None
 
     status["schema_version"] = version["v"] if version else None
+    if schema_old:
+        status["schema_notice"] = "Journal schema older than code"
+        status["scan_loop"] = "Journal schema older than code"
+    else:
+        running = bool(state and str(state["state"] or "").upper() == "SCANNING")
+        status["scan_running"] = running
+        if scan_row is None:
+            status["last_cycle_ts"] = None
+            status["symbols_scanned"] = 0
+            status["scan_loop"] = (
+                f"scan_running={running} last_cycle_ts=— symbols_scanned=0"
+            )
+        else:
+            counted = scan_row["symbol_count"]
+            status["last_cycle_ts"] = scan_row["ts"]
+            status["symbols_scanned"] = 0 if counted is None else int(counted)
+            status["scan_loop"] = (
+                f"scan_running={running} last_cycle_ts={status['last_cycle_ts']} "
+                f"symbols_scanned={status['symbols_scanned']}"
+            )
+    try:
+        from engine.config import load_engine_config
+        status["execution_mode"] = load_engine_config().execution_mode
+    except Exception:  # noqa: BLE001 - the card still renders without it
+        status["execution_mode"] = None
     if state:
         status["engine_state"] = str(state["state"] or "").upper() or None
         status["mode"] = str(state["mode"] or "").upper() or None

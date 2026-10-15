@@ -104,11 +104,17 @@ class OrderResult:
 @dataclass
 class GatewayStatus:
     connected: bool = False
+    #: True only after the most recent account_info() returned an account.
+    #: A successful initialize() does not set this. Heartbeats use it so a
+    #: stale "connected" flag cannot hide a terminal that is not answering.
+    account_readable: bool = False
     last_error: str = ""
     consecutive_failures: int = 0
     backoff_seconds: float = 0.0
     next_retry_at: float = 0.0
     thread_alive: bool = False
+    #: time.monotonic() of the last gateway call that returned. 0 means none.
+    last_success_at: float = 0.0
 
 
 class Gateway:
@@ -124,6 +130,8 @@ class Gateway:
                  magic: int = 100100, call_timeout: float = DEFAULT_CALL_TIMEOUT,
                  backoff: tuple[int, ...] = DEFAULT_BACKOFF,
                  order_lookback: int = DEFAULT_ORDER_LOOKBACK,
+                 max_account_reinitializes: int = 3,
+                 watchdog_timeout: float = 30.0,
                  mt5_module: Any = None,
                  journal=None):
         self.login = login
@@ -134,6 +142,13 @@ class Gateway:
         self.call_timeout = call_timeout
         self.backoff = backoff
         self.order_lookback = order_lookback
+        self.max_account_reinitializes = max(1, int(max_account_reinitializes))
+        self.watchdog_timeout = float(watchdog_timeout)
+        self._empty_account_reads = 0
+        self._inflight_name: str | None = None
+        self._inflight_started: float | None = None
+        self._stall_logged = False
+        self._reconnect_requested = False
 
         # Injected for tests. In production this is the real module, imported
         # lazily inside the owner thread.
@@ -186,12 +201,31 @@ class Gateway:
         That is the honest answer rather than a guess, because a blocked owner
         means the terminal cannot be read for reconciliation either.
         """
+        if request.name == "reinitialize":
+            self._drop_session_inline()
+            request.resolve(True)
+            return
+        # An order that was already in flight is not submitted again. A stall
+        # sets this flag; the next order_send is rejected instead of retried.
+        if self._reconnect_requested and request.name == "order_send":
+            request.reject(NotConnected(
+                "order was not retried after a gateway stall"))
+            return
+        if self._reconnect_requested and request.name != "order_send":
+            self._reconnect_requested = False
+            self._drop_session_inline()
         # Reconnect before servicing a request, so callers never see a stale
-        # failure when the link is simply down.
+        # failure when the link is simply down. Orders do not take this
+        # branch: a disconnected gateway refuses them without initialize().
         if not self.status.connected:
+            if request.name == "order_send":
+                request.reject(NotConnected(self.status.last_error or "not connected"))
+                return
             if not self._owner_ensure_connected():
                 request.reject(NotConnected(self.status.last_error))
                 return
+        self._inflight_name = request.name
+        self._inflight_started = time.monotonic()
         try:
             result = request.fn(*request.args, **request.kwargs)
         except Exception as exc:      # noqa: BLE001 - recorded and reported
@@ -199,9 +233,15 @@ class Gateway:
             self.status.last_error = f"{type(exc).__name__}: {exc}"
             request.reject(exc)
             return
-        self.status.consecutive_failures = 0
-        self.status.last_error = ""
-        request.resolve(result)
+        else:
+            self.status.consecutive_failures = 0
+            self.status.last_error = ""
+            self.status.last_success_at = time.monotonic()
+            self._stall_logged = False
+            request.resolve(result)
+        finally:
+            self._inflight_name = None
+            self._inflight_started = None
 
     # -- connection, always on the owner thread ---------------------------
 
@@ -550,7 +590,104 @@ class Gateway:
     # -- read helpers ----------------------------------------------------
 
     def account_info(self) -> Any:
-        return self.call("account_info", self._mt5_or_raise().account_info)
+        """Read the logged-in account. None means the gateway is not connected.
+
+        A previous initialize() that left ``status.connected`` true is not
+        trusted. None forces one reinitialize, then the configured backoff.
+        The retry count is bounded. This method never calls order_send.
+        """
+        if not self.status.connected or time.monotonic() < self.status.next_retry_at:
+            if time.monotonic() < self.status.next_retry_at and not self.status.connected:
+                self.status.account_readable = False
+                return None
+            if not self.status.connected and not self.ensure_connected():
+                self.status.account_readable = False
+                return None
+        try:
+            result = self.call(
+                "account_info", self._mt5_or_raise().account_info)
+        except NotConnected:
+            self.status.account_readable = False
+            return None
+        if result is None:
+            self._on_empty_account()
+            return None
+        self._empty_account_reads = 0
+        self.status.account_readable = True
+        return result
+
+    def _on_empty_account(self) -> None:
+        """account_info() returned None while the gateway claimed a session."""
+        self.status.account_readable = False
+        self.status.connected = False
+        self.status.last_error = "account_info() returned None"
+        self._empty_account_reads += 1
+        if self._empty_account_reads <= self.max_account_reinitializes:
+            self._queue_drop_session()
+        self.status.consecutive_failures += 1
+        self._schedule_backoff()
+
+    def _queue_drop_session(self) -> None:
+        """Ask the owner thread to shut the terminal session down. No order."""
+        request = _Request(
+            "reinitialize", self._drop_session_inline, (), {},
+            timeout=self.call_timeout)
+        self._queue.put(request)
+        try:
+            request.wait()
+        except Exception:  # noqa: BLE001 - the flag is already cleared
+            pass
+
+    def _drop_session_inline(self) -> bool:
+        """Shutdown on the owner thread. Does not submit an order."""
+        mt5 = self._mt5
+        if mt5 is not None:
+            try:
+                mt5.shutdown()
+            except Exception:  # noqa: BLE001
+                pass
+        self.status.connected = False
+        return True
+
+    def poll_watchdog(self) -> None:
+        """Notice an owner call that has exceeded the stall timeout.
+
+        Runs on the caller. It does not touch MT5 and it does not retry an
+        order. The owner shuts the session down after the stuck call returns,
+        and the next non-order request reconnects.
+        """
+        started = self._inflight_started
+        if started is None:
+            return
+        age = time.monotonic() - started
+        if age < self.watchdog_timeout:
+            return
+        self.status.connected = False
+        self.status.account_readable = False
+        self._reconnect_requested = True
+        if self._stall_logged:
+            return
+        self._stall_logged = True
+        self._log(
+            "gateway", "gateway owner thread stalled",
+            severity="WARNING",
+            context={
+                "kind": "gateway_stalled",
+                "pending_call": self._inflight_name,
+                "age_seconds": round(age, 3),
+            },
+        )
+
+    def last_success_age(self) -> float | None:
+        """Seconds since the last gateway call that returned, or None."""
+        stamp = self.status.last_success_at
+        if not stamp:
+            return None
+        return max(0.0, time.monotonic() - stamp)
+
+    @property
+    def account_readable(self) -> bool:
+        return bool(self.status.account_readable)
 
     def symbol_info(self, symbol: str) -> Any:
         return self.call("symbol_info", self._mt5_or_raise().symbol_info, symbol)

@@ -163,7 +163,7 @@ class TestAppRunsEndToEnd:
     evaluated.
     """
 
-    def test_app_executes_without_raising(self):
+    def test_app_executes_without_raising(self, tmp_path, monkeypatch):
         import contextlib
         import importlib.util
         import io
@@ -177,6 +177,17 @@ class TestAppRunsEndToEnd:
         for module in ("streamlit", "plotly", "pandas", "MetaTrader5"):
             if importlib.util.find_spec(module) is None:
                 pytest.skip(f"{module} not installed in this interpreter")
+
+        # The app resolves the journal through engine.journal.resolve_db_path.
+        # Point that at a temporary file this test creates. The migration
+        # happens here, in the test, before the app runs. The UI path itself
+        # opens journals with migrate=False.
+        from engine.journal import Journal
+        temporary = tmp_path / "app_exec.db"
+        created = Journal(temporary)
+        created.close()
+        monkeypatch.setattr(
+            "engine.journal.resolve_db_path", lambda configured: temporary)
 
         logging.disable(logging.CRITICAL)
         original_argv = sys.argv

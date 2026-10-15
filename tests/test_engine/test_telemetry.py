@@ -229,10 +229,10 @@ class TestConnectedButAccountlessIsVisible:
                 "four consecutive gaps in one run must log once, not four "
                 f"times; got {len(warnings)}"
             )
-            # The process is still alive and still failing, which the journal
-            # shows through the heartbeats rather than a WARNING storm.
-            engine.state.heartbeat(connected=engine.gateway.connected)
-            assert engine.journal.last_heartbeat()["connected"] == 1
+            # The process is still alive and still failing. The heartbeat row
+            # is written, and its connected flag follows the account read.
+            engine.state.heartbeat(connected=engine.gateway.account_readable)
+            assert engine.journal.last_heartbeat()["connected"] == 0
         finally:
             engine.gateway.shutdown_terminal()
             engine.gateway.stop()
