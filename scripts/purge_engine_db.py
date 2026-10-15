@@ -21,8 +21,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DB = REPO_ROOT / "data" / "engine.db"
 ARCHIVE_DIR = REPO_ROOT / "backups"
+
+
+def configured_db() -> Path:
+    """The journal the engine is actually configured to use.
+
+    This script once hardcoded `data/engine.db`. After the account switch the
+    configured journal became `data/engine_5057151780.db`, so the literal would
+    have purged the wrong file while reporting success.
+    """
+    from engine.config import load_engine_config
+    from engine.journal import resolve_db_path
+    return resolve_db_path(load_engine_config().engine.db_path)
 
 
 def summarise(db: Path) -> str:
@@ -62,14 +73,14 @@ def main(argv: list[str] | None = None) -> int:
     print("  ENGINE DATABASE PURGE")
     print("=" * 70)
 
-    if not DB.exists():
-        print(f"  nothing to purge: {DB} does not exist")
+    if not configured_db().exists():
+        print(f"  nothing to purge: {configured_db()} does not exist")
         return 0
 
-    print(f"  target: {DB}")
+    print(f"  target: {configured_db()}")
     print()
     print("  current contents:")
-    print(summarise(DB))
+    print(summarise(configured_db()))
     print()
 
     if not args.yes:
@@ -86,7 +97,7 @@ def main(argv: list[str] | None = None) -> int:
     ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     archive = ARCHIVE_DIR / f"engine_pre_purge_{stamp}.db"
-    shutil.copy2(DB, archive)
+    shutil.copy2(configured_db(), archive)
 
     # Remove the database and its WAL/SHM sidecars. Leaving them behind would
     # let SQLite resurrect committed pages from the old file.
