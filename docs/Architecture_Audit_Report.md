@@ -38,7 +38,11 @@ This document provides a comprehensive technical and business overview of the cu
 
 ## 3. Current System Architecture
 
-**Data Flow:**
+The graph below is a retired description. The running engine does not
+call `ai_brain.py`, and `ai_brain.py` does not call an execution engine.
+The source-backed sequence for PID 44436 is in `docs/Ownership_Table.md`.
+
+**Retired description (not the running loop):**
 ```mermaid
 graph TD
     A[MT5 Terminal] -->|get_market_data| B(Data Engine: Indicators)

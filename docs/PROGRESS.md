@@ -127,17 +127,20 @@ $ ls tests/test_engine
 | E | PARTIAL | Layout components exist; manual checklist not yet verified by operator |
 | G | PARTIAL | Green baseline achieved; secret_scan now 0 worktree hits after ALLOWED_LOCAL_NAMES fix |
 
-## A1 — Restore green (final)
-```
-$ py -3 -m pytest -q
-1112 passed, 6 skipped, 0 failed in 21.83s
-```
+## A1 — Restore green (SUPERSEDED, see A3 status below)
+Earlier record: `1112 passed, 6 skipped, 0 failed` (Task 3). **That is no longer true.**
+The full suite now stops at collection because `ai_brain.py` was deleted (staged,
+uncommitted) while `tests/test_llm_validator.py` and `tests/test_metrics.py` still import it.
 
-## A4 — Final counts
-- **Total passed:** 1112 (above required 1055)
-- **Failed:** 0
-- **Skipped:** 6
-- **Collection counts:** 618 tests in `tests/test_ui/` + `tests/test_engine/`
+## A4 — Counts (current, 2026-10-14)
+- **Full suite (`pytest -q`):** NOT RUNNABLE. Interrupted at collection: `tests/test_llm_validator.py` → `ModuleNotFoundError: ai_brain`.
+- **Excluding `test_llm_validator.py`:** 1472 passed, 6 skipped, 5 failed (all 5 tied to `ai_brain`: 2 in `test_dependencies.py`, 3 in `test_metrics.py`).
+- **`tests/test_ui`:** 321 passed (after A2/A3 changes and the new status-card tests).
+- **Old figure 1112 / 0 failed** is retained only as history; do not cite it.
+
+## A3 status
+- `ai_brain.py`: deleted in working tree (staged). Not used by app, UI, or engine. Used only by two tests and `scripts/mutation_check.py`. **Decision pending: restore or retire with test changes.**
+- System status card: honest wording done; a false-zero bug fixed (trade query ran on a closed connection and was silently swallowed).
 
 ---
 
@@ -156,7 +159,7 @@ $ py -3 -m pytest -q
 | Item | Status | Evidence |
 |------|--------|----------|
 | C1 — Key in config | ✅ DONE | `AGENTROUTER_API_KEY` added to `engine/keys.py` PROVIDER_ENV_VARS, `.env.example`, redaction test in `tests/test_engine/test_boundaries.py` |
-| C2 — Docs research | ✅ DONE | AgentRouter uses `Authorization: Bearer sk-ar-...` or `x-api-key: sk-ar-...`; supports OpenAI/Anthropic SDKs; custom OpenAI-compatible base URL supported via OpenRouter/Ollama; pay-as-you-go terms allow custom app use |
+| C2 — Docs research | ✅ DONE | AgentRouter uses an Authorization bearer header or an x-api-key header; supports OpenAI/Anthropic SDKs; custom OpenAI-compatible base URL supported via OpenRouter/Ollama; pay-as-you-go terms allow custom app use |
 | C3 — check_agentrouter.py | ✅ DONE | Created; reports key presence, HTTP status, latency, model, PASS/FAIL; never prints key or full response. Output: `key present: no / PASS: no key to test` |
 | Scanner | ✅ DONE | 0 worktree hits after adding `session_run_counter` to ALLOWED_LOCAL_NAMES |
 

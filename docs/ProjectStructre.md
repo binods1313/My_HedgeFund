@@ -1,5 +1,7 @@
 # Project Structure
 
+> Last verified: 2026-10-14 — branch `feature/echofi-ui` @ `e30c050` (Task 3: Dexter discovery + AgentRouter support + theme readability fixes). This file is the canonical structure doc (note: filename keeps the historical `ProjectStructre` spelling).
+
 ## Overview
 
 This repository is a **Version 2.0** AI trading and execution terminal built around MetaTrader 5, a Streamlit dashboard, and a Python-based decision/execution stack. The project is organized as a hybrid of:
@@ -16,7 +18,7 @@ The codebase is designed to collect market data, evaluate signals, enforce risk 
 
 **Key V2.0 principle:** the LLM remains **validation only**. The processing chain is:
 
-```
+```text
 Strategies → Confidence Engine → Risk Engine → LLM Validator → Telegram Approval → Executor
 ```
 
@@ -29,117 +31,77 @@ Telegram is an **APPROVAL LAYER ONLY** — the human operator's YES/NO is what a
 ```text
 HedgeFund_Binod_v2/
 ├── .env                    # local secrets (gitignored)
-├── .env.example            # template for credentials
-├── .gitignore              # ignores secrets, local data, generated files
-├── .pre-commit-config.yaml # pre-commit quality checks
-├── ai_brain.py             # AI signal/decision engine
-├── app.py                  # Streamlit UI dashboard
-├── backups/                # backup files and historical snapshots
-├── config.py               # loads MT5 and LLM env secrets
-├── config.yaml             # YAML config for rules, symbols, validation
-├── config_loader.py        # strict Pydantic schema validation of config.yaml
-├── data/                   # market data / runtime data store
-├── data_engine.py          # MT5 market data and account integration layer
+├── .env.example            # template: MT5, Groq/xAI/OpenRouter, Telegram, AgentRouter, Infoway, Anchor
+├── .gitignore
+├── .pre-commit-config.yaml
+├── .secrets.baseline
+├── ai_brain.py             # AI signal/decision engine (Groq LLaMA-3)
+├── app.py                  # Streamlit entry: loads config, theme, snapshot, tab router
+├── backups/                # engine.db archives / historical snapshots
+├── config.py               # loads MT5 + LLM env secrets
+├── config.yaml             # authoritative runtime config (symbols, risk, LLM tolerances)
+├── config_ext.yaml         # operator settings: chart, infoway, dexter, learning, shadow
+├── config_ext_loader.py    # strict Pydantic loader for config_ext.yaml
+├── config_loader.py        # strict Pydantic loader for config.yaml
+├── data/                   # runtime store (gitignored DBs, caches, prefs)
+│   ├── engine.db*          # live SQLite journal (+ -shm/-wal)
+│   ├── learning.db
+│   ├── ideas_watchlist.json / infoway_budget.json / news_cache.json / ui_prefs.json
+│   └── market_bars/        # cached bars e.g. EURUSD__H1.json, EURUSD__H4.json
+├── data_engine.py          # MT5 market data + account integration layer
 ├── docs/                   # project documentation
-│   ├── README.md
-│   ├── api.md
-│   ├── architecture.md
-│   ├── contributing.md
-│   ├── design/
-│   ├── getting-started.md
-│   ├── Instructions.md
-│   ├── Instructions_1.md
-│   ├── Instructions_2.md
-│   ├── Phase1_Engine_Design.md
-│   ├── ui.md
-│   ├── V2_Implementation_Plan.md
-│   ├── Architecture_Audit_Report.md
-│   └── ProjectStructire.md
-├── engine/                 # long-running trading runtime
-│   ├── __init__.py
-│   ├── __main__.py         # entry: python -m engine
-│   ├── approval_flow.py    # approval pipeline wiring (risk → LLM → telegram → executor)
-│   ├── commands.py         # command channel (ENABLE_AI, PAUSE, RESUME, ...)
-│   ├── config.py           # engine configuration from config.yaml
-│   ├── dryrun.py           # dry-run / dry-run-cli entry points
-│   ├── dryrun_cli.py
-│   ├── equity.py           # equity baselines and daily loss tracking
-│   ├── executor.py         # order execution (PaperExecutor / LiveExecutor)
-│   ├── gateway.py          # MT5 gateway: single-thread owner; all MT5 via here
-│   ├── guard.py            # live guard for pre-dispatch structure checks
-│   ├── indicators/         # structural and trend indicators
-│   │   ├── structure.py
-│   │   ├── trend.py
-│   │   └── __init__.py
-│   ├── journal.py          # SQLite journal, WAL mode, schema migrations
-│   ├── keys.py             # provider credential routing (redacted)
-│   ├── llm_client.py       # xAI provider client for LLM validation
-│   ├── notifications/      # notification layers
-│   │   ├── __init__.py
-│   │   └── telegram_service.py  # Telegram approval layer
-│   ├── risk.py             # Risk Engine: fail-closed limit gate
-│   ├── sizing.py           # lot sizing with broker normalization
-│   ├── state.py            # state machine + heartbeat writer
-│   ├── strategy.py         # confluence-based signal generation
-│   └── validation/         # structural validation gates
-│       └── xai_client.py
-├── execution.py            # trade execution orchestration and order actions
-├── formatting.py           # formatting helpers for display and masking
-├── metrics.py              # risk, exposure, and performance metrics
-├── pytest_output.txt       # test run output (ephemeral)
-├── README.md               # project overview and setup instructions
-├── reports/                # verification and demo reports
-├── requirements.txt        # Python dependencies (see notes below)
-├── run.bat                 # Windows launcher for the app
-├── scripts/                # operational and verification utilities
-│   ├── __init__.py
-│   ├── build_purge_expressions.py
-│   ├── build_replace_text.py
-│   ├── check_xai_key.py
-│   ├── demo_verification.py
-│   ├── engine_connect_check.py
-│   ├── install_precommit_hook.py
-│   ├── mutation_check.py
-│   ├── precommit_hook.py
-│   ├── probe_tick_specs.py
-│   ├── purge_engine_db.py
-│   ├── secret_scan.py
-│   ├── secret_triage.py
-│   ├── set_mt5_account.py
-│   └── verify_history_clean.py
-├── setup.bat               # Windows environment bootstrap script
-└── tests/                  # test suite
-    ├── test_demo_verification.py
-    ├── test_dependencies.py
-    ├── test_engine/        # engine unit tests
-    │   ├── __init__.py
-    │   ├── fake_mt5.py
-    │   ├── test_boundaries.py
-    │   ├── test_equity.py
-    │   ├── test_executor_commands.py
-    │   ├── test_gates.py
-    │   ├── test_gateway.py
-    │   ├── test_guard.py
-    │   ├── test_indicators.py
-    │   ├── test_llm_client.py
-    │   ├── test_risk.py
-    │   ├── test_risk_wiring.py
-    │   ├── test_state.py
-    │   ├── test_strategy_dryrun.py
-    │   └── test_telemetry.py
-    ├── test_execution_guards.py
-    ├── test_formatting_and_mode.py
-    ├── test_llm_validator.py
-    ├── test_metrics.py
-    ├── test_phase0_bugs.py
-    ├── test_secret_scan.py
-    ├── test_strategy_fixtures.py
-    ├── test_ui/
-    │   ├── test_data_access.py
-    │   ├── test_news_parser.py
-    │   ├── test_risk_calc.py
-    │   └── test_state.py
-    └── test_xm_symbols.py
+│   ├── README.md / api.md / architecture.md / contributing.md / getting-started.md / ui.md
+│   ├── qa_recipe.md / PROGRESS.md / FINDINGS_AND_HANDOFF.md / EXTERNAL_REPOS_REVIEW.md
+│   ├── Architecture_Audit_Report.md / Phase0_Audit_Report.md
+│   ├── Phase1_Engine_Design.md / Phase1_Account_Guard_And_Symbols.md
+│   ├── StepA_Account_Guard_Wiring.md / V2_Implementation_Plan.md
+│   ├── DEXTER_INTEGRATION_PLAN.md / Instructions.md / Instructions_1.md
+│   ├── Instructions_2.md / Instructions_3.md
+│   ├── ProjectStructre.md            # this file (canonical; keeps historic spelling)
+│   ├── ProjectStructre_updated.md    # short Task-3 delta note
+│   └── design/             # pending_orders.md, realised_pnl.md, strategy_library_and_backtest.md + refs
+├── engine/                 # long-running trading runtime (python -m engine)
+│   ├── __init__.py / __main__.py
+│   ├── account_guard.py    # account/symbol guard wiring
+│   ├── approval_flow.py    # risk → LLM → telegram → executor wiring
+│   ├── commands.py         # command channel (ENABLE_AI, PAUSE, RESUME, EMERGENCY_STOP, …)
+│   ├── config.py           # engine settings from config.yaml
+│   ├── dryrun.py / dryrun_cli.py
+│   ├── equity.py / executor.py / gateway.py / guard.py
+│   ├── journal.py / keys.py (Keyring incl. AGENTROUTER_API_KEY) / llm_client.py
+│   ├── risk.py / sizing.py / state.py / strategy.py
+│   ├── indicators/         # structure.py, trend.py
+│   ├── validation/         # __init__.py, xai_client.py
+│   ├── research/           # agent_01..agent_08 + agent_09/10 engine adapters
+│   └── notifications/      # telegram_service.py (approval layer only)
+├── execution.py / formatting.py / metrics.py / quote_clock.py
+├── learning/               # shadow ledger: bars, calibrate, ledger, propose, resolver, runtime, shadow
+├── reports/                # demo_verification_*.txt + ui_qa/ (rounds 2-5, screenshots)
+├── scripts/                # operational / verification utilities
+│   ├── __init__.py / demo_verification.py / engine_connect_check.py
+│   ├── check_agentrouter.py / check_infoway.py / check_xai_key.py
+│   ├── secret_scan.py / secret_triage.py / classify_scan_hits.py
+│   ├── purge_engine_db.py / probe_tick_specs.py / set_mt5_account.py
+│   ├── task3_collect.py / mutation_check.py / verify_history_clean.py
+│   ├── build_purge_expressions.py / build_replace_text.py
+│   └── install_precommit_hook.py / precommit_hook.py
+├── ui/                     # Streamlit dashboard package
+│   ├── __init__.py (init_state, inject_theme) / state.py / theme.py / theme_prefs.py
+│   ├── alerts.py / build_stamp.py / chart_fit.py / data_access.py
+│   ├── equity_curve.py / indicators.py / order_types.py / patterns.py
+│   ├── performance.py / risk_calc.py
+│   ├── components/         # header, nav, chart, trading, order_form, positions_matrix,
+│   │                       # analytics_row, cards, ai_signals, research_desk, news_tab,
+│   │                       # infoway_panel, ideas_watchlist, finviz_links, snapshot,
+│   │                       # alert_banner, auxiliary_views, enable_ai, pattern_hub,
+│   │                       # data_cache, theme_studio
+│   └── services/           # dexter_client.py, infoway_client.py, news.py
+├── tests/
+│   ├── test_engine/ (conftest, fake_mt5 + account_guard, gates, gateway, risk, research, …)
+│   ├── test_ui/ (app_boot, chart_publish, dexter_client, theme_contrast/prefs, task7/9/10/11, …)
+│   ├── test_repo/ + fixtures/ (dexter, infoway) + top-level safety/contract tests
+├── requirements.txt / setup.bat / run.bat / README.md
+└── pytest_*.txt / output.txt / push_prompt.txt   # ephemeral local run logs (gitignored)
 ```
 
 ---
@@ -148,15 +110,7 @@ HedgeFund_Binod_v2/
 
 ### `app.py`
 
-Main Streamlit application for the command center dashboard. It integrates:
-
-- MT5 market data collection
-- AI signal generation
-- execution and position management
-- account metrics / display formatting
-- risk display and telemetry presentation
-
-This is the user-facing operational surface for the system.
+Thin Streamlit entry (current): `load_config()` → `init_state()` → `inject_theme()` → `load_shared_snapshot()` → `render_navigation()` → `render_header()` → tab router (`TAB_LABELS`): Exchange / Journal / AI Signals / News / Journal-view / Research Desk, plus alert banner, analytics row, margin/equity surfaces, and build-stamp caption. All tab bodies live under `ui/components/`.
 
 ### `ai_brain.py`
 
@@ -206,12 +160,15 @@ Loads runtime secrets from environment variables and prefixes them with known na
 - `GROQ_API_KEY`
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_CHAT_ID`
+- `AGENTROUTER_API_KEY` (research agents; Task 3)
+- `INFOWAY_API_KEY` (research display only; never an order price)
+- `ANCHOR_API_KEY` (+ deprecated `ANCHORBROWSER_API_KEY` fallback; vendor SDK only)
 
 This file is intentionally environment-driven so credentials are not hardcoded into source files. Secrets are never printed or logged. Updated to include AGENTROUTER_API_KEY and reflect TASK 3 changes.
 
-### `config_loader.py`
+### `config_loader.py` / `config_ext_loader.py`
 
-Strict YAML loader for `config.yaml`.
+Strict YAML loaders. `config_loader.py` validates `config.yaml`; `config_ext_loader.py` validates `config_ext.yaml` (`chart`, `infoway`, `dexter`, `learning`, `shadow`).
 
 It validates the schema with Pydantic and enforces consistency between:
 
@@ -245,6 +202,14 @@ Includes:
 - gross exposure and other exposure metrics
 - confidence and status color formatting
 
+### `quote_clock.py`
+
+Broker tick-age helper (`broker_tick_age_seconds`): corrects whole-hour broker-server clock skew (e.g. UTC+3) so a fresh tick is not reported as ~−10800s; never returns a negative age. Used by `data_engine` stale checks and the UI header.
+
+### `config_ext.yaml`
+
+Operator settings (no secrets): `chart.atr_k/rr`, `infoway.daily_cap/timeout_s/cache_ttl_s`, `dexter.daily_cap/timeout_s/max_iterations`, `learning.*`, `shadow.enabled`.
+
 ---
 
 ## Engine Package (`engine/`)
@@ -254,6 +219,10 @@ The `engine/` directory contains the long-running trading runtime. It is started
 ### `engine/__init__.py`
 
 Package init declaring the public components: `commands`, `config`, `executor`, `gateway`, `journal`, `keys`, `notifications`, `risk`, `state`, `strategy`.
+
+### `engine/account_guard.py`
+
+Account/symbol guard wiring (Phase 1): enforces the tradable-symbol whitelist and account preconditions before any dispatch.
 
 ### `engine/__main__.py`
 
@@ -369,15 +338,15 @@ Engine state machine with 9 states: `OFF`, `IDLE`, `SCANNING`, `ANALYZING`, `VAL
 
 Confluence assembly: five blocks (liquidity sweep, fair value gap, Fibonacci OTE, EMA ribbon, VWAP). A signal exists only when all required blocks agree; any opposing block is a conflict and the signal is rejected rather than down-weighted. Produces a `Signal` (`is_actionable` property) and `to_intent()` converts it to an `OrderIntent` (requires a broker tick specification).
 
-### `engine/validation/` / `engine/indicators/`
+### `engine/validation/` / `engine/indicators/` / `engine/research/`
 
-Structural validation gates and the indicator set used by the strategy layer (swing leg / sweep detection, FVG, VWAP, EMA ribbon).
+Structural validation gates and the indicator set used by the strategy layer (swing leg / sweep detection, FVG, VWAP, EMA ribbon). `engine/research/` holds the 10-agent research desk: `agent_01_market_regime` … `agent_08_strategy` plus `agent_09_risk_engine_adapter` and `agent_10_execution_adapter`.
 
 ### `engine/approval_flow.py`
 
 Approval pipeline wiring. It wires the existing components into the V2.0 chain:
 
-```
+```text
 signal → risk.evaluate() → llm_client.validate_trade() → telegram approval → executor.submit()
 ```
 
@@ -422,8 +391,32 @@ Key examples:
 - `verify_history_clean.py` — validates history or state normalization
 - `install_precommit_hook.py` — ensures local quality gates are installed
 - `dryrun.py` / `dryrun_cli.py` — dry-run modes that do not submit orders
+- `check_agentrouter.py` / `check_infoway.py` — provider discovery/diagnostics (Task 3)
+- `classify_scan_hits.py` — classifies secret-scan hits without printing matches
+- `task3_collect.py` — Task 3 evidence collector
 
 The scripts are operational support tools, not the core trading logic itself.
+
+---
+
+## UI Package (`ui/`)
+
+Streamlit dashboard package (Echofi-style command center):
+
+- `__init__.py` — `init_state()`, `inject_theme()`
+- `state.py` / `data_access.py` / `snapshot` (`components/snapshot.py`, `data_cache.py`)
+- `theme.py` / `theme_prefs.py` (+ `components/theme_studio.py`)
+- `alerts.py`, `build_stamp.py` (git hash + process start footer), `chart_fit.py`, `equity_curve.py`, `indicators.py`, `order_types.py`, `patterns.py`, `performance.py`, `risk_calc.py`
+- `components/`: `header.py` (`TAB_LABELS`), `nav.py`, `chart.py`, `trading.py`, `order_form.py`, `positions_matrix.py`, `analytics_row.py`, `cards.py`, `ai_signals.py`, `research_desk.py`, `news_tab.py`, `infoway_panel.py`, `ideas_watchlist.py`, `finviz_links.py`, `alert_banner.py`, `auxiliary_views.py` (journal view), `enable_ai.py`, `pattern_hub.py`, `snapshot.py`, `data_cache.py`, `theme_studio.py`
+- `services/`: `dexter_client.py` (shadow research, `daily_cap`/`timeout_s`/`max_iterations`), `infoway_client.py` (research display only; capped via `config_ext.yaml`), `news.py`
+
+Boundary: `ui/services/` never places orders; MT5 order price always comes from the gateway/MT5 path.
+
+---
+
+## Learning Package (`learning/`)
+
+Shadow ledger (proposals never apply themselves): `__main__.py`, `bars.py`, `calibrate.py` (`by_bucket`, `had_edge`, `summarise`), `ledger.py`, `propose.py`, `resolver.py`, `runtime.py`, `shadow.py`. Tuned via `config_ext.yaml → learning:` + `shadow.enabled` (default off; Research Desk toggle starts a cycle).
 
 ---
 
@@ -431,21 +424,16 @@ The scripts are operational support tools, not the core trading logic itself.
 
 ### `data/`
 
-This directory is reserved for runtime or generated market data. It may hold cache files, feed storage, or local data snapshots created during execution (including `engine.db`, `engine.db-shm`, `engine.db-wal`).
+Runtime store (gitignored): `engine.db*` (live journal + `-shm`/`-wal`), `learning.db`, `ideas_watchlist.json`, `infoway_budget.json`, `news_cache.json`, `ui_prefs.json`, `market_bars/` (`EURUSD__H1.json`, `EURUSD__H4.json`).
 
 ### `reports/`
 
-Contains generated verification and demo logs, such as:
-
-- demo verification outputs
-- historical validation artifacts
-- QA and operational reports
-
-These are useful for auditing behavior and documenting runtime checks.
+- `demo_verification_*.txt` — demo/validation run logs
+- `ui_qa/` — `QA_REPORT.md`, `round2/`, `round3/` (+ batch PNGs), `round4/`, `round5/` (+ PNGs, `ui-palette.json`), `screenshots/`
 
 ### `backups/`
 
-Holds backup or historical copies used during development or operational recovery.
+Engine DB archives: `engine_YYYY-MM-DD.db*`, `engine.db.acct-*.archive*`, `engine_pre_purge_*.db`, spin-loop-polluted archives.
 
 ---
 
@@ -455,22 +443,23 @@ The repository includes both broad and engine-focused tests under `tests/`.
 
 ### Engine tests
 
-Located under `tests/test_engine/`:
+Located under `tests/test_engine/` (`conftest.py`, `fake_mt5.py`):
 
-- `fake_mt5.py` — fake MT5 module for tests
-- `test_boundaries.py` — boundary/edge-case tests
-- `test_equity.py` — equity tracker tests
-- `test_executor_commands.py` — executor and command tests
-- `test_gates.py` — risk gate tests
-- `test_gateway.py` — gateway tests
-- `test_guard.py` — live guard structural checks
-- `test_indicators.py` — indicator tests
-- `test_llm_client.py` — LLM client tests
-- `test_risk.py` — risk engine tests (limits, fail-closed, halts)
-- `test_risk_wiring.py` — risk integration tests
-- `test_state.py` — state machine durability tests
-- `test_strategy_dryrun.py` — strategy dry-run tests
-- `test_telemetry.py` — telemetry tests
+- `test_account_guard.py` / `test_account_guard_e2e.py`
+- `test_agent_02_macd.py` / `test_agent_fixture.py` / `test_research_agents.py` / `test_research_init.py`
+- `test_boundaries.py` / `test_engine_loop_throttle.py` / `test_telemetry.py`
+- `test_equity.py` / `test_executor_commands.py` / `test_gates.py` / `test_gateway.py`
+- `test_guard.py` / `test_indicators.py` / `test_llm_client.py`
+- `test_risk.py` / `test_risk_wiring.py` / `test_state.py` / `test_strategy_dryrun.py`
+- `test_telegram_service.py`
+
+### UI tests (`tests/test_ui/`)
+
+`test_alerts_and_orders.py`, `test_app_boot.py`, `test_chart_publish.py`, `test_config_ext.py`, `test_currency_rendering.py`, `test_data_access.py`, `test_dexter_client.py`, `test_indicators.py`, `test_key_boundary.py`, `test_nav_contrast.py`, `test_news_html.py`, `test_news_parser.py`, `test_no_vendor_names.py`, `test_order_path_boundary.py`, `test_order_path_isolation.py`, `test_patterns.py`, `test_risk_calc.py`, `test_snapshot_identity.py`, `test_state.py`, `test_task7.py`, `test_task9.py`, `test_task10.py`, `test_task11.py`, `test_theme_contrast.py` (Task 3), `test_theme_prefs.py`.
+
+### Repo / fixtures
+
+`tests/test_repo/test_journal_path_single_source.py`; `tests/fixtures/{dexter,infoway}/`.
 
 ### Top-level tests
 
@@ -479,22 +468,28 @@ Located under `tests/test_engine/`:
 - `test_execution_guards.py`
 - `test_formatting_and_mode.py`
 - `test_llm_validator.py`
+- `test_learning_ledger.py`
 - `test_metrics.py`
 - `test_phase0_bugs.py`
+- `test_classify_scan_hits.py`
+- `test_provider_diagnostics.py`
 - `test_secret_scan.py`
 - `test_strategy_fixtures.py`
 - `test_xm_symbols.py`
 
-These tests validate safety, data flow, execution contracts, and the new telegram approval flow (in future additions).
+These tests validate safety, data flow, execution contracts, and the telegram approval flow.
 
 ---
 
 ## Configuration Model
 
-The project uses a dual configuration approach:
+The project uses a triple configuration approach:
 
-1. `.env` / `config.py` for secrets and local runtime values
-2. `config.yaml` + `config_loader.py` for structured application config
+1. `.env` / `config.py` (+ `engine/keys.py` Keyring) for secrets — never committed
+2. `config.yaml` + `config_loader.py` for structured app/engine config (symbols, risk, LLM tolerances)
+3. `config_ext.yaml` + `config_ext_loader.py` for operator settings (`chart.atr_k/rr`, `infoway.daily_cap/timeout_s/cache_ttl_s`, `dexter.daily_cap/timeout_s/max_iterations`, `learning.*`, `shadow.enabled`)
+
+Both loaders are strict Pydantic (`extra="forbid"`): unknown keys and out-of-range values fail loudly.
 
 This separation is important because secrets should never be committed into source control, while the application config itself may be checked in and validated strictly.
 
@@ -536,11 +531,14 @@ Notable files:
 - `architecture.md` — architecture notes
 - `api.md` — API documentation
 - `contributing.md` — contribution standards
-- `Instructions*.md` — operational or project instructions
-- `Phase1_Engine_Design.md` — engine design ideas
+- `Instructions.md` / `Instructions_1.md` / `Instructions_2.md` / `Instructions_3.md` (Task-3 ops notes)
+- `DEXTER_INTEGRATION_PLAN.md` — Dexter/shadow-research integration (Task 3)
+- `Phase1_Engine_Design.md` / `Phase1_Account_Guard_And_Symbols.md` / `StepA_Account_Guard_Wiring.md`
+- `Phase0_Audit_Report.md` / `Architecture_Audit_Report.md` / `EXTERNAL_REPOS_REVIEW.md`
+- `FINDINGS_AND_HANDOFF.md` / `PROGRESS.md` / `qa_recipe.md`
+- `design/` — `pending_orders.md`, `realised_pnl.md`, `strategy_library_and_backtest.md` (+ reference PNGs)
 - `V2_Implementation_Plan.md` — roadmap and phase deliverables
-- `Architecture_Audit_Report.md` — project audit and evaluation record
-- `ProjectStructire.md` — this file
+- `ProjectStructre.md` — this file (canonical; historic spelling kept for link stability)
 
 ---
 
@@ -582,15 +580,15 @@ python -m engine
 
 ## Dependency Notes
 
-`requirements.txt` includes:
+`requirements.txt` (pinned) includes:
 
 - `MetaTrader5==5.0.6231` — MetaTrader 5 terminal automation
-- `pandas`, `numpy`, `pyarrow`, `pydantic` — data and validation
-- `streamlit`, `plotly`, `altair` — dashboard and charts
-- `requests` — HTTP client (LLM and telegram calls)
-- `python-dotenv`, `PyYAML` — config and secrets
-- `watchdog`, `defusedxml` — file watching and safe XML
-- `groq==1.7.0` — Groq LLM provider (fallback for validation)
+- `pandas==3.0.6`, `numpy==2.5.3`, `pyarrow==25.0.1`, `pydantic==2.13.5` (+ `pydantic_core==2.46.5`)
+- `streamlit==1.64.0`, `plotly==7.1.0`, `altair==6.3.0` — dashboard and charts
+- `requests==2.34.2` — HTTP client (LLM and telegram calls)
+- `python-dotenv==1.2.3`, `PyYAML==6.0.3` — config and secrets
+- `watchdog==6.0.0`, `defusedxml==0.7.1` — file watching and safe XML
+- `groq==1.7.0` — Groq LLM provider
 - `pytest==9.1.1` — test runner (test-only)
 
 ---
