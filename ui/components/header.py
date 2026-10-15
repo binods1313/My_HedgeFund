@@ -119,7 +119,58 @@ def _draw_status(snapshot) -> None:
             )
         render_enable_ai(account.mode)
         render_emergency_stop(account.mode, account.engine_state)
+
+    # -- system status card (A3, honest wording) -----------------------------
+    try:
+        from engine.journal import Journal
+
+        j = Journal(_configured_db_path())
+        status = j.system_status()
+        j.close()
+    except Exception:
+        status = {}
+
+    def _badge(value, color, empty="—"):
+        text = "" if value is None else str(value)
+        if text == "":
+            text = empty
+        return f'<span class="status-badge {color}">{html.escape(text)}</span>'
+
+    age = account.heartbeat_age_s
+    alive = bool(getattr(account, "engine_online", False))
+    last = status.get("last_trade")
+    if isinstance(last, dict):
+        last_text = f"{last.get('side')} {last.get('symbol')} {last.get('volume')} · {last.get('status')}"
+    else:
+        last_text = "No trade yet"
+    trades_today = status.get("trades_today")
+    trades_text = "unknown (journal not read)" if trades_today is None else str(trades_today)
+    st.markdown('<div class="hf-line2">', unsafe_allow_html=True)
+    with status_cols[0]:
+        st.markdown('<div class="hf-label">Status card · A3</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="status-grid">'
+            + _badge(status.get("engine_state") or "no state yet", "active")
+            + _badge(status.get("account_currency"), "cyan")
+            + _badge(status.get("account_login_masked"), "green")
+            + _badge(last_text, "cyan")
+            + _badge("trades today " + trades_text, "green")
+            + _badge("Scan loop: " + str(status.get("scan_loop", "Not built yet")), "cyan")
+            + _badge(str(status.get("signals", "No signals yet")), "cyan")
+            + '</div>'
+            '<div class="status-shimmer">Heartbeat ' + str(age) + "s"
+            + ' · ' + ("running" if alive else "stale") + ' · mode ' + str(status.get("mode") or "unknown")
+            + '</div>'
+            '<div class="status-shimmer">Guard posture · '
+            + ("verified" if alive else "TerminalOffline/WARNING · writes throttled")
+            + '</div>'
+            '<div class="status-shimmer">PAPER fills are simulated. They do not prove MT5 execution, fills or broker stop rules.</div>',
+            unsafe_allow_html=True,
+        )
+    st.markdown("</div>", unsafe_allow_html=True)
     with status_cols[2]:
+
+
         st.caption(datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%H:%M:%S IST"))
         render_theme_studio()
     with status_cols[3]:

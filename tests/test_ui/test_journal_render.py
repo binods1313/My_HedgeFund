@@ -58,6 +58,31 @@ def test_critical_severity_gets_critical_css_class():
     assert "sev-critical" in html
 
 
+def test_archived_mismatch_without_kind_renders_critical_not_info():
+    """The archived row has severity CRITICAL and no context.kind.
+
+    The old badge map had no CRITICAL entry and fell through to INFO.
+    The stored severity must be the rendered severity.
+    """
+    frame = _frame([_row(
+        "2026-10-13T20:45:57+00:00",
+        "CRITICAL",
+        "Account mismatch",
+        {
+            "phase": "startup",
+            "reason": "no account is logged in",
+            "configured_login": None,
+            "live_login": None,
+        },
+    )])
+    html = cards._journal_table(frame, now=NOW)
+    assert "sev-critical" in html
+    assert ">CRITICAL</span>" in html
+    assert "sev-info" not in html
+    assert ">account</td>" in html
+    assert "no account is logged in" in html
+
+
 def test_unknown_severity_is_shown_literally_not_downgraded():
     frame = _frame([_row("2026-10-14T03:27:01+00:00", "PANIC", "x")])
     html = cards._journal_table(frame, now=NOW)

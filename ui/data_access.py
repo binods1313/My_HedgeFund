@@ -279,10 +279,19 @@ def get_equity_history(limit: int = 200) -> pd.DataFrame:
 
 
 def get_recent_events(limit: int = 100) -> pd.DataFrame:
-    """Return recent read-only engine events for the Journal view."""
+    """Return recent read-only engine events for the Journal view.
+
+    ``context_json`` is selected because the message alone is a generic title:
+    the guard writes "Account mismatch" for every mismatch while the *detail*
+    that tells two incidents apart -- which account was expected, which was
+    found, which phase caught it -- lives only in the context blob. Without it
+    the journal cannot collapse repeats or name the kind, and the operator sees
+    a column of identical rows.
+    """
     return _read_journal_frame(
-        "SELECT id, ts, category, severity, source, message FROM events ORDER BY id DESC LIMIT ?",
-        ("id", "ts", "category", "severity", "source", "message"),
+        "SELECT id, ts, category, severity, source, message, context_json "
+        "FROM events ORDER BY id DESC LIMIT ?",
+        ("id", "ts", "category", "severity", "source", "message", "context_json"),
         limit,
     )
 
@@ -937,6 +946,12 @@ def system_status(db_path: Path | None = None) -> dict[str, Any]:
     far as the journal can, and no further. The account login is masked to
     its last four digits: a full login in a UI screenshot is a credential
     fragment nobody needs to share.
+
+    The card is the honest window onto the loop: engine state and mode, the
+    MT5 account it is bound to, whether the process is online, the heartbeat
+    age, pending commands, and the last executed trade plus trades-today for
+    this session. Those two trade fields come from the journal, so they stay
+    correct whether or not the terminal is reachable.
     """
     target = db_path if db_path is not None else _configured_db_path()
     status: dict[str, Any] = {
@@ -950,6 +965,13 @@ def system_status(db_path: Path | None = None) -> dict[str, Any]:
         "account_login_masked": None,
         "account_currency": None,
         "pending_commands": None,
+        "last_trade": None,
+        # None means "unknown" (journal unreadable or not read). A real zero is
+        # only reported after the trades table was actually counted.
+        "trades_today": None,
+        # The loop that would produce signals and scans is not built yet.
+        "scan_loop": "Not built yet",
+        "signals": "No signals yet",
     }
     if not target.exists():
         return status
@@ -972,11 +994,37 @@ def system_status(db_path: Path | None = None) -> dict[str, Any]:
             pending = conn.execute(
                 "SELECT COUNT(*) AS n FROM commands WHERE status = 'PENDING'"
             ).fetchone()
+            # -- last executed trade + trades today (journal-derived) --------
+            # Run on the open connection. Querying after the block above closes
+            # it raised ProgrammingError, which was swallowed, so the card never
+            # showed a real trade count. trades_today stays None unless counted.
+            trade = conn.execute(
+                "SELECT ticket, symbol, side, volume, entry_price, "
+                "exit_price, status, ts FROM trades ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            today = datetime.now(timezone.utc).date()
+            counted = conn.execute(
+                "SELECT COUNT(*) AS n FROM trades WHERE DATE(ts) = ?",
+                (today.isoformat(),),
+            ).fetchone()
     except sqlite3.Error as exc:
         LOG.warning("system status read failed: %s", exc)
         return status
 
     from engine.state import OFFLINE_AFTER_SECONDS
+
+    if trade is not None:
+        status["last_trade"] = {
+            "ticket": trade["ticket"],
+            "symbol": trade["symbol"],
+            "side": trade["side"],
+            "volume": trade["volume"],
+            "entry": trade["entry_price"],
+            "exit": trade["exit_price"],
+            "status": trade["status"],
+            "ts": trade["ts"],
+        }
+    status["trades_today"] = int(counted["n"]) if counted else None
 
     status["schema_version"] = version["v"] if version else None
     if state:
