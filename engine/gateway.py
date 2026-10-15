@@ -614,6 +614,37 @@ class Gateway:
         }
         return self.send_order(request)
 
+    def snapshot(self, symbols: list[str]) -> dict:
+        """One owner-thread read of every watched symbol.
+
+        Callers must not follow this with per-symbol terminal reads in the
+        same cycle. ``market_open`` is ``trade_mode == 4`` (full trading).
+        This MetaTrader5 build has no ``symbol_info_session_*`` functions,
+        so a session-closed but still-tradable symbol is not distinguished
+        here; the scan cycle applies the market-closed filter to the flag.
+        """
+        names = [str(symbol) for symbol in symbols]
+
+        def _read() -> dict:
+            mt5 = self._mt5_or_raise()
+            views: dict[str, dict] = {}
+            full = int(getattr(mt5, "SYMBOL_TRADE_MODE_FULL", 4))
+            for name in names:
+                info = mt5.symbol_info(name)
+                tick = mt5.symbol_info_tick(name)
+                trade_mode = getattr(info, "trade_mode", None) if info is not None else None
+                bar = getattr(tick, "time", None) if tick is not None else None
+                views[name] = {
+                    "market_open": trade_mode == full,
+                    "stale": tick is None or getattr(tick, "bid", None) is None,
+                    "bar_ts": None if not bar else str(bar),
+                    "bid": None if tick is None else getattr(tick, "bid", None),
+                    "ask": None if tick is None else getattr(tick, "ask", None),
+                }
+            return {"symbols": views}
+
+        return self.call("snapshot", _read)
+
     def shutdown_terminal(self) -> None:
         if self._mt5 is not None and self.status.connected:
             try:

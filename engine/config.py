@@ -102,6 +102,9 @@ class EngineConfig:
     symbol_mapping: dict[str, str] = field(default_factory=dict)
     root: Path = field(default_factory=Path.cwd)
     config_path: Path | None = None
+    #: Broker symbols the stage-1 scan reads. Empty means the cycle skips.
+    scan_symbols: list[str] = field(default_factory=list)
+    max_scan_seconds: float = 10.0
 
     @property
     def db_path(self) -> Path:
@@ -177,6 +180,17 @@ def load_engine_config(root: Path | str | None = None,
     if not isinstance(mapping_raw, dict):
         raise ValueError("symbols.mapping must be a mapping of logical -> broker")
 
+    scanner_raw = raw.get("scanner") or {}
+    if not isinstance(scanner_raw, dict):
+        raise ValueError("scanner must be a mapping")
+    max_scan_raw = scanner_raw.get("max_scan_seconds", 10)
+    try:
+        max_scan_seconds = float(max_scan_raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("scanner.max_scan_seconds must be a number") from exc
+    if max_scan_seconds <= 0:
+        raise ValueError("scanner.max_scan_seconds must be positive")
+
     return EngineConfig(
         mode=mode,
         live_confirmation_required=bool(raw.get("live_confirmation_required", True)),
@@ -185,7 +199,27 @@ def load_engine_config(root: Path | str | None = None,
         symbol_mapping={str(k).upper(): str(v) for k, v in mapping_raw.items()},
         root=root_path,
         config_path=cfg_path,
+        scan_symbols=_flatten_whitelist(symbols_section.get("whitelist")),
+        max_scan_seconds=max_scan_seconds,
     )
+
+
+def _flatten_whitelist(whitelist: Any) -> list[str]:
+    """Broker names from ``symbols.whitelist``, in file order.
+
+    A class whose value is an empty list contributes nothing. Non-strings
+    are ignored so a comment-only placeholder cannot become a symbol.
+    """
+    if not isinstance(whitelist, dict):
+        return []
+    names: list[str] = []
+    for value in whitelist.values():
+        if not isinstance(value, list):
+            continue
+        for item in value:
+            if isinstance(item, str) and item.strip():
+                names.append(item.strip())
+    return names
 
 
 def read_mt5_credentials() -> dict[str, Any]:

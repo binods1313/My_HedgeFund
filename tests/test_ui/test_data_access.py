@@ -622,7 +622,7 @@ class TestSystemStatus:
         journal.set_state("OFF", mode="PAPER")
         status = data_access.system_status(tmp_path / "status.db")
         assert status["journal_exists"] is True
-        assert status["schema_version"] == 2
+        assert status["schema_version"] == 3
         assert status["engine_state"] == "OFF"
         assert status["engine_online"] is False
         assert status["pending_commands"] == 0

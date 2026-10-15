@@ -111,6 +111,8 @@ class Engine:
     _telegram_initialized: bool = False
     _telegram_poll_task = None
     _telegram_stop_event = None
+    #: Stage 1 scanner. None in tests that construct an Engine by hand.
+    scanner: object | None = None
     #: A repeating telemetry gap is journalled at most this often, in seconds.
     _telemetry_warn_every: float = 300.0
     #: reason -> monotonic time the reason was last journalled.
@@ -595,8 +597,27 @@ class Engine:
             return {"adopted": [], "vanished": [], "error": "account mismatch"}
         return self.reconcile_positions()
 
+    def _scan_cycle(self) -> None:
+        """Stage 1 scan. A missing scanner is a no-op for older tests.
+
+        The call sits in ``run_once``, which itself sits inside the
+        ``while`` in ``run_forever``. ``CYCLE_TICK`` is emitted from
+        ``ScanCycle.run`` only after that call, never at import and never
+        after the loop.
+        """
+        scanner = self.scanner
+        if scanner is None:
+            return
+        try:
+            scanner.run_with_engine(self)
+        except Exception as exc:  # noqa: BLE001 - a scan must not kill the loop
+            self.journal.log_event(
+                "scan", "scan cycle failed", severity="ERROR", source="engine",
+                context={"error": f"{type(exc).__name__}: {exc}"},
+            )
+
     def run_once(self) -> None:
-        """One iteration: commands, heartbeat, telemetry."""
+        """One iteration: commands, heartbeat, telemetry, then one scan."""
         self.commands.poll_once()
         # A reconnect (or reinitialisation) is the moment the account answer
         # changes, so it is checked there rather than every iteration.
@@ -606,6 +627,10 @@ class Engine:
         self._account_verified = self._verify_account("session_refresh")
         self.state.heartbeat(connected=self.gateway.connected)
         self._write_telemetry()
+        # Scan stays inside the iteration, after the heartbeat, so a slow
+        # cycle cannot skip the beat and a dedent cannot move it outside
+        # the while that calls run_once.
+        self._scan_cycle()
 
     def run_forever(self) -> None:
         poll = self.config.engine.command_poll_seconds
@@ -830,11 +855,18 @@ def build_engine(*, config_path: Path | str | None = None,
         journal.log_event("engine", "telegram approval layer enabled",
                           source="engine")
 
+    from engine.scan_cycle import ScanCycle
+
+    scanner = ScanCycle(
+        symbols=list(config.scan_symbols),
+        max_scan_seconds=float(config.max_scan_seconds),
+    )
     return Engine(config=config, journal=journal, state=state_machine,
                   gateway=gateway, executor=executor, commands=commands,
                   risk=risk, equity_tracker=equity_tracker,
                   guard=guard, _account_verified=startup_verified,
-                  _telegram_initialized=telegram_initialized)
+                  _telegram_initialized=telegram_initialized,
+                  scanner=scanner)
 
 
 def _mask_login(login) -> str:

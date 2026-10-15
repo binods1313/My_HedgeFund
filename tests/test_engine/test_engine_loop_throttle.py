@@ -84,6 +84,26 @@ def test_the_loop_calls_run_once() -> None:
     assert "run_once" in _called_names(_loop_nodes()[0])
 
 
+def test_scan_step_stays_inside_run_once_after_the_heartbeat() -> None:
+    """F7: the scan cannot be dedented out of the throttled iteration.
+
+    ``run_once`` is inside the ``while``. The scan call is inside
+    ``run_once`` and after the heartbeat write. ``CYCLE_TICK`` is produced
+    by that scan, not by a line that sits outside the loop.
+    """
+    loops = _loop_nodes()
+    assert loops and "run_once" in _called_names(loops[0])
+    source = inspect.getsource(Engine.run_once)
+    assert source.find("heartbeat") < source.find("_scan_cycle"), (
+        "_scan_cycle must follow the heartbeat inside run_once"
+    )
+    scan_source = (
+        Path(__file__).resolve().parents[2] / "engine" / "scan_cycle.py"
+    ).read_text(encoding="utf-8")
+    assert "CYCLE_TICK" in scan_source
+    assert "SCAN_COMPLETE" not in scan_source
+
+
 def test_the_spin_is_bounded_by_the_poll_interval() -> None:
     """The sleep must use the configured poll interval, not a constant.
 

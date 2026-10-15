@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 # Bump when adding a migration. Never edit a shipped migration in place.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # -- state machine values, mirrored from engine.state -------------------------
 STATE_OFF = "OFF"
@@ -240,7 +240,30 @@ MIGRATION_2 = [
     "ALTER TABLE engine_state ADD COLUMN account_currency TEXT",
 ]
 
-MIGRATIONS: dict[int, list[str]] = {1: MIGRATION_1, 2: MIGRATION_2}
+MIGRATION_3 = [
+    # Cycle header columns. The original symbols_json/ranked_json blob stays
+    # so a reader of schema 2 rows still has those fields. New cycles write
+    # one header here and one row per symbol in scan_symbols.
+    "ALTER TABLE scan_results ADD COLUMN cycle_id TEXT",
+    "ALTER TABLE scan_results ADD COLUMN status TEXT",
+    "ALTER TABLE scan_results ADD COLUMN reason TEXT",
+    "ALTER TABLE scan_results ADD COLUMN symbol_count INTEGER",
+    """
+    CREATE TABLE IF NOT EXISTS scan_symbols (
+        id        INTEGER PRIMARY KEY AUTOINCREMENT,
+        cycle_id  TEXT NOT NULL,
+        symbol    TEXT NOT NULL,
+        status    TEXT NOT NULL,
+        reason    TEXT NOT NULL DEFAULT '',
+        bar_ts    TEXT,
+        ts        TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_scan_symbols_cycle ON scan_symbols (cycle_id, symbol)",
+    "CREATE INDEX IF NOT EXISTS idx_scan_results_cycle ON scan_results (cycle_id)",
+]
+
+MIGRATIONS: dict[int, list[str]] = {1: MIGRATION_1, 2: MIGRATION_2, 3: MIGRATION_3}
 
 
 def utc_now_iso() -> str:
