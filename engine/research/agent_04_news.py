@@ -1,4 +1,14 @@
-"""04 NewsAgent - macro calendar events (ForexFactory)"""
+"""04 News Agent — count impact labels already present on the context.
+
+This agent does not fetch a calendar. It does not call ForexFactory or any
+other site. ``run`` reads ``context["events"]`` and counts each event's
+``impact`` string (``high``, ``medium``, anything else is low). An empty
+event list returns ``ok=False``, label ``NONE``, error ``"no event data"``.
+
+``time`` and ``date`` are read off each event and then ignored. The score
+and label come only from those counts: HIGH_IMPACT, MEDIUM_IMPACT,
+LOW_IMPACT, or NONE.
+"""
 
 from __future__ import annotations
 
@@ -27,12 +37,12 @@ class AgentResult:
 
 
 def run(context: dict[str, Any]) -> AgentResult:
-    """Analyze upcoming macro calendar events from ForexFactory.
+    """Count impact labels on ``context["events"]``.
 
-    Returns:
-        - score: impact weight (0-100)
-        - label: "HIGH_IMPACT" | "MEDIUM_IMPACT" | "LOW_IMPACT" | "NONE"
-        - confidence: based on event recency and data quality
+    Does not fetch a calendar. ``time`` and ``date`` are unused. An empty
+    list returns ok=False and error ``"no event data"``. Otherwise the
+    label is HIGH_IMPACT, MEDIUM_IMPACT, LOW_IMPACT, or NONE from the
+    counts, and confidence is ``min(1, processed / 5)``.
     """
     try:
         events = context.get("events", [])
