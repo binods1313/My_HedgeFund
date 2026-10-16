@@ -18,7 +18,7 @@ if not exist ".venv\Scripts\python.exe" (
 )
 
 echo Starting Streamlit App...
-".venv\Scripts\python.exe" -m streamlit run app.py
+".venv\Scripts\python.exe" -m streamlit run app.py --server.port 8502 --server.headless true
 
 if %ERRORLEVEL% neq 0 (
     echo [ERROR] Streamlit exited with an error.
