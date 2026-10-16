@@ -21,6 +21,8 @@ from engine.state import STATE_IDLE, STATE_SCANNING
 
 # Market-closed is first on purpose. A symbol that is both closed and
 # stale must be recorded as MARKET_CLOSED, never as STALE_QUOTE.
+_SYMBOL_NOT_FOUND = "SYMBOL_NOT_FOUND"
+_TRADE_DISABLED = "TRADE_DISABLED"
 _MARKET_CLOSED = "MARKET_CLOSED"
 _STALE_QUOTE = "STALE_QUOTE"
 _NO_NEW_BAR = "NO_NEW_CLOSED_BAR"
@@ -117,7 +119,8 @@ class ScanCycle:
         try:
             reason = self._precheck(state, mode, online, allowed, now_m)
             if reason:
-                self._note_skip(journal, reason, now_m, stamp)
+                if reason != "CYCLE_INTERVAL":
+                    self._note_skip(journal, reason, now_m, stamp)
                 return ScanOutcome(status="skipped", reason=reason)
 
             self._last_attempt = now_m
@@ -221,7 +224,19 @@ class ScanCycle:
         return None
 
     def _one_symbol(self, symbol, view, compute) -> tuple[str, str, bool]:
-        """Filter, then optionally compute. Market-closed wins over staleness."""
+        """Filter, then optionally compute.
+
+        Existence precedes trade-mode, which precedes market-open, which
+        precedes staleness: a symbol the broker does not list is NOT_FOUND,
+        one that is listed but non-executable is TRADE_DISABLED, one that is
+        closed wins over stale. A closed *and* stale symbol is MARKET_CLOSED,
+        never STALE_QUOTE.
+        """
+        trade_mode = view.get("trade_mode")
+        if trade_mode is None:
+            return "skipped", _SYMBOL_NOT_FOUND, False
+        if trade_mode == 0:
+            return "skipped", _TRADE_DISABLED, False
         if not view.get("market_open", False):
             return "skipped", _MARKET_CLOSED, False
         if view.get("stale"):

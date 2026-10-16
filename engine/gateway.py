@@ -773,6 +773,7 @@ class Gateway:
                 bar = getattr(tick, "time", None) if tick is not None else None
                 views[name] = {
                     "market_open": trade_mode == full,
+                    "trade_mode": trade_mode,
                     "stale": tick is None or getattr(tick, "bid", None) is None,
                     "bar_ts": None if not bar else str(bar),
                     "bid": None if tick is None else getattr(tick, "bid", None),

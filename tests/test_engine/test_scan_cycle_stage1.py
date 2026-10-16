@@ -13,7 +13,15 @@ from engine.state import STATE_IDLE, STATE_SCANNING, StateMachine
 
 
 def _open(bar: str) -> dict:
-    return {"market_open": True, "stale": False, "bar_ts": bar}
+    return {"market_open": True, "stale": False, "bar_ts": bar, "trade_mode": 4}
+
+
+def _missing() -> dict:
+    return {"market_open": False, "stale": True, "bar_ts": None, "trade_mode": None}
+
+
+def _disabled() -> dict:
+    return {"market_open": False, "stale": False, "bar_ts": None, "trade_mode": 0}
 
 
 def _setup(tmp_path, symbols, **kwargs):
@@ -189,7 +197,7 @@ def test_market_closed_is_recorded_before_stale_quote(tmp_path):
     scanner.run(
         state=state, journal=journal, mode="PAPER",
         read_market=lambda names: {"symbols": {
-            "XAUUSD": {"market_open": False, "stale": True, "bar_ts": "1"},
+            "XAUUSD": {"market_open": False, "stale": True, "bar_ts": "1", "trade_mode": 1},
         }},
     )
     row = _symbols(journal)[0]
@@ -233,4 +241,74 @@ def test_state_change_writes_a_skip_and_a_repeat_waits_ten_minutes(tmp_path):
         "SELECT reason FROM scan_results ORDER BY id")]
     assert reasons[-1] == "TERMINAL_OFFLINE"
     assert len(reasons) == 3
+    journal.close()
+
+
+def test_symbol_not_found_is_distinguished_from_market_closed(tmp_path):
+    """A symbol the broker does not list must be SYMBOL_NOT_FOUND, not MARKET_CLOSED."""
+    symbols = ["GONE", "EURUSD"]
+    journal, state, scanner = _setup(tmp_path, symbols)
+    scanner.run(
+        state=state, journal=journal, mode="PAPER",
+        read_market=lambda names: {"symbols": {
+            "GONE": _missing(),
+            "EURUSD": _open("1792125578"),
+        }},
+    )
+    rows = _symbols(journal)
+    by_symbol = {row["symbol"]: row for row in rows}
+    assert by_symbol["GONE"]["reason"] == "SYMBOL_NOT_FOUND"
+    assert by_symbol["GONE"]["status"] == "skipped"
+    assert by_symbol["EURUSD"]["status"] == "scanned"
+
+
+def test_trade_disabled_is_recorded(tmp_path):
+    """trade_mode 0 (DISABLED) must be TRADE_DISABLED, not MARKET_CLOSED."""
+    symbols = ["USTEC", "EURUSD"]
+    journal, state, scanner = _setup(tmp_path, symbols)
+    scanner.run(
+        state=state, journal=journal, mode="PAPER",
+        read_market=lambda names: {"symbols": {
+            "USTEC": _disabled(),
+            "EURUSD": _open("1792125578"),
+        }},
+    )
+    rows = _symbols(journal)
+    by_symbol = {row["symbol"]: row for row in rows}
+    assert by_symbol["USTEC"]["reason"] == "TRADE_DISABLED"
+    assert by_symbol["USTEC"]["status"] == "skipped"
+    assert by_symbol["EURUSD"]["status"] == "scanned"
+
+
+def test_cycle_interval_is_not_journaled(tmp_path):
+    """CYCLE_INTERVAL is a floor, not an event: no skip row is written."""
+    journal = Journal(tmp_path / "scan.db")
+    state = StateMachine(journal)
+    state.transition(STATE_IDLE, "ENABLE_AI")
+    scanner = ScanCycle(symbols=["EURUSD"], interval_seconds=60, remind_every=600)
+    clock = {"t": 0.0}
+
+    def read_market(names):
+        return {"symbols": {name: _open("B") for name in names}}
+
+    first = scanner.run(
+        state=state, journal=journal, mode="PAPER",
+        monotonic=lambda: clock["t"], read_market=read_market,
+    )
+    assert first.scanned == 1
+
+    clock["t"] = 30.0
+    second = scanner.run(
+        state=state, journal=journal, mode="PAPER",
+        monotonic=lambda: clock["t"], read_market=read_market,
+    )
+    assert second.status == "skipped"
+    assert second.reason == "CYCLE_INTERVAL"
+
+    reasons = [row["reason"] for row in journal.query(
+        "SELECT reason FROM scan_results ORDER BY id"
+    )]
+    assert reasons, "the first scan must still journal its header"
+    assert all(r != "CYCLE_INTERVAL" for r in reasons), \
+        "CYCLE_INTERVAL must not produce a scan_results row"
     journal.close()
