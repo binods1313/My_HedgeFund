@@ -8,7 +8,7 @@ echo  Launching Autonomous AI Hedge Fund Terminal
 echo ========================================================
 
 if not exist ".venv\Scripts\python.exe" (
-    echo [INFO] Virtual environment (.venv) not found. Running setup first...
+    echo [INFO] Virtual environment .venv not found. Running setup first...
     call setup.bat
     if not exist ".venv\Scripts\python.exe" (
         echo [ERROR] Setup failed to create .venv.
