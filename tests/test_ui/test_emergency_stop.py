@@ -16,14 +16,33 @@ from pathlib import Path
 import pytest
 
 from engine.commands import CommandProcessor
-from engine.journal import STATE_EMERGENCY_STOP, Journal
+from engine.journal import (
+    MIGRATION_1,
+    MIGRATION_2,
+    STATE_EMERGENCY_STOP,
+    Journal,
+    utc_now_iso,
+)
 from engine.state import StateMachine
 from ui.components.emergency_stop import (
     RESET_PHRASE,
+    JournalFileUnavailable,
     emergency_stop_availability,
     queue_emergency_stop,
     queue_reset_emergency,
 )
+
+
+@pytest.fixture(autouse=True)
+def _commands_table_exists(tmp_path):
+    """The halt inserts into an existing commands table. It does not create one.
+
+    Tests that pass ``tmp_path / 'engine.db'`` get a current journal here.
+    Schema-2 and lock tests use their own filenames.
+    """
+    path = tmp_path / "engine.db"
+    journal = Journal(path)
+    journal.close()
 
 
 def _command_rows(database: Path) -> list[dict]:
@@ -248,3 +267,129 @@ def test_the_header_renders_the_halt_control():
     header = Path(__file__).resolve().parents[2] / "ui" / "components" / "header.py"
     source = header.read_text(encoding="utf-8")
     assert "render_emergency_stop" in source
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Schema guard
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _schema2(path: Path) -> None:
+    """A journal at schema 2: commands exists, scan_symbols does not."""
+    connection = sqlite3.connect(path)
+    try:
+        for statement in list(MIGRATION_1) + list(MIGRATION_2):
+            connection.execute(statement)
+        connection.execute(
+            "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
+            (2, utc_now_iso()),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def _schema_snapshot(path: Path) -> tuple[int, set[str]]:
+    connection = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
+    try:
+        connection.execute("PRAGMA query_only = ON")
+        version = connection.execute(
+            "SELECT MAX(version) FROM schema_version").fetchone()[0]
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        return int(version), tables
+    finally:
+        connection.close()
+
+
+def test_schema2_halt_and_reset_queue_without_migration(tmp_path):
+    """A schema-2 file already has commands (since v1). Queue both rows.
+
+    Opening Journal would migrate the file. This path must not.
+    """
+    database = tmp_path / "old_engine.db"
+    _schema2(database)
+    before = _schema_snapshot(database)
+    assert before[0] == 2
+    assert "commands" in before[1]
+    assert "scan_symbols" not in before[1]
+
+    halt_id = queue_emergency_stop(database, close_positions=False)
+    reset_id = queue_reset_emergency(database, confirmation=RESET_PHRASE)
+
+    after = _schema_snapshot(database)
+    assert after == before
+    rows = _command_rows(database)
+    assert [row["command"] for row in rows] == ["EMERGENCY_STOP", "RESET_EMERGENCY"]
+    assert halt_id == 1 and reset_id == 2
+    assert json.loads(rows[0]["params_json"])["close_positions"] is False
+    assert json.loads(rows[1]["params_json"])["confirmation"] == "RESET"
+
+
+def test_a_locked_journal_raises_after_retry(tmp_path):
+    """The insert retries a lock, then reports it. It does not migrate."""
+    database = tmp_path / "locked.db"
+    _schema2(database)
+    holder = sqlite3.connect(database)
+    holder.execute("BEGIN EXCLUSIVE")
+    try:
+        with pytest.raises(JournalFileUnavailable, match="locked"):
+            queue_emergency_stop(database)
+    finally:
+        holder.close()
+    assert _command_rows(database) == []
+    assert _schema_snapshot(database)[0] == 2
+    assert "scan_symbols" not in _schema_snapshot(database)[1]
+
+
+def test_a_missing_journal_is_unreadable(tmp_path):
+    missing = tmp_path / "no-such-journal.db"
+    with pytest.raises(JournalFileUnavailable, match="unreadable"):
+        queue_emergency_stop(missing)
+    assert not missing.exists()
+
+
+def test_schema2_click_queues_and_shows_no_schema_error(tmp_path):
+    """The button still halts when the journal is older than the code."""
+    from streamlit.testing.v1 import AppTest
+
+    database = tmp_path / "old_engine.db"
+    _schema2(database)
+    before = _schema_snapshot(database)
+
+    app = AppTest.from_string(_render_script(database, mode="PAPER", state="running"))
+    app.run(timeout=30)
+    button = app.button("btn_emergency_stop")
+    assert button is not None
+    assert button.disabled is False
+
+    button.click().run(timeout=30)
+
+    assert not app.exception, "a schema-2 halt must not surface a traceback"
+    assert len(app.error) == 0
+    rows = _command_rows(database)
+    assert rows and rows[0]["command"] == "EMERGENCY_STOP"
+    assert _schema_snapshot(database) == before
+
+
+def test_a_locked_journal_shows_a_retry_message(tmp_path):
+    """The operator sees the lock message. The click does not traceback."""
+    from streamlit.testing.v1 import AppTest
+
+    database = tmp_path / "locked_ui.db"
+    _schema2(database)
+    holder = sqlite3.connect(database)
+    holder.execute("BEGIN EXCLUSIVE")
+    try:
+        app = AppTest.from_string(_render_script(database, mode="PAPER", state="running"))
+        app.run(timeout=30)
+        app.button("btn_emergency_stop").click().run(timeout=30)
+        assert not app.exception
+        messages = [str(item.value) for item in app.error]
+        assert any("locked" in message.lower() for message in messages)
+        assert _command_rows(database) == []
+    finally:
+        holder.close()

@@ -11,6 +11,10 @@ direction: `RESET_EMERGENCY` requires the operator to type the exact phrase
 
 from __future__ import annotations
 
+import json
+import sqlite3
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import streamlit as st
@@ -19,6 +23,87 @@ import streamlit as st
 #: Defined here so the UI cannot drift from `engine/state.py`; the engine is
 #: still the authority -- a wrong phrase queues and then fails loudly.
 RESET_PHRASE = "RESET"
+
+# A halt must land even when the journal is older than this code. The commands
+# table has existed since schema v1, so the insert does not open Journal and
+# does not migrate. A lock is retried; the operator sees a message only when
+# the file stays locked or cannot be opened.
+_LOCK_ATTEMPTS = 3
+_LOCK_TIMEOUT_S = 0.3
+_LOCK_PAUSE_S = 0.05
+_LOCKED_MESSAGE = "Journal file is locked. Retry."
+_UNREADABLE_MESSAGE = "Journal file is unreadable."
+
+
+class JournalFileUnavailable(RuntimeError):
+    """The journal file could not be opened, or stayed locked after retries."""
+
+
+def _is_locked(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return "locked" in text or "busy" in text
+
+
+def _is_unreadable(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return (
+        "unable to open" in text
+        or "disk i/o" in text
+        or "not a database" in text
+        or "malformed" in text
+    )
+
+
+def _resolve_journal_path(db_path: Path | None) -> Path:
+    """Explicit path in tests; the configured path in production. No default."""
+    if db_path is not None:
+        return Path(db_path)
+    from engine.config import load_engine_config
+    from engine.journal import resolve_db_path
+    return Path(resolve_db_path(load_engine_config().engine.db_path))
+
+
+def _insert_command(db_path: Path | None, command: str, params: dict) -> int:
+    """Insert one commands row with sqlite3. No Journal(), no migration.
+
+    Schema age is irrelevant: v1 already has this table, and a later migration
+    is not required to queue a halt or a reset. The only operator-facing
+    failures are an unreadable file and a file that stays locked.
+    """
+    target = _resolve_journal_path(db_path)
+    if not target.is_file():
+        raise JournalFileUnavailable(_UNREADABLE_MESSAGE)
+    payload = json.dumps(params, default=str)
+    stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    last_lock: BaseException | None = None
+    for attempt in range(1, _LOCK_ATTEMPTS + 1):
+        connection = None
+        try:
+            connection = sqlite3.connect(str(target), timeout=_LOCK_TIMEOUT_S)
+            cursor = connection.execute(
+                "INSERT INTO commands "
+                "(command, params_json, status, dedupe_key, ts) "
+                "VALUES (?, ?, 'PENDING', NULL, ?)",
+                (command, payload, stamp),
+            )
+            connection.commit()
+            return int(cursor.lastrowid)
+        except sqlite3.OperationalError as exc:
+            if _is_locked(exc):
+                last_lock = exc
+                if attempt < _LOCK_ATTEMPTS:
+                    time.sleep(_LOCK_PAUSE_S)
+                    continue
+                raise JournalFileUnavailable(_LOCKED_MESSAGE) from exc
+            if _is_unreadable(exc):
+                raise JournalFileUnavailable(_UNREADABLE_MESSAGE) from exc
+            raise
+        except OSError as exc:
+            raise JournalFileUnavailable(_UNREADABLE_MESSAGE) from exc
+        finally:
+            if connection is not None:
+                connection.close()
+    raise JournalFileUnavailable(_LOCKED_MESSAGE) from last_lock
 
 
 def emergency_stop_availability(mode: str | None, engine_state: str | None) -> tuple[bool, str]:
@@ -50,27 +135,12 @@ def emergency_stop_availability(mode: str | None, engine_state: str | None) -> t
 def queue_emergency_stop(db_path: Path | None = None, *, close_positions: bool = True) -> int:
     """Insert EMERGENCY_STOP. The engine polls the row; this never trades."""
     from engine.commands import COMMAND_EMERGENCY_STOP
-    from engine.journal import Journal, SchemaTooOld
 
-    # Same resolution rule as ENABLE_AI: an explicit journal in tests, the one
-    # configured path in production, and no implicit default in between.
-    target = db_path
-    if target is None:
-        from engine.config import load_engine_config
-        from engine.journal import resolve_db_path
-        target = resolve_db_path(load_engine_config().engine.db_path)
-
-    try:
-        journal = Journal(target, migrate=False)
-    except SchemaTooOld:
-        raise SchemaTooOld(SchemaTooOld.TEXT) from None
-    try:
-        return journal.enqueue_command(
-            COMMAND_EMERGENCY_STOP,
-            {"source": "ui", "close_positions": bool(close_positions)},
-        )
-    finally:
-        journal.close()
+    return _insert_command(
+        db_path,
+        COMMAND_EMERGENCY_STOP,
+        {"source": "ui", "close_positions": bool(close_positions)},
+    )
 
 
 def queue_reset_emergency(db_path: Path | None = None, *, confirmation: str) -> int:
@@ -80,25 +150,12 @@ def queue_reset_emergency(db_path: Path | None = None, *, confirmation: str) -> 
     rather than re-checking it here keeps a single authority for the rule.
     """
     from engine.commands import COMMAND_RESET_EMERGENCY
-    from engine.journal import Journal, SchemaTooOld
 
-    target = db_path
-    if target is None:
-        from engine.config import load_engine_config
-        from engine.journal import resolve_db_path
-        target = resolve_db_path(load_engine_config().engine.db_path)
-
-    try:
-        journal = Journal(target, migrate=False)
-    except SchemaTooOld:
-        raise SchemaTooOld(SchemaTooOld.TEXT) from None
-    try:
-        return journal.enqueue_command(
-            COMMAND_RESET_EMERGENCY,
-            {"source": "ui", "confirmation": str(confirmation)},
-        )
-    finally:
-        journal.close()
+    return _insert_command(
+        db_path,
+        COMMAND_RESET_EMERGENCY,
+        {"source": "ui", "confirmation": str(confirmation)},
+    )
 
 
 def render_emergency_stop(mode: str | None, engine_state: str | None, *,
@@ -141,7 +198,11 @@ def render_emergency_stop(mode: str | None, engine_state: str | None, *,
         help="Queue EMERGENCY_STOP: halts the engine immediately. "
              "No confirmation dialog; the engine acts on the next poll.",
     ):
-        queue_emergency_stop(db_path, close_positions=bool(close_positions))
+        try:
+            queue_emergency_stop(db_path, close_positions=bool(close_positions))
+        except JournalFileUnavailable as exc:
+            st.error(str(exc))
+            return
         st.rerun()
 
 
@@ -162,6 +223,10 @@ def _confirm_reset_emergency(db_path: Path | None) -> None:
             "Confirm reset", key="btn_emergency_reset_confirm", type="primary",
             width="stretch", disabled=str(typed or "").strip() != RESET_PHRASE,
         ):
-            queue_reset_emergency(db_path, confirmation=RESET_PHRASE)
+            try:
+                queue_reset_emergency(db_path, confirmation=RESET_PHRASE)
+            except JournalFileUnavailable as exc:
+                st.error(str(exc))
+                return
             st.session_state["_emergency_reset_ask"] = False
             st.rerun()

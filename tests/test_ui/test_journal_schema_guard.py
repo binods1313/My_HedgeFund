@@ -94,14 +94,28 @@ def test_a_missing_file_is_created_at_the_current_schema(tmp_path):
     assert "scan_symbols" in tables
 
 
-def test_emergency_stop_refuses_an_old_journal(tmp_path):
+def test_emergency_stop_queues_on_a_schema_2_file_without_migrating(tmp_path):
+    """The commands table exists at schema 2. The halt writes a row and stops."""
     path = tmp_path / "old.db"
     _schema2(path)
-    with pytest.raises(SchemaTooOld, match="Journal schema older than code"):
-        queue_emergency_stop(path)
-    version, tables = _version_and_tables(path)
-    assert version == 2
-    assert "scan_symbols" not in tables
+    before = _version_and_tables(path)
+    assert "commands" in before[1]
+
+    row_id = queue_emergency_stop(path)
+
+    after = _version_and_tables(path)
+    assert after == before
+    assert after[0] == 2
+    assert "scan_symbols" not in after[1]
+    connection = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
+    try:
+        connection.execute("PRAGMA query_only = ON")
+        row = connection.execute(
+            "SELECT id, command, status FROM commands"
+        ).fetchone()
+    finally:
+        connection.close()
+    assert row == (row_id, "EMERGENCY_STOP", "PENDING")
 
 
 def test_a_current_journal_reports_scan_fields(tmp_path):
