@@ -971,6 +971,7 @@ def system_status(db_path: Path | None = None) -> dict[str, Any]:
         "schema_version": None,
         "account_login_masked": None,
         "account_currency": None,
+        "account_server_type": None,
         "pending_commands": None,
         "last_trade": None,
         # None means "unknown" (journal unreadable or not read). A real zero is
@@ -1012,7 +1013,7 @@ def system_status(db_path: Path | None = None) -> dict[str, Any]:
                 "SELECT ts, connected FROM heartbeats ORDER BY id DESC LIMIT 1"
             ).fetchone()
             account = conn.execute(
-                "SELECT login, currency FROM journal_account WHERE id = 1"
+                "SELECT login, currency, server FROM journal_account WHERE id = 1"
             ).fetchone()
             pending = conn.execute(
                 "SELECT COUNT(*) AS n FROM commands WHERE status = 'PENDING'"
@@ -1096,6 +1097,11 @@ def system_status(db_path: Path | None = None) -> dict[str, Any]:
         digits = str(account["login"])[-4:]
         status["account_login_masked"] = f"****{digits}"
         status["account_currency"] = account["currency"]
+        server = account["server"] if "server" in account.keys() else None
+        if server:
+            status["account_server_type"] = (
+                "demo" if "demo" in str(server).lower() else "live"
+            )
     if pending is not None:
         status["pending_commands"] = int(pending["n"])
     return status

@@ -662,6 +662,21 @@ class TestSystemStatus:
             "a full login is a credential fragment; the card must not show it"
         )
 
+    def test_the_account_tooltip_carries_last4_currency_and_server_type(self, journal, tmp_path):
+        from ui.components.header import _account_badge, _account_tooltip
+
+        journal.set_account_fingerprint(login=5057151780, currency="USD",
+                                        server="MetaQuotes-Demo", magic=100100)
+        status = data_access.system_status(tmp_path / "status.db")
+        assert status["account_server_type"] == "demo"
+        tooltip = _account_tooltip(status)
+        assert tooltip == "Account ****1780 · USD · demo server"
+        assert "5057151780" not in tooltip
+        assert "MetaQuotes" not in tooltip
+        badge = _account_badge(status)
+        assert 'title="Account ****1780 · USD · demo server"' in badge
+        assert _account_badge({}).startswith('<span class="status-badge green">')
+
     def test_a_missing_journal_says_so_without_raising(self, tmp_path):
         status = data_access.system_status(tmp_path / "absent.db")
         assert status["journal_exists"] is False

@@ -71,6 +71,35 @@ def _quote_caption_text(asset: str, quote: dict, *, market_closed: bool) -> str:
     return f"{asset}  ·  {reason}"
 
 
+def _account_tooltip(status: dict) -> str:
+    """Native tooltip for the account chip: masked login, currency, server type.
+
+    The chip shows the last four digits and nothing else; the tooltip repeats
+    exactly that plus the currency and demo/live. Never the full login and
+    never the broker platform's server name, which the vendor-word guard bans
+    from rendered strings.
+    """
+    parts = []
+    login = status.get("account_login_masked")
+    if login:
+        parts.append(f"Account {login}")
+    currency = status.get("account_currency")
+    if currency:
+        parts.append(str(currency))
+    server_type = status.get("account_server_type")
+    if server_type:
+        parts.append(f"{server_type} server")
+    return " · ".join(parts)
+
+
+def _account_badge(status: dict) -> str:
+    """The account chip with its tooltip. Empty tooltip means no title tag."""
+    login = status.get("account_login_masked") or "—"
+    tooltip = _account_tooltip(status)
+    title = f' title="{html.escape(tooltip, quote=True)}"' if tooltip else ""
+    return f'<span class="status-badge green"{title}>{html.escape(str(login))}</span>'
+
+
 def _scan_badge(status: dict) -> str:
     """The scan line the status card shows. Never the retired placeholder."""
     notice = status.get("schema_notice")
@@ -198,7 +227,7 @@ def _draw_status(snapshot) -> None:
             '<div class="status-grid">'
             + _badge(status.get("engine_state") or "no state yet", "active")
             + _badge(status.get("account_currency"), "cyan")
-            + _badge(status.get("account_login_masked"), "green")
+            + _account_badge(status)
             + _badge(last_text, "cyan")
             + _badge("trades today " + trades_text, "green")
             + _badge(_scan_badge(status), "cyan")
