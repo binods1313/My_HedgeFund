@@ -32,9 +32,9 @@ sequenceDiagram
 | Operator to Dashboard buttons | WIRED BUT NEVER EXERCISED | `enqueue_command` exists in `ui/components/enable_ai.py` and `ui/components/emergency_stop.py`. Commands since `2026-10-15T13:23:46+00:00`: 0. |
 | Dashboard to commands table | WIRED BUT NEVER EXERCISED | Same enqueue sites. Last command rows are ENABLE_AI on 2026-10-13, before this run. |
 | Engine loop to commands table | WIRED AND RUNNING | `Engine.run_once` calls `poll_once` first. Heartbeats continued, so `run_once` completed. |
-| Engine loop to Gateway account read | WIRED AND RUNNING until 14:16:54, then stuck | Equity snapshots stop at id 31346. Later events say the terminal is offline. `gateway.status.connected` stays 1. `_ensure_connected` returns immediately when that flag is already true. |
+| Engine loop to Gateway account read | WIRED AND RUNNING until terminal outage | Equity snapshots stop at id 31346. Later events say the terminal is offline. `gateway.status.connected` stays 1. `_ensure_connected` returns immediately when that flag is already true. |
 | Gateway to Journal, startup connect line | WIRED AND RUNNING | Events 23623 and 23626, `connected to MT5 terminal`. Not written again after the outage. |
-| Engine loop to Journal heartbeats | WIRED AND RUNNING | Rows continue. Ids 57478 then 57479 span `15:35:46` to `17:08:53` with no row between. |
+| Engine loop to Journal heartbeats | WIRED AND RUNNING | Rows 57478 and 57479 span the Windows Modern Standby interval. The sleep/wake cause is PROVEN by matching Windows power and MT5 disconnect/re-authorization logs; no blocked-owner-thread explanation is claimed. |
 | Engine loop to Journal equity | WIRED AND RUNNING, then stopped | `_write_telemetry` returns when `may_write_telemetry()` is false. Last equity id 31346 at `14:16:54`. |
 | Engine loop to Journal offline event | WIRED AND RUNNING | Event 23630 `Terminal offline`, then reminder rows. No recovery row. |
 | `ai_brain.py` | NOT WIRED | No import under `engine/` or `ui/`. Tests import it. `scripts/mutation_check.py` names the file and does not import it. |
