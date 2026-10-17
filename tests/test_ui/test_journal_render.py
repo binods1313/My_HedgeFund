@@ -141,3 +141,27 @@ def test_malformed_context_does_not_break_rendering():
 
 def test_empty_journal_shows_empty_message():
     assert "unavailable" in cards._journal_table(pd.DataFrame(), now=NOW)
+
+
+def test_warning_and_critical_badges_render_from_a_real_journal(tmp_path):
+    """Seed a temporary journal and render its rows. Never the live database.
+
+    This proves the whole path -- written severity, read back, mapped to the
+    badge class -- not just the badge helper in isolation.
+    """
+    from engine.journal import Journal
+
+    journal = Journal(tmp_path / "events.db")
+    try:
+        journal.log_event("gateway", "Terminal offline", severity="WARNING")
+        journal.log_event("account", "Account mismatch", severity="CRITICAL")
+        journal.log_event("state", "IDLE -> SCANNING", severity="INFO")
+        rows = journal.recent_events(limit=10)
+    finally:
+        journal.close()
+
+    frame = pd.DataFrame(rows)
+    html = cards._journal_table(frame, now=NOW)
+    assert 'sev-badge sev-warn">WARNING</span>' in html
+    assert 'sev-badge sev-critical">CRITICAL</span>' in html
+    assert 'sev-badge sev-info">INFO</span>' in html
