@@ -33,10 +33,13 @@ _LOCK_TIMEOUT_S = 0.3
 _LOCK_PAUSE_S = 0.05
 _LOCKED_MESSAGE = "Journal file is locked. Retry."
 _UNREADABLE_MESSAGE = "Journal file is unreadable."
+_COMMANDS_TABLE_MISSING_MESSAGE = (
+    "Journal is too old to accept commands; emergency stop was not queued."
+)
 
 
 class JournalFileUnavailable(RuntimeError):
-    """The journal file could not be opened, or stayed locked after retries."""
+    """The journal cannot accept a command, or stayed locked after retries."""
 
 
 def _is_locked(exc: BaseException) -> bool:
@@ -95,6 +98,8 @@ def _insert_command(db_path: Path | None, command: str, params: dict) -> int:
                     time.sleep(_LOCK_PAUSE_S)
                     continue
                 raise JournalFileUnavailable(_LOCKED_MESSAGE) from exc
+            if "no such table: commands" in str(exc).lower():
+                raise JournalFileUnavailable(_COMMANDS_TABLE_MISSING_MESSAGE) from exc
             if _is_unreadable(exc):
                 raise JournalFileUnavailable(_UNREADABLE_MESSAGE) from exc
             raise
@@ -107,7 +112,7 @@ def _insert_command(db_path: Path | None, command: str, params: dict) -> int:
 
 
 def emergency_stop_availability(mode: str | None, engine_state: str | None) -> tuple[bool, str]:
-    """A halt may be queued in every mode. No mode ever disables it.
+    """A halt may be queued in every mode and state. Neither gates it.
 
     PAPER, DEMO and LIVE all offer the same control, deliberately. The halt is
     the operator's last resort, so its availability must not depend on the one
@@ -122,13 +127,10 @@ def emergency_stop_availability(mode: str | None, engine_state: str | None) -> t
     holding the moment a scan loop exists -- which is exactly Phase 2A -- so
     the restriction had to go before the loop arrived, not after.
 
-    The one state that disables it is already being halted, because the reset
-    control takes that place and a second stop would imply one is still
-    needed. ``mode`` is still accepted so the call site and the audit trail
-    keep naming the mode the halt was raised in; it no longer gates anything.
+    ``mode`` and ``engine_state`` are accepted for call-site compatibility,
+    but neither gates the control. A repeated halt is still queued for the
+    engine to audit and handle.
     """
-    if (engine_state or "").strip().lower() == "halted":
-        return False, "Emergency stop is already active."
     return True, ""
 
 
@@ -168,7 +170,6 @@ def render_emergency_stop(mode: str | None, engine_state: str | None, *,
             st.session_state["_emergency_reset_ask"] = True
         if st.session_state.get("_emergency_reset_ask"):
             _confirm_reset_emergency(db_path)
-        return
 
     enabled, reason = emergency_stop_availability(mode, engine_state)
     if not enabled:

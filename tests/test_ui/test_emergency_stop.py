@@ -166,21 +166,11 @@ class TestAvailability:
 
     @pytest.mark.parametrize("mode", ["PAPER", "DEMO", "LIVE"])
     @pytest.mark.parametrize("engine_state", ["running", "paused", "idle",
-                                              "scanning", "analyzing", None])
-    def test_the_halt_is_offered_in_every_running_mode(self, mode, engine_state):
+                                              "scanning", "analyzing", "halted",
+                                              "off", None])
+    def test_the_halt_is_offered_in_every_mode_and_state(self, mode, engine_state):
         enabled, _ = emergency_stop_availability(mode, engine_state)
         assert enabled is True
-
-    def test_an_already_halted_engine_does_not_offer_a_second_stop(self):
-        """Once halted, the reset control takes the button's place.
-
-        This is the only state that disables it, and it disables it because
-        the action is already done -- not because the mode forbids it.
-        """
-        for mode in ("PAPER", "DEMO", "LIVE"):
-            enabled, reason = emergency_stop_availability(mode, "halted")
-            assert enabled is False
-            assert "already active" in reason
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Rendering (Streamlit AppTest, mirroring test_task9)
@@ -246,10 +236,16 @@ def test_a_halted_engine_offers_the_typed_reset(tmp_path):
     database = tmp_path / "engine.db"
     app = AppTest.from_string(_render_script(database, state="halted"))
     app.run(timeout=30)
+    halt = app.button("btn_emergency_stop")
+    assert halt is not None and halt.disabled is False
     reset = app.button("btn_reset_emergency")
     assert reset is not None
 
-    reset.click().run(timeout=30)
+    halt.click().run(timeout=30)
+    rows = _command_rows(database)
+    assert rows and rows[0]["command"] == "EMERGENCY_STOP"
+
+    app.button("btn_reset_emergency").click().run(timeout=30)
     confirm = app.button("btn_emergency_reset_confirm")
     assert confirm.disabled is True, "an empty phrase must not confirm"
 
@@ -258,8 +254,10 @@ def test_a_halted_engine_offers_the_typed_reset(tmp_path):
     assert confirm.disabled is False
     confirm.click().run(timeout=30)
     rows = _command_rows(database)
-    assert rows and rows[0]["command"] == "RESET_EMERGENCY"
-    assert json.loads(rows[0]["params_json"])["confirmation"] == "RESET"
+    assert [row["command"] for row in rows] == [
+        "EMERGENCY_STOP", "RESET_EMERGENCY",
+    ]
+    assert json.loads(rows[1]["params_json"])["confirmation"] == "RESET"
 
 
 def test_the_header_renders_the_halt_control():
@@ -350,6 +348,29 @@ def test_a_missing_journal_is_unreadable(tmp_path):
     with pytest.raises(JournalFileUnavailable, match="unreadable"):
         queue_emergency_stop(missing)
     assert not missing.exists()
+
+def test_a_journal_without_commands_reports_that_halt_was_not_queued(tmp_path):
+    database = tmp_path / "schema_zero.db"
+    sqlite3.connect(database).close()
+    with pytest.raises(JournalFileUnavailable, match="too old.*not queued"):
+        queue_emergency_stop(database)
+
+
+def test_a_journal_without_commands_shows_a_clear_halt_message(tmp_path):
+    from streamlit.testing.v1 import AppTest
+
+    database = tmp_path / "schema_zero.db"
+    sqlite3.connect(database).close()
+    app = AppTest.from_string(_render_script(database, state="running"))
+    app.run(timeout=30)
+    app.button("btn_emergency_stop").click().run(timeout=30)
+
+    assert not app.exception
+    assert any(
+        "too old" in str(item.value).lower()
+        and "not queued" in str(item.value).lower()
+        for item in app.error
+    )
 
 
 def test_schema2_click_queues_and_shows_no_schema_error(tmp_path):

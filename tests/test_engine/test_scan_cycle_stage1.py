@@ -206,6 +206,19 @@ def test_market_closed_is_recorded_before_stale_quote(tmp_path):
     assert body.find("MARKET_CLOSED") < body.find("STALE_QUOTE")
 
 
+def test_stale_quote_is_distinguished_from_market_closed(tmp_path):
+    journal, state, scanner = _setup(tmp_path, ["EURUSD"])
+    scanner.run(
+        state=state, journal=journal, mode="PAPER",
+        read_market=lambda names: {"symbols": {
+            "EURUSD": {"market_open": True, "stale": True, "bar_ts": None, "trade_mode": 4},
+        }},
+    )
+    row = _symbols(journal)[0]
+    assert row["status"] == "skipped"
+    assert row["reason"] == "STALE_QUOTE"
+
+
 def test_state_change_writes_a_skip_and_a_repeat_waits_ten_minutes(tmp_path):
     journal = Journal(tmp_path / "skip.db")
     state = StateMachine(journal)  # OFF
