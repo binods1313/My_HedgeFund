@@ -117,7 +117,6 @@ def _agent_cards(conn, rows: dict, horizon: int, minimum: int) -> None:
                 st.text(_implementation_status(agent_id))
                 st.caption(_disabled_reason(agent_id))
                 if agent_id in _DETERMINISTIC:
-                    st.caption("deterministic, no learning")
                     continue
                 row = rows.get(agent_id)
                 if row is None:
@@ -141,14 +140,16 @@ def _disabled_reason(agent_id: str) -> str:
     its data key, which is reported as not set when it is absent from ``.env``.
     """
     if agent_id in _DETERMINISTIC:
-        return "No decision yet" if agent_id == "09" else "No execution decision yet"
+        if agent_id == "09":
+            return "Reads the latest risk decision from the journal"
+        return "Reads the latest execution decision from the journal"
     module = AGENT_MODULES.get(agent_id)
     if module is None or _is_stub(module):
         return "Not built yet"
     key = _AGENT_KEYS.get(agent_id)
     if key and not name_is_set(DEXTER_ROOT / ".env", key):
         return f"Needs {key} (not set)"
-    return "Waiting for an engine caller (not wired yet)"
+    return "Planned: runs after the signal step (Stage 4)"
 
 
 def _implementation_status(agent_id: str) -> str:
