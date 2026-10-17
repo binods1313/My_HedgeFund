@@ -15,7 +15,7 @@ from ui.components.emergency_stop import render_emergency_stop
 from ui.components.nav import TAB_LABELS, render_navigation
 from ui.components.snapshot import load_shared_snapshot, tickets_without_stop
 from ui.components.theme_studio import render_theme_studio
-from ui.services.news import header_chip_text
+from ui.services.news import header_chip_event, header_chip_text
 from ui.state import persist_asset_category, persist_selected_asset
 
 CATEGORY_LABELS = {
@@ -199,9 +199,13 @@ def _draw_status(snapshot) -> None:
             st.caption(f"{asset}  ·  {quote.get('reason') or 'Quote unavailable'}")
         else:
             st.caption("Market quote · —")
-        chip = html.escape(header_chip_text(snapshot.news.events))
+        events = snapshot.news.events
+        chip = html.escape(header_chip_text(events))
+        # The empty state is information, not an alarm: calm styling. The red
+        # treatment is reserved for an actual high-impact event in the window.
+        chip_class = " calm" if header_chip_event(events) is None else ""
         st.markdown(
-            f'<span class="news-countdown">{chip}</span>',
+            f'<span class="news-countdown{chip_class}">{chip}</span>',
             unsafe_allow_html=True,
         )
 

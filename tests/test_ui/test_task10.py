@@ -200,5 +200,5 @@ def test_narrow_layout_and_chip_slot_are_in_the_markup() -> None:
     assert "animation-direction: reverse" in theme
     assert "crystal-spin" in theme
     assert "hf-tone-caution" in theme
-    assert 'class="news-countdown"' in header
+    assert 'news-countdown{chip_class}' in header
     assert "header_chip_text" in header

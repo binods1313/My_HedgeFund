@@ -297,6 +297,7 @@ button[role="tab"][aria-selected="true"] {{ color: var(--text); border-bottom: 2
 .status-grid {{ display:inline-flex; flex-wrap:wrap; gap:.22rem; align-items:center; }}
 .status-shimmer {{ font-size:.62rem; color:var(--muted); }}
 .news-countdown {{ display:inline-block; margin-top:0; padding:.25rem .5rem; border-radius:6px; background:color-mix(in srgb, var(--loss) 9%, transparent); color:var(--loss); border:1px solid color-mix(in srgb, var(--loss) 30%, transparent); font-family:var(--font-mono); font-size:.72rem; }}
+.news-countdown.calm {{ background:transparent; color:var(--muted); border-color:var(--border); }}
 .news-impact.high {{ color:var(--loss); border-color:color-mix(in srgb, var(--loss) 45%, transparent); }}
 .news-impact.medium {{ color:var(--warn); border-color:color-mix(in srgb, var(--warn) 45%, transparent); }}
 .news-impact.low {{ color:var(--muted); }}

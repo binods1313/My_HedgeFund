@@ -15,7 +15,7 @@ from ui.components.ideas_watchlist import Idea, ideas_frame
 from ui.components.news_tab import build_news_html, filter_events
 from ui.data_access import AccountSnapshot
 from ui.patterns import PatternHit
-from ui.services.news import FetchResult, NewsEvent, header_chip_text
+from ui.services.news import FetchResult, NewsEvent, header_chip_event, header_chip_text
 from ui.theme import TOKENS
 from ui.theme_prefs import (
     MAX_PREFS_BYTES,
@@ -181,6 +181,25 @@ def test_fomc_chip_window_and_empty_state() -> None:
     assert "FOMC" in header_chip_text([soon], NOW)
     assert header_chip_text([later], NOW) == "No high-impact event in the next 24h"
     assert header_chip_text([], NOW) == "No high-impact event in the next 24h"
+
+
+def test_calm_chip_style_is_neutral_not_red() -> None:
+    """The empty-state chip must not use the red alarm treatment.
+
+    Red is for an actual high-impact event inside the window. The empty state
+    gets the neutral `calm` variant, wired in the header and defined in the
+    theme without the --loss colour.
+    """
+    soon = NewsEvent("USD", "FOMC", NOW + dt.timedelta(hours=2), "High", "", "")
+    assert header_chip_event([soon], NOW) is not None
+    assert header_chip_event([], NOW) is None
+    header = (ROOT / "ui" / "components" / "header.py").read_text(encoding="utf-8")
+    theme = (ROOT / "ui" / "theme.py").read_text(encoding="utf-8")
+    assert 'header_chip_event(events) is None' in header
+    assert 'news-countdown{chip_class}' in header
+    calm = theme.split(".news-countdown.calm", 1)[1].split("}}", 1)[0]
+    assert "--loss" not in calm
+    assert "--muted" in calm
 
 
 def test_pattern_marks_ignore_session_state() -> None:
