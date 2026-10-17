@@ -149,11 +149,12 @@ class SymbolSettings(StrictModel):
     """symbols section.
 
     whitelist is a mapping of asset class -> list of symbols, matching
-    config.yaml. Per-symbol spread overrides are Phase 1 scope, so they are
-    accepted and preserved here rather than rejected, but not yet interpreted.
+    config.yaml. Explicit legacy-to-broker aliases and per-symbol spread
+    overrides are accepted and preserved here.
     """
 
     whitelist: dict[str, list[str]]
+    mapping: dict[str, str] = Field(default_factory=dict)
     overrides: dict[str, dict[str, float]] = Field(default_factory=dict)
 
 

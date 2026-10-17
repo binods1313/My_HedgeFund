@@ -794,10 +794,11 @@ class TestAssetClassPolicy:
         })
 
     def test_config_marks_crypto_optional(self):
-        """This broker has no crypto, so requiring it would never PASS."""
+        """The approved whitelist currently contains no crypto symbols."""
         from config_loader import load_config
         policy = load_config().verification
         assert policy.is_required("Crypto Assets") is False
+        assert policy.is_required("Indices & Equities") is False
         assert policy.is_required("Forex Currencies") is True
         assert policy.is_required("Metals & Commodities") is True
 

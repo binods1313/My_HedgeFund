@@ -95,7 +95,7 @@ def test_category_change_resets_selected_asset():
     from unittest.mock import patch
 
     config = load_config()
-    crypto_whitelist = config.symbols.whitelist.get("crypto", [])
+    metals_whitelist = config.symbols.whitelist["metals_commodities"]
 
     with patch("ui.components.header._render_account_metrics"), \
          patch("streamlit.fragment", lambda **kw: lambda f: f), \
@@ -112,12 +112,12 @@ def test_category_change_resets_selected_asset():
         at.run(timeout=60)
 
         cat_select = at.selectbox("w_asset_category")
-        cat_select.select("crypto")
+        cat_select.select("metals_commodities")
         at.run(timeout=30)
 
         asset_select = at.selectbox("w_selected_asset")
-        assert asset_select.value in crypto_whitelist, (
-            f"selected_asset {asset_select.value!r} not in crypto whitelist {crypto_whitelist}"
+        assert asset_select.value in metals_whitelist, (
+            f"selected_asset {asset_select.value!r} not in metals whitelist {metals_whitelist}"
         )
 
 

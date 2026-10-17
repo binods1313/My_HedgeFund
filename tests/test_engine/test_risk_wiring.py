@@ -378,18 +378,14 @@ class TestShippedSpecAssumptions:
         assert whitelist, "the whitelist should not be empty"
 
     def test_probe_fails_when_a_whitelisted_symbol_is_absent(self):
-        """A broker-missing symbol is a config error, not a pass.
-
-        Six whitelist entries are not offered by MetaQuotes-Demo, so the probe
-        must exit non-zero and name them rather than reporting a clean pass.
-        """
+        """A broker-missing symbol is a config error, not a pass."""
         source = (REPO_ROOT / "scripts" / "probe_tick_specs.py").read_text(
             encoding="utf-8")
         assert "if missing_symbol:" in source, (
             "the probe must treat broker-absent symbols as a failure"
         )
         assert "RESULT: FAIL" in source
-        assert "not offered by this broker" in source
+        assert "trading.tradable_symbols" in source
 
     def test_probe_is_read_only(self):
         """It must never place an order.

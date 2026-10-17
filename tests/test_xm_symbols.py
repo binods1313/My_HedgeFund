@@ -1,9 +1,8 @@
-r"""Tests for XM broker symbol naming and asset classification.
+r"""Tests for broker symbol naming and asset classification.
 
-XM does not use bare tickers. Cryptocurrencies and crosses carry a trailing
-'#' (BTCUSD#, EURGBP#) and indices are named '*Cash#' (US500Cash#). Discovery
-must therefore select a symbol before probing it, and the whitelist must hold
-broker names rather than ours.
+The approved MetaQuotes-Demo whitelist uses the three live plain-name forex
+crosses and four FULL metals. The old suffixed crypto and index names are not
+whitelisted; classification remains based on each symbol's broker path.
 
 Classification is by path. Two bugs are pinned here:
 
@@ -43,10 +42,10 @@ class TestAssetClassification:
         ("COIN", "Stocks\\US\\Coinbase", "Indices & Equities"),
         ("BTCU", "Nasdaq\\ETF\\BTCU", "Indices & Equities"),
         ("ETHV", "Nasdaq\\ETF\\ETHV", "Indices & Equities"),
-        # XM forex and crosses.
+        # Forex majors and crosses.
         ("EURUSD", "Forex\\Standard\\Majors\\EURUSD", "Forex Currencies"),
-        ("EURGBP#", "Forex\\Standard\\Majors\\EURGBP#", "Forex Currencies"),
-        # XM indices.
+        ("EURGBP", "Forex\\Standard\\Majors\\EURGBP", "Forex Currencies"),
+        # Broker index contracts.
         ("US500Cash#", "Derivatives\\Cash Ultra Low\\Indices\\US500Cash#",
          "Indices & Equities"),
         ("UK100Cash#", "Derivatives\\Cash Ultra Low\\Indices\\UK100Cash#",
@@ -102,22 +101,31 @@ class TestWhitelistUsesBrokerNames:
         cfg = load_config()
         assert cfg.trading.tradable_symbols
 
-    def test_bitcoin_is_whitelisted_with_the_broker_suffix(self):
+    def test_old_crypto_and_index_symbols_are_not_whitelisted(self):
+        """The approved proposal intentionally leaves these classes empty."""
         cfg = load_config()
-        assert "BTCUSD#" in cfg.trading.tradable_symbols, (
-            "bitcoin must be whitelisted under the broker's own name; a plain "
-            "'BTCUSD' does not exist on this account"
-        )
+        old_names = {
+            "BTCUSD#", "ETHUSD#", "EURGBP#", "EURJPY#", "GBPJPY#",
+            "US500Cash#", "US30Cash#",
+            "US100Cash#", "UK100Cash#",
+        }
+        assert old_names.isdisjoint(cfg.trading.tradable_symbols)
+        assert cfg.symbols.whitelist["crypto"] == []
+        assert cfg.symbols.whitelist["indices"] == []
 
-    def test_no_bare_tickers_that_the_broker_does_not_offer(self):
-        """XM publishes these with a suffix; the bare name fails at the broker."""
+    def test_approved_whitelist_and_explicit_cross_mappings(self):
         cfg = load_config()
-        for bare in ("BTCUSD", "ETHUSD", "EURGBP", "EURJPY", "GBPJPY",
-                     "US500", "USTEC", "US30"):
-            assert bare not in cfg.trading.tradable_symbols, (
-                f"'{bare}' is not a symbol on XM; use the broker's name "
-                f"(for example BTCUSD#)"
-            )
+        expected = {
+            "EURUSD", "GBPUSD", "USDJPY", "USDCAD", "USDCHF", "AUDUSD",
+            "NZDUSD", "EURGBP", "EURJPY", "GBPJPY", "AUDJPY", "CHFJPY",
+            "XAUUSD", "XAGUSD", "XAUEUR", "XAUAUD",
+        }
+        assert set(cfg.trading.tradable_symbols) == expected
+        assert cfg.symbols.mapping == {
+            "EURGBP#": "EURGBP",
+            "EURJPY#": "EURJPY",
+            "GBPJPY#": "GBPJPY",
+        }
 
     def test_both_whitelists_agree(self):
         """config_loader enforces this, so a successful load proves it."""
@@ -133,22 +141,34 @@ class TestWhitelistUsesBrokerNames:
 
     def test_indices_use_the_broker_contract_names(self):
         indices = self._whitelist().get("indices", [])
-        assert indices, "indices should be configured"
-        for name in indices:
-            assert name.endswith("#"), (
-                f"'{name}' is not an XM index contract name; expected a "
-                f"'*Cash#' style name"
-            )
+        assert not indices, "no index symbols are approved in this whitelist"
 
     def test_bitcoin_is_under_crypto_not_metals(self):
         whitelist = self._whitelist()
-        assert any("BTC" in s for s in whitelist.get("crypto", [])), (
-            "bitcoin must be filed under crypto"
-        )
+        assert whitelist.get("crypto", []) == []
         assert not any("BTC" in s for s in
                        whitelist.get("metals_commodities", [])), (
             "bitcoin is not a commodity; it must not be filed under metals"
         )
+
+    def test_every_whitelisted_symbol_resolves_on_live_terminal(self):
+        try:
+            import MetaTrader5 as mt5
+        except ImportError:
+            pytest.skip("MetaTrader5 package is not installed")
+
+        if not mt5.initialize(timeout=10_000):
+            pytest.skip(f"MetaTrader5 terminal unavailable: {mt5.last_error()}")
+
+        try:
+            missing = [
+                symbol for symbol in load_config().trading.tradable_symbols
+                if mt5.symbol_info(symbol) is None
+            ]
+        finally:
+            mt5.shutdown()
+
+        assert not missing, f"whitelist symbols absent from live terminal: {missing}"
 
 
 class TestDiscoveryActivatesHiddenSymbols:

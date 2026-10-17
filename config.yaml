@@ -18,15 +18,14 @@ feed:
 trading:
   # Authoritative list of symbols the system may trade.
   #
-  # Names are the BROKER's, not ours. XM publishes non-standard contracts with a
-  # trailing '#' (BTCUSD#, EURGBP#) and its indices as '*Cash#'
-  # (US500Cash#, US30Cash#). A plain 'BTCUSD' or 'US500' does not exist on this
-  # account. All 16 below were verified live: selectable, quoting, and carrying
-  # both trade_tick_value and trade_tick_size so the Risk Engine can size them.
+  # This approved list uses the names returned by the read-only MetaQuotes-Demo
+  # probe. EURGBP, EURJPY and GBPJPY replace the old configured names with '#';
+  # their explicit old-to-broker-name mappings are recorded under symbols.mapping.
+  # Keep this Stage 1 scan set to these 16 symbols; the nine other FULL crosses
+  # without ticks in the probe are intentionally excluded.
   #
   # Category comes from each symbol's own path, never from its name. On the
   # previous broker 'COIN' was Coinbase Global Inc, an equity, purely by ticker.
-  # Bitcoin therefore sits under crypto, not metals.
   tradable_symbols:
     - EURUSD
     - GBPUSD
@@ -35,17 +34,24 @@ trading:
     - USDCHF
     - AUDUSD
     - NZDUSD
-    - EURGBP#      # broker name carries a '#' suffix
-    - EURJPY#
-    - GBPJPY#
-    - BTCUSD#      # Bitcoin. NOT a metal: classified from path
-    - ETHUSD#      # Ethereum.
-    - US500Cash#   # S&P 500
-    - US30Cash#    # Dow 30
-    - US100Cash#   # Nasdaq 100
-    - UK100Cash#   # FTSE 100
+    - EURGBP
+    - EURJPY
+    - GBPJPY
+    - AUDJPY
+    - CHFJPY
+    - XAUUSD
+    - XAGUSD
+    - XAUEUR
+    - XAUAUD
 
 symbols:
+  # Explicit replacements for the three absent suffixed names in the previous
+  # whitelist. The scanner uses the broker names directly; no suffix-stripping
+  # fallback is applied to any other symbol.
+  mapping:
+    EURGBP#: EURGBP
+    EURJPY#: EURJPY
+    GBPJPY#: GBPJPY
   whitelist:
     forex:
       - EURUSD
@@ -55,22 +61,18 @@ symbols:
       - USDCHF
       - AUDUSD
       - NZDUSD
-      - EURGBP#     # broker name carries a '#' suffix
-      - EURJPY#
-      - GBPJPY#
+      - EURGBP
+      - EURJPY
+      - GBPJPY
+      - AUDJPY
+      - CHFJPY
     metals_commodities:
-      # Empty on the XM account: XAUUSD/XAGUSD/XTIUSD/XBRUSD are not offered.
-      # Left empty rather than listed, because a whitelisted symbol the broker
-      # cannot quote fails at order time with an opaque error.
-      []
-    crypto:
-      - BTCUSD#      # Bitcoin. Broker name carries a '#' suffix.
-      - ETHUSD#      # Ethereum.
-    indices:
-      - US500Cash#  # S&P 500, broker contract name
-      - US30Cash#   # Dow 30
-      - US100Cash#  # Nasdaq 100
-      - UK100Cash#  # FTSE 100
+      - XAUUSD
+      - XAGUSD
+      - XAUEUR
+      - XAUAUD
+    crypto: []
+    indices: []
 
   # Per-symbol overrides (max spread in points; omit to use
   # risk.default_max_spread_points). Keys must match the broker names above.
@@ -209,14 +211,13 @@ verification:
       allow_stale_feed: false
       max_tick_age_seconds: 60
     Indices & Equities:
-      required: true
-      # This broker lists index symbols but serves no live feed for some of them
-      # (UK100 quotes are ~140 days old). Discovery succeeds, quoting does not.
-      # Non-blocking for verification; still refused by the trading path.
+      # No index symbols are currently approved in the whitelist. Keep this
+      # class optional until a FULL, quoted index is deliberately approved.
+      required: false
       allow_stale_feed: true
       max_tick_age_seconds: 60
     Crypto Assets:
-      # Not offered on this broker account.
+      # No crypto symbols are currently approved in the whitelist.
       required: false
       allow_stale_feed: false
       max_tick_age_seconds: 60
