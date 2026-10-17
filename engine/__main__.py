@@ -1066,6 +1066,10 @@ def main(argv: list[str] | None = None) -> int:
           f"offline_after={config.engine.offline_after_seconds}s")
     print(f"[config] magic={config.engine.magic_number}")
 
+    if args.check_config:
+        print("[config] OK")
+        return 0
+
     _instance_lock = _acquire_single_instance_lock(config)
     if _instance_lock is None:
         print(f"[FATAL] another engine is already running on {config.db_path}; "
@@ -1102,12 +1106,6 @@ def main(argv: list[str] | None = None) -> int:
     # needs a gateway to ask. It is placed before every other start gate so a
     # mismatch is the first thing an operator sees, not the last.
     _report_account_check(engine)
-    if args.check_config:
-        print("[config] OK")
-        engine.gateway.stop()
-        engine.journal.close()
-        return 0
-
     if config.is_live and not args.live:
         print("[FATAL] mode is LIVE but --live was not supplied; refusing")
         engine.shutdown()

@@ -136,9 +136,9 @@ _AGENT_KEYS: dict[str, str] = {"06": "FINANCIAL_DATASETS_API_KEY"}
 def _disabled_reason(agent_id: str) -> str:
     """Why a card is not live, stated from code and config -- never a guess.
 
-    Agents 01-08 make no model call and need no provider key; the only thing
-    missing is an engine loop that calls them. Agent 06 additionally needs its
-    data key, which is reported as not set when it is absent from ``.env``.
+    Agents 01-08 make no model call and need no provider key; the missing piece
+    is an engine caller for the research modules. Agent 06 additionally needs
+    its data key, which is reported as not set when it is absent from ``.env``.
     """
     if agent_id in _DETERMINISTIC:
         return "No decision yet" if agent_id == "09" else "No execution decision yet"
@@ -148,7 +148,7 @@ def _disabled_reason(agent_id: str) -> str:
     key = _AGENT_KEYS.get(agent_id)
     if key and not name_is_set(DEXTER_ROOT / ".env", key):
         return f"Needs {key} (not set)"
-    return "Waiting for scan loop (not built yet)"
+    return "Waiting for an engine caller (not wired yet)"
 
 
 def _implementation_status(agent_id: str) -> str:

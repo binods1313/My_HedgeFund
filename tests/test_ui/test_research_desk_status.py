@@ -95,11 +95,10 @@ def test_a_real_module_is_not_a_stub() -> None:
     assert desk._implementation_status("01") == desk._STATUS_DISABLED
 
 
-def test_agents_01_to_08_reason_is_the_missing_scan_loop() -> None:
-    # Verified in code: no engine module imports engine.research, and none of
-    # 01-08 calls a model or needs a provider key. The honest blocker is the loop.
+def test_agents_01_to_08_reason_is_the_missing_engine_caller() -> None:
+    # The Stage 1 scanner runs, but no engine caller invokes these modules.
     for agent_id in ("01", "02", "03", "04", "05", "07", "08"):
-        assert desk._disabled_reason(agent_id) == "Waiting for scan loop (not built yet)", agent_id
+        assert desk._disabled_reason(agent_id) == "Waiting for an engine caller (not wired yet)", agent_id
 
 
 def test_agent_06_reason_names_its_missing_data_key(monkeypatch) -> None:
@@ -107,9 +106,9 @@ def test_agent_06_reason_names_its_missing_data_key(monkeypatch) -> None:
     assert desk._disabled_reason("06") == "Needs FINANCIAL_DATASETS_API_KEY (not set)"
 
 
-def test_agent_06_reason_is_scan_loop_when_its_key_is_set(monkeypatch) -> None:
+def test_agent_06_reason_is_missing_caller_when_its_key_is_set(monkeypatch) -> None:
     monkeypatch.setattr(desk, "name_is_set", lambda path, name: True)
-    assert desk._disabled_reason("06") == "Waiting for scan loop (not built yet)"
+    assert desk._disabled_reason("06") == "Waiting for an engine caller (not wired yet)"
 
 
 def test_deterministic_cards_show_decision_placeholder_not_a_zero() -> None:
