@@ -308,3 +308,20 @@ def test_ideas_watchlist_is_local_and_escaped(tmp_path: Path) -> None:
     source = (ROOT / "ui" / "components" / "ideas_watchlist.py").read_text(encoding="utf-8")
     assert "submit_order" not in source
     assert "close_position" not in source
+
+
+def test_no_ui_source_contains_double_encoded_latin1() -> None:
+    """The 'ENGINE Â· ONLINE' pill was a UTF-8 middle dot read as Latin-1.
+
+    U+00C2/U+00C3 followed by a Latin-1 punctuation byte is the signature of
+    double-encoded UTF-8. It renders as Â or Ã garbage on every page.
+    """
+    offenders = []
+    for path in (ROOT / "ui").rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        for mark in ("Â", "Ã"):
+            if mark in text:
+                offenders.append(f"{path.name}: contains {mark!r}")
+    header = (ROOT / "ui" / "components" / "header.py").read_text(encoding="utf-8")
+    assert '">ENGINE · ' in header
+    assert not offenders, f"mojibake in UI sources: {offenders}"

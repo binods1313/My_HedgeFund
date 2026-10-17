@@ -127,7 +127,7 @@ def _draw_status(snapshot) -> None:
             else:
                 engine_class = "active"
             st.markdown(
-                f'<span class="status-badge {engine_class}">ENGINE Â· '
+                f'<span class="status-badge {engine_class}">ENGINE · '
                 f'{html.escape(label)}</span>',
                 unsafe_allow_html=True,
             )
