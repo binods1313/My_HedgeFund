@@ -2023,3 +2023,94 @@ then `PRAGMA query_only=ON`.
 (24524, '2026-10-16T05:52:15+00:00', 'INFO', 'state', 'IDLE -> SCANNING')
 (24525, '2026-10-16T05:52:15+00:00', 'INFO', 'state', 'SCANNING -> IDLE')
 ```
+
+### 10.10 Round 5 report (2026-10-18)
+
+PAPER, no `--live`, no orders, brain parked, auto-execute off, magic-234000 untouched.
+
+| Item | Label | Result |
+|---|---|---|
+| Status pill mojibake (`ENGINE Â· ONLINE`) | **PROVEN fixed** | Double-encoded UTF-8 in `header.py` replaced with the real middle dot; a test fails on any U+00C2/U+00C3 in `ui/`. Commit `d6d01de`. |
+| Red "No high-impact event" chip | **PROVEN fixed** | Empty state now uses a neutral `news-countdown.calm` class; red is reserved for a real high-impact event in the window. Commit `19cf306`. |
+| Stale tick vs closed market | **PROVEN fixed** | Inside the configured Friday/Sunday closure the header shows "Market closed" (neutral caption); the stale alarm stays for an open market. Weekend-only: this MT5 build has no `symbol_info_session_*`, so per-symbol daily breaks are not detectable — **UNPROVEN** for weekday breaks. Commit `13e54de`. |
+| Research Desk card text | **PROVEN fixed** | 09/10 read "Reads the latest risk/execution decision from the journal"; 01-08 read "Planned: runs after the signal step (Stage 4)"; 06 keeps the missing-key message; the vendor-name guard passes. Commit `96958fd`. |
+| Account chip tooltip | **TESTED-ONLY** | Native `title=` tooltip: last 4 digits, currency, demo/live only. Verified by test against a seeded temp journal; not re-hovered in a browser this round. Commit `46be69c`. |
+| WARNING/CRITICAL badge colours | **TESTED-ONLY** | Temp-DB journal rows render `sev-warn` / `sev-critical` / `sev-info` end to end. Live journal had only INFO rows in view. Commit `82ed0d3`. |
+| Unmanaged 8501 instance | **UNPROVEN identity / stop BLOCKED** | PID 13268 was already dead. A replacement (PID 13472, parent python 34596 ← powershell 4056 ← explorer) started 2026-10-18 01:56:47 IST on 8501, serves Streamlit (`/_stcore/health` ok). No `cmd.exe`/`run.bat` ancestor and run.bat pins 8502, so it was not started by run.bat. `Stop-Process -Id` returned **Access denied** (elevated process; also why its CommandLine is unreadable). Left running — needs an elevated shell. |
+| refs/agents | **PROVEN** | 6 refs across 3 agent-host checkpoint sessions (see raw output). Not on any branch. |
+| Full suite | **TESTED-ONLY** | 1610 passed, 6 skipped in 50.21s. |
+| Engine + dashboard alive through host sleeps | **PROVEN** | PID 17572 heartbeats current at 22:48:43Z; dashboard 7936 on 8502 HTTP ok. |
+| Stage 2 design | **Document only** | `docs/Stage2_Design.md`. No Stage 2 code written. |
+
+#### Raw output
+
+`git --no-pager log --oneline -8` (before the docs commit that adds this section):
+
+```text
+82ed0d3 test: prove WARNING and CRITICAL badges from a seeded temporary journal
+46be69c feat: tooltip on the account chip with last four digits, currency and server type
+96958fd fix: plain-language reasons on the Research Desk cards
+13e54de fix: show Market closed, not a stale-tick alarm, in the weekend closure
+19cf306 fix: stop styling the empty news chip as a red alarm
+d6d01de fix: render the engine status middle dot as UTF-8, not mojibake
+19f546a docs: record B4 as sleep/wake, the approved whitelist and the round 4 evidence
+24e8f1d fix: let --check-config run beside a live engine and correct the Research Desk reason
+```
+
+`git status --short` at the same point:
+
+```text
+ M docs/Instructions_3.md
+?? data/
+?? docs/Stage2_Design.md
+?? push_prompt.txt
+```
+
+Full suite, command and tail:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests -q --basetemp=<session dir>
+```
+
+```text
+................................                                         [100%]
+1610 passed, 6 skipped in 50.21s
+```
+
+Process table (Get-CimInstance Win32_Process, python only):
+
+```text
+30068 (parent 14884)  "E:\HedgeFund_Binod_v2\.venv\Scripts\python.exe" -u -m engine
+17572 (parent 30068)  "E:\HedgeFund_Binod_v2\.venv\Scripts\python.exe" -u -m engine
+34304 (parent 34472 cmd /c run.bat)  ".venv\Scripts\python.exe" -m streamlit run app.py --server.port 8502 --server.headless true
+7936  (parent 34304)  same command line; listens on 8502
+34596 (parent 4056 powershell, created 18-10-2026 01:56:47)  python.exe — CommandLine blank
+13472 (parent 34596)  python.exe — CommandLine blank; listens on 8501
+```
+
+Listeners: `8502 -> 7936` (managed), `8501 -> 13472` (unmanaged, stop denied).
+
+8501 evidence and the failed stop:
+
+```text
+GET /_stcore/health -> ok
+netstat: TCP 0.0.0.0:8501 LISTENING 13472
+Stop-Process -Id 13472 -Force -> "Access is denied"
+Stop-Process -Id 34596 -Force -> "Access is denied"
+```
+
+`git for-each-ref refs/agents` (6 refs; not on any branch; `git branch -a --contains <sha>` empty):
+
+```text
+refs/agents/a508ee7c-.../checkpoints/turn/0  d5466b0fea4a
+refs/agents/a508ee7c-.../checkpoints/turn/1  38833ae1c053
+refs/agents/a508ee7c-.../checkpoints/turn/2  62cb3b7aef3f
+refs/agents/a508ee7c-.../checkpoints/turn/3  b28466fa8621
+refs/agents/f36debfd-.../checkpoints/turn/0  b4ceb396ed1d
+refs/agents/f960ea35-.../checkpoints/turn/0  786b251b5f1e
+```
+
+`git count-objects -vH`: 360 loose objects, 1.73 MiB loose, 1921 in-pack, 6.27 MiB packed.
+The 551 secret-scan history hits from round 4 live in these checkpoint refs (they snapshot untracked files). Proposed handling, not implemented: push only explicit branches (`git push origin feature/echofi-ui`, never `--all`/`--mirror`), and add `--not refs/agents/*` to the scanner's history walk so checkpoint snapshots stop counting as repo history. Nothing deleted.
+
+Engine journal spot check (read-only): last heartbeat `(121197, 'IDLE', 17572, 1, '2026-10-17T22:48:43+00:00')`; 30,594 heartbeat rows from PID 17572.
