@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import html
 import math
-from datetime import datetime
+from datetime import datetime, timezone
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import streamlit as st
@@ -35,6 +36,39 @@ _METRIC_ACCENTS = {
     "Open risk": "red",
     "Open positions": "violet",
 }
+
+_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _market_closed_now() -> bool:
+    """True inside the configured FX/metals weekend closure.
+
+    The same hours that block new entries decide when an old tick means a
+    closed market rather than a dead feed. Unreadable config fails to the
+    defaults in ``data_engine.trading_week_closed``.
+    """
+    try:
+        import yaml
+        raw = yaml.safe_load((_ROOT / "config.yaml").read_text(encoding="utf-8")) or {}
+        sessions = raw.get("sessions") or {}
+        friday = int(sessions.get("block_friday_after_utc_hour", 20))
+        sunday = int(sessions.get("block_sunday_before_utc_hour", 21))
+    except Exception:
+        friday, sunday = 20, 21
+    from data_engine import trading_week_closed
+    return trading_week_closed(
+        datetime.now(timezone.utc),
+        friday_after_utc_hour=friday,
+        sunday_before_utc_hour=sunday,
+    )
+
+
+def _quote_caption_text(asset: str, quote: dict, *, market_closed: bool) -> str:
+    """Header quote line. A stale tick in a closed market is not an alarm."""
+    reason = str(quote.get("reason") or "Quote unavailable")
+    if market_closed and reason.startswith("Stale tick"):
+        return f"{asset}  ·  Market closed"
+    return f"{asset}  ·  {reason}"
 
 
 def _scan_badge(status: dict) -> str:
@@ -196,7 +230,7 @@ def _draw_status(snapshot) -> None:
                 f"ASK {quote['ask']:.{digits}f}  ·  SPREAD {quote['spread']} pts"
             )
         elif asset:
-            st.caption(f"{asset}  ·  {quote.get('reason') or 'Quote unavailable'}")
+            st.caption(_quote_caption_text(asset, quote, market_closed=_market_closed_now()))
         else:
             st.caption("Market quote · —")
         events = snapshot.news.events

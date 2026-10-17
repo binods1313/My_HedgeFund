@@ -281,6 +281,25 @@ def get_market_data(symbol: str) -> str:
     return summary
 
 
+def trading_week_closed(now_utc, *, friday_after_utc_hour: int = 20,
+                        sunday_before_utc_hour: int = 21) -> bool:
+    """True between the Friday close and Sunday open of the FX/metals week.
+
+    The hours are the configured session guards, so the dashboard and the
+    entry blocker agree on when the market is shut. This MT5 build exposes no
+    ``symbol_info_session_*`` calls, so a per-symbol daily break is not
+    visible here; only the weekend window is.
+    """
+    weekday = now_utc.weekday()  # Monday is 0
+    if weekday == 4:
+        return now_utc.hour >= friday_after_utc_hour
+    if weekday == 5:
+        return True
+    if weekday == 6:
+        return now_utc.hour < sunday_before_utc_hour
+    return False
+
+
 def get_symbol_live_quote(symbol: str, max_tick_age_seconds: int = 30) -> dict:
     """Fetches real-time live bid, ask, spread, and price digits for an instrument.
 

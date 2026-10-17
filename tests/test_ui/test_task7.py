@@ -325,3 +325,32 @@ def test_no_ui_source_contains_double_encoded_latin1() -> None:
     header = (ROOT / "ui" / "components" / "header.py").read_text(encoding="utf-8")
     assert '">ENGINE · ' in header
     assert not offenders, f"mojibake in UI sources: {offenders}"
+
+
+def test_trading_week_closed_boundaries() -> None:
+    from datetime import datetime as dt, timezone as tz
+
+    from data_engine import trading_week_closed
+
+    def at(day, hour):  # 2026-10-12 is a Monday
+        return dt(2026, 10, 12 + day, hour, tzinfo=tz.utc)
+
+    assert trading_week_closed(at(4, 19)) is False   # Friday 19:00 UTC
+    assert trading_week_closed(at(4, 20)) is True    # Friday 20:00 UTC close
+    assert trading_week_closed(at(5, 12)) is True    # Saturday
+    assert trading_week_closed(at(6, 20)) is True    # Sunday before open
+    assert trading_week_closed(at(6, 21)) is False   # Sunday 21:00 UTC open
+    assert trading_week_closed(at(0, 8)) is False    # Monday
+
+
+def test_stale_tick_reads_market_closed_only_when_the_week_is_closed() -> None:
+    from ui.components.header import _quote_caption_text
+
+    stale = {"valid": False, "reason": "Stale tick: age 3239s > 30s"}
+    assert _quote_caption_text("EURUSD", stale, market_closed=True) == "EURUSD  ·  Market closed"
+    assert "Stale tick" in _quote_caption_text("EURUSD", stale, market_closed=False)
+    no_data = {"valid": False, "reason": "No data"}
+    assert "Market closed" not in _quote_caption_text("EURUSD", no_data, market_closed=True)
+    header = (ROOT / "ui" / "components" / "header.py").read_text(encoding="utf-8")
+    assert "trading_week_closed" in header
+    assert "block_friday_after_utc_hour" in header
