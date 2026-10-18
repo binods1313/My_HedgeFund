@@ -12,8 +12,11 @@ schema is more dangerous than one that refuses to start.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import tempfile
 import threading
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -272,6 +275,55 @@ MIGRATIONS: dict[int, list[str]] = {1: MIGRATION_1, 2: MIGRATION_2, 3: MIGRATION
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def backup_journal(source: str | Path,
+                   destination: str | Path) -> Path:
+    """Create a consistent, non-overwriting SQLite backup.
+
+    A passive WAL checkpoint is requested first. SQLite's online backup API
+    then copies a consistent snapshot including any committed WAL content;
+    copying the main database file alone is never sufficient while WAL is in
+    use. The destination is published only after SQLite integrity validation.
+    """
+    source_path = Path(source).resolve()
+    destination_path = Path(destination).resolve()
+    if source_path == destination_path:
+        raise ValueError("journal backup source and destination must differ")
+    if not source_path.is_file():
+        raise FileNotFoundError(source_path)
+    destination_path.parent.mkdir(parents=True, exist_ok=True)
+    if destination_path.exists():
+        raise FileExistsError(destination_path)
+
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{destination_path.name}.",
+        suffix=".backup",
+        dir=destination_path.parent,
+    )
+    os.close(descriptor)
+    temporary_path = Path(temporary_name)
+    try:
+        with closing(sqlite3.connect(
+                str(source_path), timeout=30.0)) as source_conn:
+            source_conn.execute("PRAGMA busy_timeout = 30000")
+            source_conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+            with closing(sqlite3.connect(
+                    str(temporary_path), timeout=30.0)) as backup_conn:
+                source_conn.backup(backup_conn)
+                integrity = backup_conn.execute(
+                    "PRAGMA integrity_check").fetchone()
+                if integrity is None or integrity[0] != "ok":
+                    raise sqlite3.DatabaseError(
+                        "journal backup integrity check failed: "
+                        f"{None if integrity is None else integrity[0]}")
+        if destination_path.exists():
+            raise FileExistsError(destination_path)
+        os.rename(temporary_path, destination_path)
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
+    return destination_path
 
 
 class SchemaTooOld(RuntimeError):
