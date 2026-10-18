@@ -42,17 +42,15 @@ class TestExpiryFormula:
         assert expiry == pytest.approx(expected_min.isoformat())
 
     def test_creation_bound_is_a_safety_cap(self):
-        """If the signal is created much later, created+1800s wins."""
+        """When the bar close is far from creation (clock skew > 900 s),
+        expiry falls back to created + 1800 s, staying on one consistent clock.
+        """
         cycle = _make_cycle()
         bar_close = "2026-10-16T20:59:00+00:00"
         created = "2026-10-16T22:00:00+00:00"  # 61 min after bar close
         expiry = cycle._compute_expiry(bar_close, created)
         created_dt = datetime(2026, 10, 16, 22, 0, 0, tzinfo=timezone.utc)
-        close_dt = datetime(2026, 10, 16, 20, 59, 0, tzinfo=timezone.utc)
-        expected = min(
-            close_dt + timedelta(seconds=_EXPIRY_BAR_WINDOW),
-            created_dt + timedelta(seconds=_EXPIRY_CREATION_WINDOW),
-        )
+        expected = created_dt + timedelta(seconds=_EXPIRY_CREATION_WINDOW)
         assert expiry == expected.isoformat()
 
 

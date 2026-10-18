@@ -1,24 +1,14 @@
-2a accepted. Copy migration, row counts, integrity check, indexes, backup helper and 1616 tests are good. I APPROVE the live migration and sub-stage 2b. PAPER only, no --live, approve-first, auto-execute off, brain parked, do not touch magic-234000. Mocked tests first.
+2b report: accepted — live health (v4, integrity, indexes, heartbeat), broker probe (300 rows, closed bars), scan rows, and your disclosure that signal writing is not wired. NOT accepted as 2b complete. Hold 2c. PAPER only, no --live, approve-first, auto-execute off, brain parked, do not touch magic-234000.
 
-1. COMMIT FIRST
-Commit the v4 migration, backup helper and their tests in logical commits (migration, backup helper, tests). Paste git log --oneline -6 and git status. Nothing uncommitted may run in the live engine.
+1. COMMIT FIRST. git status shows modified gateway.py, scan_cycle.py, journal.py, config.yaml, config_loader.py, engine/config.py, sizing.py, app.py, ui files and new tests/signals_page.py. The engine was restarted on uncommitted code. Commit in logical commits (config/sizing, gateway history, journal record_signal, scan_cycle, UI, tests). Paste git log --oneline -12 and git status. Show git diff for config.yaml before committing it.
 
-2. LIVE MIGRATION PROCEDURE (report each step with raw output)
-a. Verify the engine is healthy now: newest heartbeat id and ts (read-only), PID and command line, MT5 connected.
-b. Backup with backup_journal() into backups/ named engine_5057151780_pre_v4_<UTC timestamp>.db, and paste read-only counts of the backup. Also copy the existing pre-v4 backup from the session folder into backups/.
-c. Stop the engine: confirm the command line, Stop-Process -Id for the parent, confirm the child is gone, and confirm the lock is released.
-d. Start the engine on current code from the project venv (PAPER, no --live). It migrates the live journal to v4 as the single writer. Paste: schema_version rows, signals table SQL, both partial index definitions, PRAGMA integrity_check, row counts of every table versus the backup, startup events, and new heartbeats advancing with pid.
-e. Restart the dashboard from run.bat on 8502 only if it shows errors after the migration. Check the Journal page shows v4 and the Signals table renders empty with a sentence.
-f. If anything fails: stop the engine, do not retry silently, report, and restore only with my approval.
+2. WIRE THE SIGNAL PATH (this is 2b, not 2c). Engine must provide read_history and evaluate_strategy so ScanCycle actually calls _try_signal. Show the code. Rules unchanged: one batched owner-thread history read per cycle, only for symbols with a newly closed M15 bar, start_pos=1, at least 206 closed rows, INSUFFICIENT_HISTORY visible, deterministic decision_id, one PENDING per symbol, expiry min(bar_close+900s, created+1800s), drift check each loop (ASK for BUY, BID for SELL), visible rejects including "Too small to size within the risk limit". No approval commands, no executor, no order functions.
+   Add a mocked end-to-end test using the real ScanCycle with a fake gateway and a frame that yields an actionable signal: assert one PENDING row, the correct decision_id, expires_at, supersede on the next bar, idempotent re-run, and that no order function was called. Add a test that fails if Engine lacks the callables (so dead wiring cannot recur).
 
-3. CONFIG (separate commit, tell me before you apply): add a per-symbol volume cap setting. Default cap per symbol = volume_min x 10. Show the exact key name and where it is read, the validation (must be >= volume_min, loud failure otherwise) and a test. No other config changes.
+3. TIME HANDLING. bar_ts values like 2026-10-19T00:17Z in a report written at 21:17Z Sunday, and metals "00:00:05Z", suggest broker server time (UTC+3) mixed with UTC. State the broker server offset, how bar_ts is stored (raw broker epoch or converted), and show one raw example: raw epoch, converted UTC, converted IST. Make expiry maths use one consistent clock; add a test with a +3h server offset.
 
-4. SUB-STAGE 2b (after the migration is verified)
-- Gateway history read: one batched owner-thread read per cycle, only for symbols with a newly closed M15 bar, 300 closed bars, never the forming bar. Test read count equals symbols with a new bar.
-- Signal writing: strategy evaluate() only when at least 206 closed rows; INSUFFICIENT_HISTORY visible per symbol at 205; PENDING rows only; deterministic decision_id; supersede one pending per symbol; idempotent on the same bar; expiry min(bar_close+900s, created+1800s); drift check each loop with ASK for BUY and BID for SELL; rejected candidates stored visibly with reasons including the exact text "Too small to size within the risk limit".
-- Banner and status-card line for any decision that needs review.
-- Signals page, read-only for now: tabs and a decision chain view. NO approval buttons, NO executor changes, NO approval commands yet (that is 2c).
-- Weekend test, and test that the signal path imports no gateway order function.
-- Vendor-name guard passes for all new strings.
+4. EVIDENCE FIXES. Reconcile engine restart time (21:18Z vs events at 21:17Z). Paste the live schema_version rows (all versions), the first 10 startup events with ids after the restart, and the backup's scan_results count versus its creation time, saying whether the backup predates the v4 migration. Relabel: signal generation is NOT PROVEN; only the unit/mocked tests exist.
 
-REPORT: one-page table (PROVEN / PROBABLE / TESTED-ONLY / UNPROVEN) then raw output with exact commands, full suite numbers. Stop after 2b. Do not start 2c.
+5. After wiring and commit, restart the engine by the verified procedure (backup first, verified PID, project venv, PAPER, no --live). Then paste scan_symbols and any signals rows from the next closed M15 bars (status, reject_reason, expires_at, decision_id). If the strategy produces no signal, say so; do not use the TEST SIGNAL injector yet. Also paste the evaluate() output summary per symbol (blocks agree/disagree counts) for one cycle so we can see it is actually running.
+
+REPORT: one-page table (PROVEN / PROBABLE / TESTED-ONLY / UNPROVEN), then raw output with exact commands, full suite last 15 lines. Stop after this. Do not start 2c.
