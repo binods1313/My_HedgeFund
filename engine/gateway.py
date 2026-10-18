@@ -783,6 +783,39 @@ class Gateway:
 
         return self.call("snapshot", _read)
 
+    def read_history(self, symbol: str, count: int = 300,
+                     timeframe: int | None = None) -> "pd.DataFrame | None":
+        """Fetch closed M15 candle history for one symbol on the owner thread.
+
+        Reads only closed bars via ``copy_rates_from_pos`` with ``start_pos=1``,
+        which skips the forming bar at index 0. The caller must not follow
+        this with per-symbol terminal reads in the same cycle.
+
+        Returns a pandas DataFrame with columns named to match the engine's
+        OHLCV validator (``time``, ``open``, ``high``, ``low``, ``close``,
+        ``tick_volume``), or None when the terminal returns no data.
+
+        Never raises on a missing or empty feed: a None return is the
+        fail-closed answer a scan cycle treats as "history unavailable".
+        """
+        import pandas as pd
+
+        def _read() -> "pd.DataFrame | None":
+            mt5 = self._mt5_or_raise()
+            tf = timeframe if timeframe is not None else getattr(mt5, "TIMEFRAME_M15", 15)
+            mt5.symbol_select(symbol, True)
+            rates = mt5.copy_rates_from_pos(symbol, tf, 1, int(count))
+            if rates is None or len(rates) == 0:
+                return None
+            df = pd.DataFrame(rates)
+            df["time"] = pd.to_datetime(df["time"], unit="s")
+            return df
+
+        try:
+            return self.call("read_history", _read)
+        except (NotConnected, GatewayError):
+            return None
+
     def shutdown_terminal(self) -> None:
         if self._mt5 is not None and self.status.connected:
             try:
