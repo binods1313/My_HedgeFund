@@ -381,7 +381,16 @@ class ScanCycle:
 
         ``bar_close_ts`` may arrive as either an ISO-8601 string or a Unix
         timestamp string (what the gateway stores from ``tick.time``).
+
+        Clock skew guard: when the bar close is more than ``MAX_CLOCK_SKEW``
+        (900 s) away from the signal-creation stamp, the two values are on
+        different clocks (e.g. the broker terminal is 3 h ahead of the
+        engine). Falling back to the creation bound alone keeps the expiry
+        on one consistent clock and prevents an immediate expiry (bar in
+        the past) or an over-long hold (bar in the far future).
         """
+        from engine.equity import MAX_CLOCK_SKEW_SECONDS
+
         try:
             close_dt = datetime.fromisoformat(bar_close_ts)
         except ValueError:
@@ -393,6 +402,16 @@ class ScanCycle:
         created_dt = datetime.fromisoformat(created_iso)
         if created_dt.tzinfo is None:
             created_dt = created_dt.replace(tzinfo=timezone.utc)
+
+        skew = abs((close_dt - created_dt).total_seconds())
+        if skew > MAX_CLOCK_SKEW_SECONDS:
+            # The bar timestamp is from a different clock than the creation
+            # stamp (broker terminal 3 h ahead is the measured case). Use only
+            # the creation bound so the expiry stays on one consistent clock.
+            return (created_dt + timedelta(
+                seconds=_EXPIRY_CREATION_WINDOW
+            )).isoformat()
+
         raw_expiry = min(
             close_dt + timedelta(seconds=_EXPIRY_BAR_WINDOW),
             created_dt + timedelta(seconds=_EXPIRY_CREATION_WINDOW),

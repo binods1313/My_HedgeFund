@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import shutil
 import signal
 import sys
@@ -27,6 +28,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from engine.account_guard import (
     AccountGuard,
@@ -113,6 +115,8 @@ class Engine:
     _telegram_stop_event = None
     #: Stage 1 scanner. None in tests that construct an Engine by hand.
     scanner: object | None = None
+    #: Stage 1b signal wiring. None unless a strategy module is configured.
+    strategy: object | None = None
     #: A repeating telemetry gap is journalled at most this often, in seconds.
     _telemetry_warn_every: float = 300.0
     #: reason -> monotonic time the reason was last journalled.
@@ -120,6 +124,76 @@ class Engine:
 
     def request_stop(self) -> None:
         self._running = False
+
+    # -- Stage 1b signal path ----------------------------------------------
+
+    def read_history(self, symbol: str) -> Any:
+        """Fetch closed M15 candle history for one symbol on the owner thread.
+
+        Delegates to the gateway's read_history, which dispatches through
+        call() so the MT5 terminal read happens on the engine's owner thread.
+        The scanner calls this only when a symbol has a newly closed bar.
+        """
+        return self.gateway.read_history(symbol)
+
+    def evaluate_strategy(self, symbol: str, df: Any) -> Any:
+        """Evaluate the confluence strategy for one symbol.
+
+        Delegates to the strategy module's evaluate() function. Returns a
+        Signal (or subclass) whose is_actionable property tells the scanner
+        whether a PENDING row should be written.
+        """
+        if self.strategy is None:
+            return None
+        return self.strategy.evaluate(symbol, df)
+
+    @property
+    def account(self) -> Any:
+        """A fresh AccountState for the risk gate, built from telemetry.
+
+        Falls back to None when the account is not yet verified, so the
+        risk pre-check correctly fails closed until the fingerprint matches.
+        """
+        if not self._account_verified:
+            return None
+        return self.risk.account_state_from_positions(
+            equity=self._last_equity(),
+            start_of_day_equity=self._sod_equity(),
+            peak_equity=self._peak_equity(),
+            open_positions=self._open_positions_for_risk(),
+        )
+
+    def _last_equity(self) -> float | None:
+        """Most recent account equity reading, or None."""
+        try:
+            account = self.gateway.account_info()
+        except Exception:
+            return None
+        if account is None:
+            return None
+        return float(getattr(account, "equity", 0.0) or 0.0)
+
+    def _sod_equity(self) -> float | None:
+        """Start-of-day equity for the broker's current trading day."""
+        baselines = self.equity_tracker.current() if self.equity_tracker else None
+        return baselines.start_of_day_equity if baselines else None
+
+    def _peak_equity(self) -> float | None:
+        """Peak equity for the broker's current trading day."""
+        baselines = self.equity_tracker.current() if self.equity_tracker else None
+        return baselines.peak_equity if baselines else None
+
+    def _open_positions_for_risk(self) -> list[dict]:
+        """Open positions as plain dicts for the risk gate.
+
+        Uses the journal's stored positions rather than re-reading the
+        terminal, so the risk check stays on the owner thread and does
+        not add a second broker round-trip to the cycle.
+        """
+        try:
+            return self.journal.positions()
+        except Exception:
+            return []
 
     # -- telegram approval layer -----------------------------------------
 
@@ -907,12 +981,18 @@ def build_engine(*, config_path: Path | str | None = None,
         symbols=list(config.scan_symbols),
         max_scan_seconds=float(config.max_scan_seconds),
     )
+
+    strategy = None
+    if config.mode == "PAPER" and getattr(config, "ai_signals_enabled", False):
+        from engine.strategy import evaluate as _strategy_evaluate
+        strategy = _strategy_evaluate
+
     return Engine(config=config, journal=journal, state=state_machine,
                   gateway=gateway, executor=executor, commands=commands,
                   risk=risk, equity_tracker=equity_tracker,
                   guard=guard, _account_verified=startup_verified,
                   _telegram_initialized=telegram_initialized,
-                  scanner=scanner)
+                  scanner=scanner, strategy=strategy)
 
 
 def _mask_login(login) -> str:

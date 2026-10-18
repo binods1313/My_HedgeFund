@@ -160,6 +160,7 @@ scanner:
   candles_required: 300             # Fetch at least this many bars (covers EMA200)
   max_scan_seconds: 10              # Watchlist scan must complete within this
   scan_cadence: on_new_bar          # Only compute on a newly closed bar
+  ai_signals_enabled: false         # Enable Stage 1b signal generation
 
 # ── Trading Sessions ─────────────────────────────────────────────────────────
 sessions:
