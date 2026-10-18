@@ -172,6 +172,7 @@ class FakeMT5:
         self._init_calls = 0
         self._next_ticket = 700_000
         self.connected = False
+        self._rates: dict[str, list[dict]] = {}
         #: When true, reproduce MT5 returning None if any argument is passed.
         self.strict_none_args = behaviour == self.STRICT_NONE_ARGS
 
@@ -187,6 +188,10 @@ class FakeMT5:
     def add_history(self, order: FakeOrder) -> FakeOrder:
         self._history.append(order)
         return order
+
+    def add_rates(self, symbol: str, rates: list[dict]) -> None:
+        """Install closed-bar data that ``copy_rates_from_pos`` will return."""
+        self._rates[symbol] = list(rates)
 
     def _log(self, name, *args, **kwargs):
         # Real MT5 accepts keyword arguments such as terminal_path on
@@ -340,3 +345,19 @@ class FakeMT5:
     def history_deals_get(self, *a, **kw):
         self._log("history_deals_get")
         return []
+
+    def copy_rates_from_pos(self, symbol, timeframe, start_pos, count):
+        """Return ``count`` closed bars for ``symbol`` as a list of dicts.
+
+        ``start_pos`` is treated as a slice offset: index 0 is the most
+        recent bar. The production gateway uses start_pos=1 to skip the
+        forming (not-yet-closed) bar at index 0, so tests inject a list
+        whose index 0 is the forming bar and index 1+ are closed bars.
+        """
+        self._log("copy_rates_from_pos", symbol, timeframe, start_pos, count)
+        series = self._rates.get(symbol) if hasattr(self, "_rates") else None
+        if series is None:
+            return None
+        start = int(start_pos)
+        end = start + int(count)
+        return list(series[start:end])
