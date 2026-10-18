@@ -22,12 +22,13 @@ TAB_LABELS = (
     "🌐 Exchange",
     "💼 Portfolio",
     "🤖 AI Signals",
+    "📊 Signals",
     "📰 Live Market News",
     "🧾 Journal",
     "🔬 Research Desk",
 )
 
-_SLUGS = ("exchange", "portfolio", "signals", "news", "journal", "research")
+_SLUGS = ("exchange", "portfolio", "ai_signals", "signals", "news", "journal", "research")
 _IST = ZoneInfo("Asia/Kolkata")
 
 
@@ -82,8 +83,10 @@ def _render_facts(slug: str, snapshot: RunSnapshot) -> None:
         _exchange_facts(snapshot)
     elif slug == "portfolio":
         _portfolio_facts(snapshot)
+    elif slug == "ai_signals":
+        _ai_signals_facts(snapshot)
     elif slug == "signals":
-        _signal_facts(snapshot)
+        _signals_facts(snapshot)
     elif slug == "news":
         _news_facts(snapshot)
     elif slug == "research":
@@ -129,7 +132,7 @@ def _portfolio_facts(snapshot: RunSnapshot) -> None:
     _line("Positions without SL", str(len(missing)) if account.connected else "—")
 
 
-def _signal_facts(snapshot: RunSnapshot) -> None:
+def _ai_signals_facts(snapshot: RunSnapshot) -> None:
     state = st.session_state.get("ai_state") or {}
     symbol = state.get("symbol") or "—"
     direction = state.get("decision") or "—"
@@ -139,6 +142,20 @@ def _signal_facts(snapshot: RunSnapshot) -> None:
     _line("Age", state.get("timestamp") or "—")
     _line("Validator verdict", state.get("gate_label") or "—")
     _line("Engine state", (snapshot.account.engine_state or "—").upper())
+
+
+def _signals_facts(snapshot: RunSnapshot) -> None:
+    """Quick facts for the Signals tab — counts by status."""
+    try:
+        from ui.data_access import system_status
+        status = system_status()
+        ps = status.get("pending_signals")
+        _line("Pending signals", str(ps) if ps is not None else "—")
+        _line("Signals page", "Open for review")
+        _line("Engine state", (snapshot.account.engine_state or "—").upper())
+    except Exception:
+        _line("Pending signals", "—")
+        _line("Engine state", (snapshot.account.engine_state or "—").upper())
 
 
 def _news_facts(snapshot: RunSnapshot) -> None:

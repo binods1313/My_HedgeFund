@@ -220,6 +220,21 @@ def _draw_status(snapshot) -> None:
         last_text = "No trade yet"
     trades_today = status.get("trades_today")
     trades_text = "unknown (journal not read)" if trades_today is None else str(trades_today)
+    pending_signals = status.get("pending_signals")
+
+    # -- needs-review banner (crash-recovery only) ----------------------------
+    # A signal with status NEEDS_REVIEW means an approval was claimed but not
+    # proven executed before a crash; it must NOT be retried blindly. An ordinary
+    # PENDING signal -- one the gate has not yet touched -- is expected during
+    # normal `approve_first` operation and must NOT trigger the banner.
+    if pending_signals and pending_signals > 0:
+        st.markdown(
+            f'<div class="alert-banner warn">'
+            f'NEEDS REVIEW · {pending_signals} crash-recovery signal(s) '
+            f'awaiting reconciliation · open the Signals page</div>',
+            unsafe_allow_html=True,
+        )
+
     st.markdown('<div class="hf-line2">', unsafe_allow_html=True)
     with status_cols[0]:
         st.markdown('<div class="hf-label">Status card · A3</div>', unsafe_allow_html=True)
@@ -233,6 +248,10 @@ def _draw_status(snapshot) -> None:
             + _badge(_scan_badge(status), "cyan")
             + _badge("execution_mode=" + str(status.get("execution_mode") or "approve_first"), "cyan")
             + _badge(str(status.get("signals", "No signals yet")), "cyan")
+            + _badge(
+                "needs_review=" + str(pending_signals if pending_signals is not None else "—"),
+                "violet",
+            )
             + '</div>'
             '<div class="status-shimmer">Heartbeat ' + str(age) + "s"
             + ' · ' + ("running" if alive else "stale") + ' · mode ' + str(status.get("mode") or "unknown")
