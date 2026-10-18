@@ -151,11 +151,18 @@ class SymbolSettings(StrictModel):
     whitelist is a mapping of asset class -> list of symbols, matching
     config.yaml. Explicit legacy-to-broker aliases and per-symbol spread
     overrides are accepted and preserved here.
+
+    ``volumes`` holds per-symbol absolute lot-size ceilings used by the
+    stage-1 signal writer. When a symbol is absent from ``volumes``, the
+    engine falls back to ``volume_min * volume_cap_default_multiplier``
+    (default 10x) at runtime from the broker's live tick spec.
     """
 
     whitelist: dict[str, list[str]]
     mapping: dict[str, str] = Field(default_factory=dict)
     overrides: dict[str, dict[str, float]] = Field(default_factory=dict)
+    volumes: dict[str, float] = Field(default_factory=dict)
+    volume_cap_default_multiplier: int = Field(default=10, ge=1, le=100)
 
 
 class AppConfig(StrictModel):

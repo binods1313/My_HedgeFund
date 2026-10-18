@@ -984,6 +984,7 @@ def system_status(db_path: Path | None = None) -> dict[str, Any]:
         "schema_notice": None,
         "execution_mode": None,
         "signals": "No signals yet",
+        "pending_signals": None,
     }
     if not target.exists():
         return status
@@ -1018,6 +1019,15 @@ def system_status(db_path: Path | None = None) -> dict[str, Any]:
             pending = conn.execute(
                 "SELECT COUNT(*) AS n FROM commands WHERE status = 'PENDING'"
             ).fetchone()
+            # -- pending signals (for the needs-review banner) ---------------
+            pending_signals = None
+            try:
+                sig_row = conn.execute(
+                    "SELECT COUNT(*) AS n FROM signals WHERE status = 'NEEDS_REVIEW'"
+                ).fetchone()
+                pending_signals = int(sig_row["n"]) if sig_row else 0
+            except sqlite3.OperationalError:
+                pass
             # -- last executed trade + trades today (journal-derived) --------
             # Run on the open connection. Querying after the block above closes
             # it raised ProgrammingError, which was swallowed, so the card never
@@ -1104,6 +1114,7 @@ def system_status(db_path: Path | None = None) -> dict[str, Any]:
             )
     if pending is not None:
         status["pending_commands"] = int(pending["n"])
+    status["pending_signals"] = pending_signals
     return status
 
     return Result(True, "OK", str(payload.get("message", "Position closed")), int(ticket))

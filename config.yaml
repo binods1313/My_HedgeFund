@@ -52,6 +52,14 @@ symbols:
     EURGBP#: EURGBP
     EURJPY#: EURJPY
     GBPJPY#: GBPJPY
+
+  # Per-symbol volume caps for stage-1 signal generation (optional).
+  # When a symbol is absent here, the cap is computed at runtime as
+  # volume_min x volume_cap_default_multiplier from the broker's live
+  # symbol spec. Validation: cap >= volume_min; fail-closed if violated.
+  volume_cap_default_multiplier: 10
+  volumes: {}
+
   whitelist:
     forex:
       - EURUSD

@@ -96,6 +96,20 @@ class RiskLimits(StrictModel):
         return self
 
 
+class SymbolVolumeConfig(StrictModel):
+    """Per-symbol volume cap override.
+
+    ``volume_cap`` is an absolute ceiling (in standard lots) for any single
+    order-sized signal the scanner writes. If absent, the engine falls back
+    to ``volume_min * volume_cap_default_multiplier`` computed at runtime from
+    the broker's live symbol spec. A cap below ``volume_min`` is a config
+    error and fails at startup rather than silently admitting an
+    untradeable ceiling at runtime.
+    """
+
+    volume_cap: float = Field(gt=0)
+
+
 @dataclass
 class EngineConfig:
     """Validated engine configuration with secrets left out."""
@@ -111,6 +125,10 @@ class EngineConfig:
     scan_symbols: list[str] = field(default_factory=list)
     max_scan_seconds: float = 10.0
     execution_mode: str = "approve_first"
+    #: Per-symbol volume caps from ``trading.symbols.volumes``.
+    volume_caps: dict[str, float] = field(default_factory=dict)
+    #: Multiplier used when a symbol has no explicit ``volume_cap``.
+    volume_cap_default_multiplier: int = 10
 
     @property
     def db_path(self) -> Path:
@@ -208,12 +226,16 @@ def load_engine_config(root: Path | str | None = None,
         live_confirmation_required=bool(raw.get("live_confirmation_required", True)),
         engine=EngineSettings.model_validate(engine_section),
         risk=RiskLimits.model_validate(risk_section),
-        symbol_mapping={str(k).upper(): str(v) for k, v in mapping_raw.items()},
+         symbol_mapping={str(k).upper(): str(v) for k, v in mapping_raw.items()},
         root=root_path,
         config_path=cfg_path,
         scan_symbols=_flatten_whitelist(symbols_section.get("whitelist")),
         max_scan_seconds=max_scan_seconds,
         execution_mode=execution_mode,
+        volume_caps=_parse_volume_caps(symbols_section),
+        volume_cap_default_multiplier=int(
+            symbols_section.get("volume_cap_default_multiplier", 10)
+        ),
     )
 
 
@@ -251,6 +273,33 @@ def _flatten_whitelist(whitelist: Any) -> list[str]:
             if isinstance(item, str) and item.strip():
                 names.append(item.strip())
     return names
+
+
+def _parse_volume_caps(symbols_section: Any) -> dict[str, float]:
+    """Read per-symbol volume caps from ``symbols.volumes``.
+
+    Returns an upper-case keyed mapping of symbol -> volume_cap (float).
+    A non-positive or non-numeric value is a config error. The runtime
+    fall-back (volume_min * multiplier) is applied in LotSizer when a
+    symbol is absent from this dict.
+    """
+    volumes_raw = (symbols_section.get("volumes") or {}) if symbols_section else {}
+    caps: dict[str, float] = {}
+    for key, val in volumes_raw.items():
+        if not isinstance(key, str):
+            continue
+        try:
+            cap = float(val)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"symbols.volumes.{key} must be a positive number, got {val!r}"
+            ) from exc
+        if cap <= 0:
+            raise ValueError(
+                f"symbols.volumes.{key} must be > 0, got {cap}"
+            )
+        caps[str(key).upper()] = cap
+    return caps
 
 
 def read_mt5_credentials() -> dict[str, Any]:
