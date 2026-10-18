@@ -1,17 +1,24 @@
-ROLE: QA via Playwright MCP against http://localhost:8501. Report only. Output folder: E:\HedgeFund_Binod_v2\reports\ui_qa\round5\.
-SCREENSHOTS: the Playwright tool can only write under C:\Users\Binod\.playwright-mcp. Save there, then copy each file into round5\ with a shell command and list the final paths. Do not claim a screenshot you did not copy.
-STEP 0: read docs/qa_recipe.md and quote the 5 locators you will use. Restart the process on 8501 only (never 8502/8503); record PID and start time. Do not touch the engine.
-SAFETY: never click Submit, per-row Close, Emergency close all, Enable AI, or confirm any order dialog. Never read or print .env or keys. Mask account numbers.
-RULES: after typing in any text field press Enter, then wait for the rerun. Scroll inside dialogs to the bottom. A PASS needs a recorded value or a cropped screenshot of the exact element. Reading page text alone is not enough for visual checks.
-CHECKS:
-1 Risk card: crop the alert element showing the validation code; record the alert's own computed background and text colour (not the card container). Must be amber or red while a code shows.
-2 Margin donut: crop the donut at 1920, 1280 and 390; judge whether the centre text fits inside the ring.
-3 Equity curve: crop the chart; record y-axis labels, first and last visible value, any vertical drop.
-4 Header vs Portfolio: stay on the Portfolio view, where the header strip and the Portfolio section are both visible. In ONE evaluate call read both equity values and both P&L values; repeat 3 times 6 s apart. Report the six pairs.
-5 Theme Studio: type BADHEX in a hex field, press Enter, record any inline error text; type a low-contrast colour such as #101010 and press Enter, record the ratio and adjusted value; scroll the dialog bottom and record whether Reset and Export JSON exist; click Reset; Export JSON keys only.
-6 FOMC chip: record whether the header shows it and what text appears when there is no high-impact event; describe any empty gap with a crop.
-7 Ideas watchlist: where it is reached from the UI (exact clicks); entry with <b>x</b> shown escaped.
-8 Enable AI control: locate it, record that it is disabled or guarded in LIVE mode and shows a confirmation dialog; cancel it, never confirm.
-9 Research Desk: 10 agent cards with statuses (list them), Dexter fixture badge, Infoway chip text, shadow banner.
-10 Pattern marks: survive a symbol change and a timeframe change and a reload (three screenshots).
-OUTPUT: report.md table (ID, result, recorded value, copied screenshot path), ranked defects with reproduction steps, could-not-test list with what you tried. Paste both lists in your reply.
+2a accepted. Copy migration, row counts, integrity check, indexes, backup helper and 1616 tests are good. I APPROVE the live migration and sub-stage 2b. PAPER only, no --live, approve-first, auto-execute off, brain parked, do not touch magic-234000. Mocked tests first.
+
+1. COMMIT FIRST
+Commit the v4 migration, backup helper and their tests in logical commits (migration, backup helper, tests). Paste git log --oneline -6 and git status. Nothing uncommitted may run in the live engine.
+
+2. LIVE MIGRATION PROCEDURE (report each step with raw output)
+a. Verify the engine is healthy now: newest heartbeat id and ts (read-only), PID and command line, MT5 connected.
+b. Backup with backup_journal() into backups/ named engine_5057151780_pre_v4_<UTC timestamp>.db, and paste read-only counts of the backup. Also copy the existing pre-v4 backup from the session folder into backups/.
+c. Stop the engine: confirm the command line, Stop-Process -Id for the parent, confirm the child is gone, and confirm the lock is released.
+d. Start the engine on current code from the project venv (PAPER, no --live). It migrates the live journal to v4 as the single writer. Paste: schema_version rows, signals table SQL, both partial index definitions, PRAGMA integrity_check, row counts of every table versus the backup, startup events, and new heartbeats advancing with pid.
+e. Restart the dashboard from run.bat on 8502 only if it shows errors after the migration. Check the Journal page shows v4 and the Signals table renders empty with a sentence.
+f. If anything fails: stop the engine, do not retry silently, report, and restore only with my approval.
+
+3. CONFIG (separate commit, tell me before you apply): add a per-symbol volume cap setting. Default cap per symbol = volume_min x 10. Show the exact key name and where it is read, the validation (must be >= volume_min, loud failure otherwise) and a test. No other config changes.
+
+4. SUB-STAGE 2b (after the migration is verified)
+- Gateway history read: one batched owner-thread read per cycle, only for symbols with a newly closed M15 bar, 300 closed bars, never the forming bar. Test read count equals symbols with a new bar.
+- Signal writing: strategy evaluate() only when at least 206 closed rows; INSUFFICIENT_HISTORY visible per symbol at 205; PENDING rows only; deterministic decision_id; supersede one pending per symbol; idempotent on the same bar; expiry min(bar_close+900s, created+1800s); drift check each loop with ASK for BUY and BID for SELL; rejected candidates stored visibly with reasons including the exact text "Too small to size within the risk limit".
+- Banner and status-card line for any decision that needs review.
+- Signals page, read-only for now: tabs and a decision chain view. NO approval buttons, NO executor changes, NO approval commands yet (that is 2c).
+- Weekend test, and test that the signal path imports no gateway order function.
+- Vendor-name guard passes for all new strings.
+
+REPORT: one-page table (PROVEN / PROBABLE / TESTED-ONLY / UNPROVEN) then raw output with exact commands, full suite numbers. Stop after 2b. Do not start 2c.
