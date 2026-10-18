@@ -8,7 +8,7 @@ import pytest
 from ui import data_access
 from ui.data_access import Result
 
-from engine.journal import Journal
+from engine.journal import Journal, SCHEMA_VERSION
 
 try:  # the executor module imports cleanly without MT5
     from engine.executor import LiveGuard, PaperExecutor
@@ -509,8 +509,10 @@ class TestReadJournalTable:
     def seeded(self, journal):
         """One row in every whitelisted table, plus a two-step lifecycle."""
         journal.execute(
-            "INSERT INTO signals (symbol, direction, score, bar_ts, ts) "
-            "VALUES ('EURUSD', 'BUY', 0.8, 1760000000, '2026-10-10T10:00:00Z')")
+            "INSERT INTO signals "
+            "(symbol, direction, score, bar_ts, ts, decision_id) "
+            "VALUES ('EURUSD', 'BUY', 0.8, 1760000000, "
+            "'2026-10-10T10:00:00Z', 'TEST-UI-SEED')")
         journal.execute(
             "INSERT INTO risk_decisions (trade_id, symbol, approved, "
             "reasons_json, ts) VALUES (1, 'EURUSD', 1, '[\"ok\"]', "
@@ -622,7 +624,7 @@ class TestSystemStatus:
         journal.set_state("OFF", mode="PAPER")
         status = data_access.system_status(tmp_path / "status.db")
         assert status["journal_exists"] is True
-        assert status["schema_version"] == 3
+        assert status["schema_version"] == SCHEMA_VERSION
         assert status["engine_state"] == "OFF"
         assert status["engine_online"] is False
         assert status["pending_commands"] == 0

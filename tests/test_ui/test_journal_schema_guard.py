@@ -8,6 +8,7 @@ import pytest
 from engine.journal import (
     MIGRATION_1,
     MIGRATION_2,
+    MIGRATION_3,
     SCHEMA_VERSION,
     Journal,
     SchemaTooOld,
@@ -34,6 +35,10 @@ def _apply(path, statements, version: int) -> None:
 
 def _schema2(path) -> None:
     _apply(path, list(MIGRATION_1) + list(MIGRATION_2), 2)
+
+
+def _schema3(path) -> None:
+    _apply(path, list(MIGRATION_1) + list(MIGRATION_2) + list(MIGRATION_3), 3)
 
 
 def _version_and_tables(path) -> tuple[int, set[str]]:
@@ -70,6 +75,22 @@ def test_system_status_leaves_a_schema_2_file_unmigrated(tmp_path):
     assert _scan_badge(status) == "Journal schema older than code"
 
 
+def test_system_status_leaves_a_schema_3_file_read_only(tmp_path):
+    path = tmp_path / "v3.db"
+    _schema3(path)
+    before = _version_and_tables(path)
+
+    status = data_access.system_status(path)
+
+    after = _version_and_tables(path)
+    assert after == before
+    assert after[0] == 3
+    assert status["schema_notice"] == "Journal schema older than code"
+    assert status["scan_loop"] == "Journal schema older than code"
+    assert status["schema_version"] == 3
+    assert _scan_badge(status) == "Journal schema older than code"
+
+
 def test_journal_migrate_false_raises_and_does_not_create_scan_symbols(tmp_path):
     path = tmp_path / "old.db"
     _schema2(path)
@@ -78,7 +99,7 @@ def test_journal_migrate_false_raises_and_does_not_create_scan_symbols(tmp_path)
     version, tables = _version_and_tables(path)
     assert version == 2
     assert "scan_symbols" not in tables
-    assert SCHEMA_VERSION == 3
+    assert SCHEMA_VERSION == 4
 
 
 def test_a_missing_file_is_created_at_the_current_schema(tmp_path):
