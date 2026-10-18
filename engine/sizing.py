@@ -54,11 +54,23 @@ class SizingResult:
 
 
 class LotSizer:
-    """Computes lot size from a risk budget and a stop distance."""
+    """Computes lot size from a risk budget and a stop distance.
 
-    def __init__(self, spec):
-        """`spec` is a ui.risk_calc.SymbolSpec built from live broker data."""
+    ``volume_cap`` is an optional absolute ceiling (standard lots) applied
+    *after* normalisation. When the normalised size exceeds the cap the size
+    is rejected rather than silently clipped — a cap that is too tight would
+    otherwise hide an over-sized position as a compliant one.
+    """
+
+    def __init__(self, spec, volume_cap: float | None = None):
+        """`spec` is a ui.risk_calc.SymbolSpec built from live broker data.
+
+        `volume_cap` is an optional absolute ceiling in standard lots. When
+        provided and positive, any sized result whose normalised `lots`
+        exceeds it is rejected with a ``VOLUME_ABOVE_CAP`` reason.
+        """
         self.spec = spec
+        self.volume_cap = volume_cap or 0.0
 
     @property
     def risk_budget(self) -> float:
@@ -117,6 +129,33 @@ class LotSizer:
             return SizingResult(False, 0.0, raw_lots, 0.0,
                                 reason="normalised size is zero",
                                 log_message=LOTS_BELOW_MINIMUM_LOG)
+
+        #: Validate cap against volume_min — fail-closed and loudly. A cap
+        #: below the broker's minimum is a config/contract mismatch: the cap
+        #: would make every order untradeable. This must not be silently
+        #: passed through.
+        if (self.volume_cap > 0
+                and float(self.spec.volume_min) > 0
+                and self.volume_cap < float(self.spec.volume_min) - LOT_EPSILON):
+            return SizingResult(
+                False, 0.0, raw_lots, 0.0,
+                reason=(
+                    f"VOLUME_CAP_BELOW_MINIMUM: cap {self.volume_cap:g} "
+                    f"is below volume_min {float(self.spec.volume_min):g}; "
+                    f"rejecting rather than silently using an untradeable cap"
+                ),
+            )
+
+        #: Absolute ceiling check — fail-closed, never clip. Exceeding the cap
+        #: means an over-sized position is being proposed; silent clipping would
+        #: hide the breach as a compliant order.
+        if self.volume_cap > 0 and lots > self.volume_cap:
+            return SizingResult(
+                False, 0.0, raw_lots, 0.0,
+                reason=f"VOLUME_ABOVE_CAP: {lots:.5f} lots exceeds the "
+                       f"per-symbol cap of {self.volume_cap:g}; rejecting "
+                       f"rather than silently clipping",
+            )
 
         return SizingResult(
             ok=True, lots=lots, raw_lots=raw_lots,
