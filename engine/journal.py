@@ -739,6 +739,60 @@ class Journal:
         )
         return int(cur.lastrowid)
 
+    # -- signals -----------------------------------------------------------
+
+    def record_signal(self, *, symbol: str, direction: str, score: float,
+                      bar_ts: int | None,
+                      decision_id: str,
+                      status: str,
+                      strategy: str = "confluence",
+                      timeframe: str = "M15",
+                      entry_price: float | None = None,
+                      stop_loss: float | None = None,
+                      take_profit: float | None = None,
+                      volume: float | None = None,
+                      expires_at: str | None = None,
+                      decided_by: str | None = None,
+                      decided_at: str | None = None,
+                      blocks_json: str | None = None,
+                      reject_reason: str | None = None,
+                      superseded_by_decision_id: str | None = None,
+                      is_test: bool = False,
+                      test_tag: str | None = None) -> None:
+        """Insert a signal row and supersede any existing PENDING signal.
+
+        The v4 schema enforces a single PENDING row per symbol
+        (``idx_signals_one_pending``). When a new PENDING signal is written,
+        any prior PENDING row for the same symbol is marked SUPERSEDED.
+
+        For non-test signals: bar_ts must be non-NULL (enforced by the
+        table CHECK) and a unique ``(symbol, strategy, bar_ts)`` combination
+        is required. Duplicate insertions raise a sqlite ``IntegrityError``
+        so the caller knows the signal was already recorded for that bar.
+        """
+        now = utc_now_iso()
+        if status == "PENDING" and not is_test:
+            self.execute(
+                "UPDATE signals SET status='SUPERSEDED', "
+                "superseded_by_decision_id=? WHERE symbol=? AND status='PENDING'",
+                (decision_id, symbol),
+            )
+        self.execute(
+            "INSERT INTO signals ("
+            "  symbol, direction, score, bar_ts, ts, decision_id, status, "
+            "  strategy, timeframe, entry_price, stop_loss, take_profit, "
+            "  volume, expires_at, decided_by, decided_at, blocks_json, "
+            "  reject_reason, superseded_by_decision_id, is_test, test_tag) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (symbol, direction, float(score), bar_ts, now, decision_id, status,
+             strategy, timeframe, entry_price, stop_loss, take_profit,
+             volume, expires_at, decided_by, decided_at,
+             blocks_json or "{}",
+             reject_reason, superseded_by_decision_id,
+             1 if is_test else 0,
+             test_tag),
+        )
+
     # -- trade lifecycle events (§3 gate: one decision ID, real timestamps) --
 
     #: Event categories the Journal page filters on. Kept as constants so
