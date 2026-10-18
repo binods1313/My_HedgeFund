@@ -645,7 +645,14 @@ class ScanCycle:
                           blocks_json: str = "{}",
                           reject_reason: str | None = None,
                           is_test: bool = False) -> None:
-        """Write a single row to the v4 signals table."""
+        """Write a single row to the v4 signals table.
+
+        The schema CHECK requires expires_at IS NOT NULL for non-LEGACY
+        rows. When the caller omits it (REJECTED rows), compute it from
+        the bar close so the row is always valid.
+        """
+        if expires_at is None and status != "LEGACY":
+            expires_at = self._compute_expiry(bar_ts, stamp)
         score = getattr(signal, "confidence", 0.0)
         if score is None:
             score = 0.0
