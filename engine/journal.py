@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 # Bump when adding a migration. Never edit a shipped migration in place.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # -- state machine values, mirrored from engine.state -------------------------
 STATE_OFF = "OFF"
@@ -270,7 +270,67 @@ MIGRATION_3 = [
     "ALTER TABLE heartbeats ADD COLUMN gateway_call_age_seconds REAL",
 ]
 
-MIGRATIONS: dict[int, list[str]] = {1: MIGRATION_1, 2: MIGRATION_2, 3: MIGRATION_3}
+MIGRATION_4 = [
+    """
+    CREATE TABLE signals_v4 (
+        id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+        symbol                      TEXT NOT NULL,
+        direction                   TEXT NOT NULL,
+        score                       REAL NOT NULL,
+        bar_ts                      INTEGER,
+        ts                          TEXT NOT NULL,
+        decision_id                 TEXT NOT NULL UNIQUE,
+        status                      TEXT NOT NULL DEFAULT 'LEGACY'
+                                    CHECK (status IN (
+                                        'PENDING', 'APPROVED', 'REJECTED',
+                                        'EXPIRED', 'SUPERSEDED', 'EXECUTED',
+                                        'FAILED', 'NEEDS_REVIEW', 'LEGACY'
+                                    )),
+        strategy                    TEXT NOT NULL DEFAULT 'confluence',
+        timeframe                   TEXT NOT NULL DEFAULT 'M15',
+        entry_price                 REAL,
+        stop_loss                   REAL,
+        take_profit                 REAL,
+        volume                      REAL,
+        expires_at                  TEXT,
+        decided_by                  TEXT,
+        decided_at                  TEXT,
+        blocks_json                 TEXT NOT NULL DEFAULT '{}',
+        reject_reason               TEXT,
+        superseded_by_decision_id   TEXT,
+        is_test                     INTEGER NOT NULL DEFAULT 0
+                                    CHECK (is_test IN (0, 1)),
+        test_tag                    TEXT,
+        CHECK (bar_ts IS NOT NULL OR is_test = 1),
+        CHECK (status = 'LEGACY' OR expires_at IS NOT NULL)
+    )
+    """,
+    """
+    INSERT INTO signals_v4 (
+        id, symbol, direction, score, bar_ts, ts, decision_id, status,
+        strategy, timeframe, blocks_json, is_test
+    )
+    SELECT id, symbol, direction, score, bar_ts, ts,
+           'LEGACY-' || id, 'LEGACY', 'legacy', 'UNKNOWN', '{}', 0
+    FROM signals
+    """,
+    "DROP TABLE signals",
+    "ALTER TABLE signals_v4 RENAME TO signals",
+    """
+    CREATE UNIQUE INDEX idx_signals_bar_strategy
+    ON signals (symbol, strategy, bar_ts)
+    WHERE is_test = 0 AND bar_ts IS NOT NULL
+    """,
+    """
+    CREATE UNIQUE INDEX idx_signals_one_pending
+    ON signals (symbol)
+    WHERE status = 'PENDING'
+    """,
+]
+
+MIGRATIONS: dict[int, list[str]] = {
+    1: MIGRATION_1, 2: MIGRATION_2, 3: MIGRATION_3, 4: MIGRATION_4,
+}
 
 
 def utc_now_iso() -> str:

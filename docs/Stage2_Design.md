@@ -58,14 +58,14 @@ ts` with `UNIQUE (symbol, bar_ts)`. The v4 rebuild adds:
 | v4 column | Type | Why |
 |---|---|---|
 | `decision_id` | TEXT NOT NULL UNIQUE | End-to-end chain key |
-| `status` | TEXT NOT NULL | `PENDING`, `APPROVED`, `REJECTED`, `EXPIRED`, `SUPERSEDED`, `EXECUTED`, `FAILED`, or legacy-only `LEGACY` |
+| `status` | TEXT NOT NULL | `PENDING`, `APPROVED`, `REJECTED`, `EXPIRED`, `SUPERSEDED`, `EXECUTED`, `FAILED`, `NEEDS_REVIEW`, or legacy-only `LEGACY` |
 | `strategy` | TEXT NOT NULL | Source label, initially `confluence` |
 | `timeframe` | TEXT NOT NULL | Bar interval, initially `M15` |
 | `entry_price` | REAL | Executable-side quote at signal time |
 | `stop_loss` | REAL | Mandatory stop, computed before approval |
 | `take_profit` | REAL | Target from the configured trade-management rule |
 | `volume` | REAL | Risk-sized volume snapped to broker step |
-| `expires_at` | TEXT NOT NULL | Absolute expiry, as defined in §2 |
+| `expires_at` | TEXT | Absolute expiry for active decisions; NULL only for migrated LEGACY rows |
 | `decided_by` | TEXT | `ui`, `telegram`, `expiry`, or `supersede` |
 | `decided_at` | TEXT | Decision timestamp |
 | `blocks_json` | TEXT NOT NULL | Five strategy-block verdicts |
