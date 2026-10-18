@@ -166,3 +166,53 @@ class TestUnixTimestampHandling:
         expected_close = expected + timedelta(seconds=_EXPIRY_BAR_WINDOW)
         expected_created = expected + timedelta(seconds=_EXPIRY_CREATION_WINDOW)
         assert expiry_dt == min(expected_close, expected_created)
+
+
+class TestBrokerClockSkew:
+    """When the broker terminal clock differs from engine UTC, expiry must
+    fall back to the creation bound alone so both clocks are not mixed.
+
+    Measured on the live MetaQuotes-Demo terminal: tick.time reported a
+    broker server epoch 3 h ahead of real UTC (UTC+3). A signal generated
+    Sunday 21:17 UTC would see bar_close = 00:17 Monday if the skew is not
+    detected — bar_close + 900 s is ~3 h in the future, and the only sane
+    expiry is created + 1800 s.
+    """
+
+    def test_plus_3h_broker_offset_falls_back_to_creation_bound(self):
+        """Bar close is 3 h ahead: expiry is created + 1800 s, not bar + 900 s."""
+        cycle = _make_cycle()
+        # Real UTC: Sunday 21:17
+        created = "2026-10-18T21:17:00+00:00"
+        # Broker ticks 3 h ahead → bar close reads Monday 00:17 UTC
+        bar_close_skewed = "2026-10-19T00:17:00+00:00"
+        expiry = cycle._compute_expiry(bar_close_skewed, created)
+        expiry_dt = datetime.fromisoformat(expiry)
+        created_dt = datetime(2026, 10, 18, 21, 17, 0, tzinfo=timezone.utc)
+        expected = created_dt + timedelta(seconds=_EXPIRY_CREATION_WINDOW)
+        assert expiry_dt == expected
+
+    def test_minus_3h_broker_offset_falls_back_to_creation_bound(self):
+        """Bar close is 3 h behind: expiry is still created + 1800 s."""
+        cycle = _make_cycle()
+        created = "2026-10-18T21:17:00+00:00"
+        bar_close_skewed = "2026-10-18T18:17:00+00:00"  # 3 h behind
+        expiry = cycle._compute_expiry(bar_close_skewed, created)
+        expiry_dt = datetime.fromisoformat(expiry)
+        created_dt = datetime(2026, 10, 18, 21, 17, 0, tzinfo=timezone.utc)
+        expected = created_dt + timedelta(seconds=_EXPIRY_CREATION_WINDOW)
+        assert expiry_dt == expected
+
+    def test_plus_3h_unix_epoch_bar_ts(self):
+        """Same scenario but bar_ts is a Unix epoch (what the gateway stores)."""
+        cycle = _make_cycle()
+        # Real UTC: Sunday 21:17
+        created = "2026-10-18T21:17:00+00:00"
+        # Broker epoch is 3 h ahead: 00:17 Monday UTC as Unix ts
+        real_ts = datetime(2026, 10, 18, 21, 17, 0, tzinfo=timezone.utc).timestamp()
+        skewed_ts = str(int(real_ts) + 10_800)  # +3 h in seconds
+        expiry = cycle._compute_expiry(skewed_ts, created)
+        expiry_dt = datetime.fromisoformat(expiry)
+        created_dt = datetime(2026, 10, 18, 21, 17, 0, tzinfo=timezone.utc)
+        expected = created_dt + timedelta(seconds=_EXPIRY_CREATION_WINDOW)
+        assert expiry_dt == expected
