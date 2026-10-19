@@ -434,12 +434,29 @@ class PaperExecutor(Executor):
     def positions(self) -> list[dict]:
         return list(self._positions.values())
 
+    def _closed_paper_tickets(self) -> set[int]:
+        if self.journal is None:
+            return set()
+        rows = self.journal.query(
+            "SELECT ticket FROM trades WHERE broker = 'PAPER' AND status = ?",
+            (TRADE_CLOSED,),
+        )
+        return {int(row["ticket"]) for row in rows}
+
     def hydrate_from_journal(self) -> None:
-        """Load open journal positions into memory after a restart."""
+        """Load open journal positions into memory after a restart.
+
+        A PAPER trade the dashboard already closed must not be revived.
+        """
         if self.journal is None:
             return
+        closed = self._closed_paper_tickets()
         for row in self.journal.positions():
             ticket = int(row["ticket"])
+            if ticket in closed:
+                self.journal.delete_position(ticket)
+                self._positions.pop(ticket, None)
+                continue
             if ticket not in self._positions:
                 self._positions[ticket] = dict(row)
 
@@ -450,7 +467,13 @@ class PaperExecutor(Executor):
         this tick.
         """
         closed: list[dict] = []
+        already_closed = self._closed_paper_tickets()
         for ticket, position in list(self._positions.items()):
+            if int(ticket) in already_closed:
+                self._positions.pop(int(ticket), None)
+                if self.journal:
+                    self.journal.delete_position(int(ticket))
+                continue
             if position["symbol"] != symbol:
                 continue
             try:

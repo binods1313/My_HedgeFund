@@ -35,6 +35,26 @@ def test_ambiguous_sl_tp_closes_adverse_and_journals(tmp_path):
     journal.close()
 
 
+def test_monitor_does_not_resurrect_a_closed_paper_trade(tmp_path):
+    """UI close writes CLOSED; the engine process still holds the ticket."""
+    journal = Journal(tmp_path / "ghost.db")
+    engine_ex = PaperExecutor(journal=journal, tick_provider=_ticks(1.10000, 1.10002))
+    fill = engine_ex.submit(
+        engine_ex.prepare_order("EURUSD", "BUY", 0.01, 1.09500),
+        RiskApproval(approved=True, decision_id="ghost-1", symbol="EURUSD"),
+    )
+    ui_ex = PaperExecutor(journal=journal, tick_provider=_ticks(1.10000, 1.10002))
+    assert ui_ex.close(int(fill.ticket), reason="MANUAL").ok
+    assert journal.open_position_count() == 0
+    engine_ex.on_tick("EURUSD")
+    assert journal.open_position_count() == 0
+    assert journal.query_one(
+        "SELECT status FROM trades WHERE ticket = ?",
+        (int(fill.ticket),),
+    )["status"] == "CLOSED"
+    journal.close()
+
+
 def test_monitor_runs_from_hydrated_journal(tmp_path):
     journal = Journal(tmp_path / "hyd.db")
     first = PaperExecutor(journal=journal, tick_provider=_ticks(1.10000, 1.10002))
