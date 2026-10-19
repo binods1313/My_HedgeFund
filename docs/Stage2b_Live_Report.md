@@ -1,96 +1,94 @@
-# Stage 2c health and dashboard report
+# TEST SIGNAL chain report
 
-UTC of this check: 2026-10-19T17:41:10+00:00. PAPER. No `--live`. Magic 100100. Brain parked. TEST SIGNAL not run. I did not place a BUY (step 3 is hold-until-go).
+UTC 2026-10-19T21:38:44Z. PAPER. No `--live`. Magic 100100. Brain parked.
 
 ## Verdict
 
 | Item | Verdict |
 |---|---|
-| Engine heartbeating after 04:17Z evidence | PROVEN (then restarted to apply a close bugfix) |
-| Newest heartbeat before restart | PROVEN id 166558 at 17:31:40Z, PID 30224 |
-| Backup before last restart | PROVEN `backups/engine_5057151780_20261019T174035Z.db` |
-| Restart PAPER, no `--live`, PID 7660 still alive | PROVEN |
-| localhost:8502 serving | PROVEN HTTP 200 / `_stcore/health` ok |
-| Signals page empty sentence + PAPER disclaimer, no exception | PROVEN (AppTest of live `app.py`) |
-| Journal + status card current values | PROVEN (AppTest) |
-| No groq/openrouter/openai/anthropic/claude/ollama on those pages | PROVEN |
-| Manual PAPER BUY+Close this session by me | UNPROVEN (no go) |
-| Operator BUY+Close ticket 9000001 journal chain | PROVEN (read-only SQL) |
-| Engine monitor resurrected CLOSED 9000001 until restart | PROVEN; fix `f305f51` TESTED-ONLY |
-| TEST SIGNAL injector run live | UNPROVEN (held) |
+| PAPER ticket seed from MAX(trades, positions) | TESTED-ONLY `5877aae`; live mint **9000002** PROVEN |
+| submit_token / Confirm TypeError | TESTED-ONLY `ce7a740` |
+| ACCOUNT_MISMATCH Row.get | TESTED-ONLY `84974a2` |
+| Inject TEST SIGNAL PENDING is_test=1 | PROVEN |
+| Signals page badge + Approve/Reject TEST SIGNAL | PROVEN (AppTest) |
+| Approve → EXECUTED, trade+position, same decision_id | PROVEN ticket 9000002 |
+| Close MANUAL, P&L, test excluded from production count | PROVEN production_trade_count=1 |
+| Reject path | PROVEN |
+| Expire path | PROVEN |
+| Second approve already-decided | PROVEN `ALREADY_QUEUED` |
+| LIVE / magic-234000 / mt5.order_send | not used |
 
-## 1. Health
+## 2. Requested hashes and git
 
-Command: read-only sqlite on `data/engine_5057151780.db`; `Get-CimInstance Win32_Process`.
+submit_token fix: **`ce7a740`** `fix: confirm order passes order_token to inspect_order`
 
-At 17:31:41Z the old process was still alive: heartbeat **166558**, ts **2026-10-19T17:31:40+00:00**, pid **30224**, state IDLE, connected=1. Command line:
+ACCOUNT_MISMATCH fix: **`84974a2`** `fix: journal fingerprint is a dict so PAPER submit can verify`
 
-`E:\HedgeFund_Binod_v2\.venv\Scripts\python.exe -u -m engine --config E:\HedgeFund_Binod_v2\config.yaml`
-
-Trades said 9000001 CLOSED, but `positions` still had ticket 9000001 (engine `on_tick` re-upserted it). Backup then restart to load `f305f51`.
-
-Backup: `E:\HedgeFund_Binod_v2\backups\engine_5057151780_20261019T174035Z.db`
-
-New interpreter **PID 7660**. Log: mode=PAPER, magic=100100, account MATCH ****1780 USD MetaQuotes-Demo. Heartbeat 167113 at 17:41:10Z. Positions count **0**. Trade 9000001 remains CLOSED PAPER.
-
-## 2. Dashboard (http://localhost:8502)
-
-`Invoke-WebRequest http://localhost:8502` → 200. `http://127.0.0.1:8502/_stcore/health` → `ok`.
-
-agent-browser Chrome exited (`CDP response channel closed` / `about:blank`). Pages were driven with Streamlit AppTest against live `app.py` (same UI code the server runs).
-
-**Signals:** no exception, no `st.error`. Caption: `PAPER only. execution_mode=approve_first. Approve and Reject queue a command; they do not place an order.` Empty: `No signals with status PENDING recorded yet.` One warning: gain/loss hues 0° apart (design, not a crash). Vendor list empty.
-
-**Journal:** `SYSTEM STATUS · READ-ONLY JOURNAL VIEW`, path `E:\HedgeFund_Binod_v2\data\engine_5057151780.db`, `No signals recorded yet. An empty table is a fact about the journal, not an error.` No errors. Vendor list empty.
-
-**Exchange / status card:** Bid/Ask EURUSD 1.12127/1.12128, balance/equity $99,984.47, open P&L $0.00, last signal —, execution_mode=approve_first on the card, heartbeat shown as running. Caption mentions Finviz as an external browser link (not a brain vendor). No groq/openrouter/openai/anthropic.
-
-## 3. Manual BUY
-
-Not run by me. Operator ticket **9000001** from the journal (read-only):
-
-`trades`: ticket 9000001 EURUSD BUY 0.01 entry 1.1209 exit 1.12106 status CLOSED magic 100100 broker PAPER ts 2026-10-19T17:20:15Z updated 17:24:48Z.
-
-Events / lifecycle, decision_id `True:EURUSD`:
-
-| id | ts | category | message |
-|---|---|---|---|
-| 29572 | 17:20:15Z | trade | paper order filled |
-| 29573 | 17:20:15Z | order_sent | paper order sent EURUSD BUY @1.1209 |
-| 29574 | 17:20:15Z | order_filled | paper order filled EURUSD ticket=9000001 |
-| 29583 | 17:24:48Z | trade | paper position closed |
-| 29584 | 17:24:48Z | order_closed | paper position closed ticket=9000001 reason=MANUAL |
-
-After restart, `positions` is empty.
-
-## 4. TEST SIGNAL chain (prepared, not run)
-
-Do not invoke until you say go. PAPER only. Engine must stay without `--live`.
-
-1. Confirm `load_engine_config().mode == "PAPER"`. If LIVE, `inject_test_signal` raises before any write.
-2. From project venv, in a one-shot that is **not** the engine loop:
+Ticket collision: **`5877aae`**
 
 ```
-from datetime import datetime, timedelta, timezone
-from engine.config import load_engine_config
-from engine.journal import Journal
-from engine.test_signal import inject_test_signal
-cfg = load_engine_config()
-j = Journal(cfg.db_path, migrate=False)
-exp = (datetime.now(timezone.utc) + timedelta(minutes=20)).isoformat()
-did = inject_test_signal(mode=cfg.mode, journal=j, symbol="EURUSD",
-    direction="BUY", entry=<ask>, stop_loss=<below>, take_profit=<above>,
-    volume=0.01, expires_at=exp)
-print(did); j.close()
+f624b88 fix: approval loads broker tick spec before the risk gate
+f51f767 fix: Signals page reads status and approval uses guard.verified
+5877aae fix: seed PAPER tickets from MAX(ticket) on startup
+87c5084 docs: health, dashboard, and held TEST SIGNAL steps
+f305f51 fix: paper monitor must not revive a CLOSED trade
+84974a2 fix: journal fingerprint is a dict so PAPER submit can verify
+ce7a740 fix: confirm order passes order_token to inspect_order
+43ddb88 docs: update Stage 2b report for close, 2c, and empty signals
 ```
 
-Expected immediately: one `signals` row `PENDING`, `is_test=1`, `test_tag=TEST SIGNAL`, `decision_id=did`, `expires_at` set, `bar_ts` NULL. Lifecycle `signal_generated`. **Zero** `trades` / `positions`.
-3. Dashboard Signals → Pending: badge TEST SIGNAL. Approve queues `APPROVE_SIGNAL` only (or Telegram `YES <did>` / `APPROVE <did>` from the authorised chat).
-4. Engine next loop: handler re-checks expiry, drift, risk, market, account, PAPER, not paused; `PaperExecutor` fill. Expected: signal `EXECUTED`; `trades` PAPER 9xxxxxx OPEN; `positions` row; events `order_sent` / `order_filled` with the **same** `decision_id`; `is_test` still 1 on the signal. Production P&L helper `production_trade_count` stays 0.
-5. Close from Positions: `order_closed` reason MANUAL, same `decision_id`. Do not use TEST SIGNAL P&L in production stats.
+```
+ M docs/Instructions_3.md
+?? data/
+?? push_prompt.txt
+```
 
-Reject instead of approve: signal `REJECTED`, no trade.
+Full suite after ticket seed: **1714 passed, 6 skipped in 56.48s**.
 
-## Git / suite
+Backup before restart: `backups/engine_5057151780_20261019T212700Z.db`
 
-Latest code: `f305f51` monitor ghost fix. Dashboard AppTest was not a full pytest run. Last full suite on this branch: 1709 passed, 6 skipped (before `f305f51` / `84974a2` / `ce7a740`). Monitor module: 3 passed.
+One heartbeat writer: PID **28448** (venv launcher 39416). Command: `python -u -m engine --config E:\HedgeFund_Binod_v2\config.yaml`. Heartbeats 171355–171357.
+
+## a. Inject
+
+`decision_id` **`9596a300-6f3e-4999-9c47-a9cbfe5016ac`**
+
+signals id=1 EURUSD BUY volume=0.01 **status=PENDING is_test=1 test_tag=TEST SIGNAL** expires_at=2026-10-19T21:53:55.499071+00:00 bar_ts=NULL strategy=test
+
+## b. Signals page (AppTest of `render_signals_page`)
+
+Captions: `PAPER only. execution_mode=approve_first...` · `Status: PENDING · 1 row(s)` · `1 TEST SIGNAL row(s) shown. Excluded from production P&L.`
+
+Buttons: **`Approve TEST SIGNAL`**, **`Reject TEST SIGNAL`**. No exception.
+
+## c. Approve once
+
+Command id **10** `APPROVE_SIGNAL` status **DONE** result `executed ticket=9000002`
+
+signals: status **EXECUTED** is_test=1 same decision_id decided_by=engine
+
+trades: ticket **9000002** EURUSD BUY 0.01 OPEN **broker=PAPER** magic **100100** (later CLOSED)
+
+positions: ticket 9000002 EURUSD BUY 0.01 magic 100100 (then removed)
+
+events same decision_id: 30036 signal_generated; 30160 trade paper order filled; 30161 order_sent TEST PAPER … @1.12116; 30162 order_filled ticket=9000002; 30163 order_filled EURUSD executed ticket=9000002
+
+## d. Close
+
+order_closed id 30168 `paper position closed ticket=9000002 reason=MANUAL` profit 0.0 price 1.12116 decision_id same. trades 9000002 CLOSED exit 1.12116. positions 0.
+
+`production_trade_count` **1** (only the earlier manual 9000001). Test fill excluded.
+
+## e. Reject
+
+`c3689cfe-469e-45ac-9079-91aa93fa55a9` → REJECT_SIGNAL DONE. signals **REJECTED** reject_reason=`operator rejected` is_test=1. No extra OPEN trade.
+
+## f. Expire
+
+`78043f2c-701d-4b67-b37f-323cf39f2f98` inject with expires_at in the past. APPROVE_SIGNAL FAILED reason=`expired`. signals **EXPIRED** reject_reason=`expired`.
+
+## g. Approve same (A) twice
+
+`queue_signal_decision(APPROVE_SIGNAL, 9596a300-…)` → **`ALREADY_QUEUED` / already decided**. Signal A remains EXECUTED. No third PAPER ticket.
+
+Stopped after g.
