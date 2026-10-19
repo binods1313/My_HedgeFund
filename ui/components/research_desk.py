@@ -45,7 +45,7 @@ _DETERMINISTIC = {"09", "10"}
 #: implemented" is the rule for a true placeholder whose run() is a stub. The
 #: old single word "OFF" wrongly implied a module did not exist, so it is gone.
 _STATUS_LIVE = "Implemented, live"
-_STATUS_DISABLED = "Implemented but disabled"
+_STATUS_DISABLED = "Not running yet (planned)"
 _STATUS_DETERMINISTIC = "Deterministic"
 _STATUS_NOT_IMPLEMENTED = "Not implemented"
 _STATUS_WORDS = (
@@ -158,7 +158,7 @@ def _implementation_status(agent_id: str) -> str:
     The engine loop calls no research module today, so nothing is live yet.
     A module whose ``run`` is a true placeholder reads "Not implemented";
     the two deterministic adapters read "Deterministic"; every other real
-    module reads "Implemented but disabled" because it has no live caller.
+    module reads "Not running yet (planned)" because it has no live caller.
     """
     module = AGENT_MODULES.get(agent_id)
     if module is None or _is_stub(module):

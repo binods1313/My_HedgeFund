@@ -58,10 +58,11 @@ def test_deterministic_adapters_read_deterministic() -> None:
     assert desk._implementation_status("10") == desk._STATUS_DETERMINISTIC
 
 
-def test_research_modules_read_implemented_but_disabled() -> None:
+def test_research_modules_read_not_running_yet() -> None:
     for agent_id in ("01", "02", "03", "04", "05", "06", "07", "08"):
-        assert desk._implementation_status(agent_id) == desk._STATUS_DISABLED, (
-            f"agent {agent_id} should read {desk._STATUS_DISABLED!r}")
+        assert desk._implementation_status(agent_id) == "Not running yet (planned)", (
+            f"agent {agent_id} should read 'Not running yet (planned)'")
+    assert "Implemented but disabled" not in desk._STATUS_WORDS
 
 
 def test_no_module_is_live_because_the_engine_never_calls_them() -> None:
@@ -92,7 +93,7 @@ def test_a_real_module_is_not_a_stub() -> None:
     from engine.research import AGENT_MODULES
 
     assert desk._is_stub(AGENT_MODULES["01"]) is False
-    assert desk._implementation_status("01") == desk._STATUS_DISABLED
+    assert desk._implementation_status("01") == "Not running yet (planned)"
 
 
 def test_agents_01_to_08_reason_is_the_planned_stage4_slot() -> None:
