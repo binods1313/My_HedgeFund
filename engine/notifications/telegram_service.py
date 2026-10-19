@@ -334,17 +334,15 @@ async def handle_approval_message(text: str, from_chat_id: int) -> str:
 
     text = text.strip()
 
-    # Match YES/NO followed by trade_id
-    match = re.match(r"^(YES|NO)\s+(\S+)$", text)
+    # Match YES/NO/APPROVE/REJECT followed by the decision id.
+    match = re.match(r"^(YES|NO|APPROVE|REJECT)\s+(\S+)$", text)
     if not match:
         return "unknown"
 
-    command = match.group(1)  # "YES" or "NO"
-    trade_id = match.group(2)  # the trade identifier
-
-    if command == "YES":
+    command = match.group(1)
+    if command in ("YES", "APPROVE"):
         return "approved"
-    if command == "NO":
+    if command in ("NO", "REJECT"):
         return "rejected"
 
     return "unknown"

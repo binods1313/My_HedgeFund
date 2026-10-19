@@ -1,101 +1,98 @@
-# Test-only deterministic signal injector (§3 gate).
-#
-# PAPER ONLY. Refuses to run in LIVE. Every journal row it writes is
-# labelled "TEST SIGNAL" so a reviewer can never mistake it for a live
-# market signal. Produces one documented chain linked by one decision ID:
-#   signal_generated -> risk_approved/rejected -> order_sent ->
-#   order_filled -> order_modified (SL/TP) -> order_closed.
-"""Deterministic TEST SIGNAL injector. PAPER only, never LIVE."""
-
+"""TEST SIGNAL injector. PAPER only. Never run live until the operator says go."""
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
 
+from engine.journal import Journal, utc_now_iso
 
 TEST_TAG = "TEST SIGNAL"
 
 
-@dataclass(frozen=True)
-class TestSignalResult:
-    decision_id: str
-    ticket: int | None
-    risk_approved: bool
-    closed: bool
+class SignalInjectRefused(RuntimeError):
+    """LIVE or any non-PAPER mode is refused before a journal write."""
 
 
-def inject_test_signal(*, journal, risk_engine, executor, symbol: str,
-                       side: str = "BUY", entry: float = 1.0,
-                       stop_loss: float = 0.99,
-                       take_profit: float = 1.02,
-                       volume: float = 0.01,
-                       mode: str = "PAPER") -> TestSignalResult:
-    """Run one deterministic signal through risk -> PAPER submit -> close.
+def inject_test_signal(
+    *,
+    mode: str,
+    journal: Journal,
+    symbol: str,
+    direction: str = "BUY",
+    entry: float,
+    stop_loss: float,
+    take_profit: float | None,
+    volume: float,
+    expires_at: str,
+    decision_id: str | None = None,
+) -> str:
+    """Write one tagged PENDING row. Approval and the risk gate still apply.
 
-    Raises in LIVE mode. Writes lifecycle rows, all tagged TEST SIGNAL.
+    Refuses before any journal or executor call unless mode is PAPER.
     """
-    from engine.executor import RiskApproval
-    from engine.risk import OrderIntent
-
-    if str(mode or "").upper() != "PAPER":
-        raise RuntimeError(
-            f"{TEST_TAG}: refused in mode {mode!r}; PAPER only.")
-
-    decision_id = f"TEST-{uuid.uuid4().hex[:8]}"
+    if str(mode).upper() != "PAPER":
+        raise SignalInjectRefused(
+            "TEST SIGNAL refuses LIVE before writing; PAPER only")
+    did = decision_id or str(uuid.uuid4())
+    journal.record_signal(
+        symbol=str(symbol).upper(),
+        direction=str(direction).upper(),
+        score=1.0,
+        bar_ts=None,
+        decision_id=did,
+        status="PENDING",
+        strategy="test",
+        timeframe="M15",
+        entry_price=float(entry),
+        stop_loss=float(stop_loss),
+        take_profit=float(take_profit) if take_profit else None,
+        volume=float(volume),
+        expires_at=expires_at,
+        is_test=True,
+        test_tag=TEST_TAG,
+    )
     journal.log_lifecycle(
-        journal.LIFECYCLE_SIGNAL_GENERATED,
-        f"{TEST_TAG} generated {symbol} {side}",
-        decision_id=decision_id, source="test_hook",
-        context={"symbol": symbol, "side": side, "test": True})
+        Journal.LIFECYCLE_SIGNAL_GENERATED,
+        f"{TEST_TAG} {symbol} {direction}",
+        decision_id=did, source="test_signal",
+        context={"is_test": 1, "test_tag": TEST_TAG, "decision_id": did,
+                 "ts": utc_now_iso()},
+    )
+    return did
 
-    intent = OrderIntent(
-        symbol=symbol, side=side, volume=volume,
-        entry_price=entry, stop_loss=stop_loss,
-        tick_value=1.0, tick_size=0.00001)
-    from engine.risk import AccountState
-    account = AccountState(
-        equity=10_000.0, start_of_day_equity=10_000.0,
-        peak_equity=10_000.0, open_trade_count=0,
-        total_open_risk=0.0, unprotected_positions=0)
-    decision = risk_engine.evaluate(intent, account)
-    journal.record_risk_decision(symbol, bool(decision.approved),
-                                 list(decision.violations or decision.reasons))
-    if decision.approved:
-        journal.log_lifecycle(
-            journal.LIFECYCLE_RISK_APPROVED,
-            f"{TEST_TAG} risk approved {symbol}",
-            decision_id=decision_id, source="test_hook",
-            context={"symbol": symbol})
-    else:
-        journal.log_lifecycle(
-            journal.LIFECYCLE_RISK_REJECTED,
-            f"{TEST_TAG} risk rejected {symbol}: "
-            f"{decision.reason_text()}",
-            decision_id=decision_id, source="test_hook",
-            context={"symbol": symbol,
-                     "reason": decision.reason_text()})
-        return TestSignalResult(decision_id, None, False, False)
 
-    approval = RiskApproval(approved=True, decision_id=decision_id,
-                            symbol=symbol)
-    request = executor.prepare_order(
-        symbol, side, volume, stop_loss, take_profit,
-        comment=f"{TEST_TAG} {decision_id}")
-    result = executor.submit(request, approval)
-    if not result.ok:
-        return TestSignalResult(decision_id, None, True, False)
+def is_test_decision(journal: Journal, decision_id: str) -> bool:
+    row = journal.query_one(
+        "SELECT is_test FROM signals WHERE decision_id = ?", (decision_id,))
+    return bool(row and int(row["is_test"] or 0) == 1)
 
-    journal.log_lifecycle(
-        journal.LIFECYCLE_ORDER_MODIFIED,
-        f"{TEST_TAG} SL/TP set ticket={result.ticket}",
-        decision_id=decision_id, source="test_hook",
-        context={"ticket": result.ticket})
-    close_result = executor.close(result.ticket)
-    if close_result.ok:
-        journal.log_lifecycle(
-            journal.LIFECYCLE_ORDER_CLOSED,
-            f"{TEST_TAG} position closed ticket={result.ticket}",
-            decision_id=decision_id, source="test_hook",
-            context={"ticket": result.ticket})
-    return TestSignalResult(decision_id, result.ticket, True,
-                            bool(close_result.ok))
+
+def production_trade_count(journal: Journal) -> int:
+    """Open+closed trades whose decision is not a TEST SIGNAL."""
+    test_ids = {
+        row["decision_id"]
+        for row in journal.query(
+            "SELECT decision_id FROM signals WHERE is_test = 1")
+    }
+    trades = journal.query("SELECT ticket FROM trades")
+    n = 0
+    for trade in trades:
+        ticket = int(trade["ticket"])
+        rows = journal.query(
+            "SELECT context_json FROM events "
+            "WHERE json_extract(context_json, '$.ticket') = ? "
+            "ORDER BY id DESC LIMIT 4",
+            (ticket,),
+        )
+        linked = ""
+        for row in rows:
+            import json
+            try:
+                ctx = json.loads(row["context_json"] or "{}")
+            except (TypeError, ValueError):
+                continue
+            if ctx.get("decision_id"):
+                linked = str(ctx["decision_id"])
+                break
+        if linked not in test_ids:
+            n += 1
+    return n

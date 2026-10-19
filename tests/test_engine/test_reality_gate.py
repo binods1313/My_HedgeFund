@@ -8,7 +8,7 @@ import pytest
 from engine.executor import PaperExecutor, RiskApproval
 from engine.journal import Journal
 from engine.risk import AccountState, OrderIntent, RiskEngine
-from engine.test_signal import TEST_TAG, inject_test_signal
+from engine.test_signal import TEST_TAG, SignalInjectRefused, inject_test_signal
 
 
 class StubTick:
@@ -85,25 +85,34 @@ def test_paper_positions_survive_reconcile(journal):
 
 
 def test_test_signal_chain_links_one_decision_id(journal):
-    risk = RiskEngine(journal)
-    executor = PaperExecutor(journal=journal, tick_provider=_ticks)
-    out = inject_test_signal(journal=journal, risk_engine=risk,
-                             executor=executor, symbol="EURUSD")
-    assert out.risk_approved and out.ticket and out.closed
-    chain = journal.lifecycle_chain(out.decision_id)
+    from datetime import datetime, timedelta, timezone
+    exp = (datetime.now(timezone.utc) + timedelta(minutes=20)).isoformat()
+    did = inject_test_signal(
+        mode="PAPER", journal=journal, symbol="EURUSD",
+        entry=1.10000, stop_loss=1.09500, take_profit=1.11000,
+        volume=0.01, expires_at=exp,
+    )
+    row = journal.query_one("SELECT * FROM signals WHERE decision_id = ?", (did,))
+    assert int(row["is_test"]) == 1
+    assert row["test_tag"] == TEST_TAG
+    assert row["status"] == "PENDING"
+    assert journal.query_one("SELECT COUNT(*) AS n FROM trades")["n"] == 0
+    chain = journal.lifecycle_chain(did)
     kinds = [row["category"] for row in chain]
-    for expected in ("signal_generated", "risk_approved", "order_sent",
-                     "order_filled", "order_modified", "order_closed"):
-        assert expected in kinds, f"missing {expected} in {kinds}"
+    assert "signal_generated" in kinds
+    assert "order_filled" not in kinds
 
 
 def test_test_signal_refuses_live(journal):
-    risk = RiskEngine(journal)
-    executor = PaperExecutor(journal=journal, tick_provider=_ticks)
-    with pytest.raises(RuntimeError, match="PAPER only"):
-        inject_test_signal(journal=journal, risk_engine=risk,
-                           executor=executor, symbol="EURUSD",
-                           mode="LIVE")
+    from datetime import datetime, timedelta, timezone
+    exp = (datetime.now(timezone.utc) + timedelta(minutes=20)).isoformat()
+    with pytest.raises(SignalInjectRefused, match="PAPER only"):
+        inject_test_signal(
+            mode="LIVE", journal=journal, symbol="EURUSD",
+            entry=1.1, stop_loss=1.09, take_profit=1.12, volume=0.01,
+            expires_at=exp,
+        )
+    assert journal.query_one("SELECT COUNT(*) AS n FROM signals")["n"] == 0
 
 
 def test_single_instance_lock_refuses_second_engine(tmp_path):

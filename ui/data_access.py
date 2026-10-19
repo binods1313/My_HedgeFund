@@ -913,6 +913,39 @@ def _close_paper_ticket(journal: Journal, ticket: int) -> Result:
                   str(result.message or "simulated close"), int(ticket))
 
 
+def queue_signal_decision(command: str, decision_id: str) -> Result:
+    """Enqueue APPROVE_SIGNAL or REJECT_SIGNAL. Does not call an executor."""
+    from engine.commands import COMMAND_APPROVE_SIGNAL, COMMAND_REJECT_SIGNAL
+    from engine.journal import SchemaTooOld
+
+    if command not in (COMMAND_APPROVE_SIGNAL, COMMAND_REJECT_SIGNAL):
+        return Result(False, "BAD_COMMAND", "not an approval command")
+    did = str(decision_id or "").strip()
+    if not did:
+        return Result(False, "BAD_DECISION_ID", "decision_id required")
+    journal = None
+    try:
+        journal = Journal(_ui_journal_path(), migrate=False)
+        journal.enqueue_command(
+            command, {"decision_id": did, "source": "ui"},
+            dedupe_key=f"{command}:{did}",
+        )
+    except SchemaTooOld:
+        return Result(False, "SCHEMA_OLD", SchemaTooOld.TEXT)
+    except sqlite3.IntegrityError:
+        return Result(False, "ALREADY_QUEUED", "already decided")
+    except Exception as exc:  # noqa: BLE001
+        LOG.warning("queue_signal_decision failed: %s", exc)
+        return Result(False, "QUEUE_FAILED", "could not queue the command")
+    finally:
+        if journal is not None:
+            try:
+                journal.close()
+            except Exception:  # noqa: BLE001
+                pass
+    return Result(True, "QUEUED", f"{command} queued")
+
+
 def close_position(ticket: int) -> Result:
     """Close a paper ticket in the journal, or a broker ticket on MT5.
 

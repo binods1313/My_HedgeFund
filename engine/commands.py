@@ -34,11 +34,14 @@ COMMAND_RESET_EMERGENCY = "RESET_EMERGENCY"
 COMMAND_CLOSE_POSITION = "CLOSE_POSITION"
 COMMAND_CLOSE_ALL = "CLOSE_ALL"
 COMMAND_UPDATE_CONFIG = "UPDATE_CONFIG"
+COMMAND_APPROVE_SIGNAL = "APPROVE_SIGNAL"
+COMMAND_REJECT_SIGNAL = "REJECT_SIGNAL"
 
 KNOWN_COMMANDS = frozenset({
     COMMAND_ENABLE_AI, COMMAND_DISABLE_AI, COMMAND_PAUSE, COMMAND_RESUME,
     COMMAND_EMERGENCY_STOP, COMMAND_RESET_EMERGENCY, COMMAND_CLOSE_POSITION,
     COMMAND_CLOSE_ALL, COMMAND_UPDATE_CONFIG,
+    COMMAND_APPROVE_SIGNAL, COMMAND_REJECT_SIGNAL,
 })
 
 #: Commands that bypass confirmation entirely. An emergency must not wait on a
@@ -53,16 +56,18 @@ class CommandOutcome:
     status: str
     result: str = ""
     reason: str = ""
+    command: str = ""
 
 
 class CommandProcessor:
     """Polls the commands table and executes entries."""
 
     def __init__(self, journal: Journal, state_machine: StateMachine,
-                 executor: Executor | None = None):
+                 executor: Executor | None = None, approval_ctx=None):
         self.journal = journal
         self.sm = state_machine
         self.executor = executor
+        self.approval_ctx = approval_ctx
 
     # -- polling ---------------------------------------------------------
 
@@ -84,6 +89,7 @@ class CommandProcessor:
             params = {}
 
         outcome = self.execute(command, params)
+        outcome.command = command
 
         if outcome.ok:
             self.journal.finish_command(row["id"], CMD_DONE,
@@ -241,6 +247,22 @@ class CommandProcessor:
         return closed
 
     # -- config ----------------------------------------------------------
+
+    def _cmd_approve_signal(self, params: dict) -> CommandOutcome:
+        from engine.signal_approval import handle_approve
+        ctx = self.approval_ctx() if callable(self.approval_ctx) else self.approval_ctx
+        if ctx is None:
+            return CommandOutcome(ok=False, status=CMD_FAILED,
+                                  reason="approval context missing")
+        return handle_approve(ctx, params)
+
+    def _cmd_reject_signal(self, params: dict) -> CommandOutcome:
+        from engine.signal_approval import handle_reject
+        ctx = self.approval_ctx() if callable(self.approval_ctx) else self.approval_ctx
+        if ctx is None:
+            return CommandOutcome(ok=False, status=CMD_FAILED,
+                                  reason="approval context missing")
+        return handle_reject(ctx, params)
 
     def _cmd_update_config(self, params: dict) -> CommandOutcome:
         """Validate a patch and report it. Phase 1 does not hot-reload.

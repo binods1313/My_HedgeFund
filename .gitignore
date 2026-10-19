@@ -67,6 +67,7 @@ coverage/
 # IDE
 .idea/
 .vscode/
+.kilo/
 
 # Temporary
 tmp/

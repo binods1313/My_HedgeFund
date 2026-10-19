@@ -125,6 +125,23 @@ class Engine:
     def request_stop(self) -> None:
         self._running = False
 
+    def _monitor_open_positions(self) -> None:
+        """SL/TP (and ambiguous SL+TP) every loop, including paused/halted."""
+        from engine.executor import PaperExecutor
+        executor = getattr(self, "executor", None)
+        if not isinstance(executor, PaperExecutor):
+            return
+        try:
+            executor.hydrate_from_journal()
+            for symbol in {p.get("symbol") for p in executor.positions() if p.get("symbol")}:
+                executor.on_tick(str(symbol))
+        except Exception as exc:  # noqa: BLE001
+            self.journal.log_event(
+                "monitor", "position monitor failed",
+                severity="WARNING", source="engine",
+                context={"error": f"{type(exc).__name__}: {exc}"},
+            )
+
     # -- Stage 1b signal path ----------------------------------------------
 
     def read_history(self, symbol: str) -> Any:
@@ -245,41 +262,36 @@ class Engine:
 
         import re as _re
 
-        match = _re.match(r"^(?:YES|NO)\s+(\S+)$", text.strip())
+        match = _re.match(r"^(?:YES|NO|APPROVE|REJECT)\s+(\S+)$", text.strip())
         if not match:
             return None
         return match.group(1)
 
     async def _handle_yes_approval(self, trade_id: str) -> None:
-        """Forward a YES to the approval flow's executor."""
-
-        if pending_trade_count() == 0:
-            # Nothing to do; this can happen when two approvals arrive at
-            # once or when the cache has already been cleared.
+        """Enqueue APPROVE_SIGNAL. The engine handler fills on PAPER."""
+        from engine.commands import COMMAND_APPROVE_SIGNAL
+        import sqlite3
+        try:
+            self.journal.enqueue_command(
+                COMMAND_APPROVE_SIGNAL,
+                {"decision_id": trade_id, "source": "telegram"},
+                dedupe_key=f"{COMMAND_APPROVE_SIGNAL}:{trade_id}",
+            )
+        except sqlite3.IntegrityError:
             return
-
-        response = await process_yes_approval(trade_id, self.executor,
-                                              self.journal, self.gateway)
-
-        if response == "not_found":
-            return  # nothing to do; already gone
-        if response == "already_processed":
-            # A duplicate YES: only one execution is allowed.
-            return
-
-        # Single execution per trade_id. The response carries the actual
-        # executor result so the operator gets the real outcome.
-        if response == "executed":
-            logger.info("Telegram approval resulted in a trade")
-        else:
-            logger.warning("Telegram approval did not result in a trade: %s",
-                           response)
 
     async def _handle_no_approval(self, trade_id: str) -> None:
-        """Forward a NO to cancel the pending trade."""
-
-        await process_no_approval(trade_id, self.journal)
-        logger.info("Telegram approval cancelled trade %s", trade_id)
+        """Enqueue REJECT_SIGNAL. The engine handler records the rejection."""
+        from engine.commands import COMMAND_REJECT_SIGNAL
+        import sqlite3
+        try:
+            self.journal.enqueue_command(
+                COMMAND_REJECT_SIGNAL,
+                {"decision_id": trade_id, "source": "telegram"},
+                dedupe_key=f"{COMMAND_REJECT_SIGNAL}:{trade_id}",
+            )
+        except sqlite3.IntegrityError:
+            return
 
     # -- shutdown ----------------------------------------------------------
 
@@ -706,7 +718,8 @@ class Engine:
             poll = getattr(gateway, "poll_watchdog", None)
             if poll is not None:
                 poll()
-        self.commands.poll_once()
+        self._monitor_open_positions()
+        outcomes = self.commands.poll_once()
         # A reconnect (or reinitialisation) is the moment the account answer
         # changes, so it is checked there rather than every iteration.
         self._verify_account_transitions()
@@ -723,7 +736,13 @@ class Engine:
         self._write_telemetry()
         # Scan stays inside the iteration, after the heartbeat, so a slow
         # cycle cannot skip the beat and a dedent cannot move it outside
-        # the while that calls run_once.
+        # the while that calls run_once. An approval command this iteration
+        # finishes without a scan so the two cannot overlap.
+        from engine.commands import COMMAND_APPROVE_SIGNAL, COMMAND_REJECT_SIGNAL
+        if any(getattr(item[1], "command", "") in
+               (COMMAND_APPROVE_SIGNAL, COMMAND_REJECT_SIGNAL)
+               for item in (outcomes or [])):
+            return
         self._scan_cycle()
 
     def run_forever(self) -> None:
@@ -994,12 +1013,15 @@ def build_engine(*, config_path: Path | str | None = None,
         from engine.strategy import evaluate as _strategy_evaluate
         strategy = _strategy_evaluate
 
-    return Engine(config=config, journal=journal, state=state_machine,
+    engine = Engine(config=config, journal=journal, state=state_machine,
                   gateway=gateway, executor=executor, commands=commands,
                   risk=risk, equity_tracker=equity_tracker,
                   guard=guard, _account_verified=startup_verified,
                   _telegram_initialized=telegram_initialized,
                   scanner=scanner, strategy=strategy)
+    from engine.signal_approval import ApprovalContext
+    engine.commands.approval_ctx = lambda: ApprovalContext.from_engine(engine)
+    return engine
 
 
 def _mask_login(login) -> str:

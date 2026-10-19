@@ -434,6 +434,15 @@ class PaperExecutor(Executor):
     def positions(self) -> list[dict]:
         return list(self._positions.values())
 
+    def hydrate_from_journal(self) -> None:
+        """Load open journal positions into memory after a restart."""
+        if self.journal is None:
+            return
+        for row in self.journal.positions():
+            ticket = int(row["ticket"])
+            if ticket not in self._positions:
+                self._positions[ticket] = dict(row)
+
     def on_tick(self, symbol: str) -> list[dict]:
         """Re-evaluate open positions: mark to market, honour SL and TP.
 
@@ -451,15 +460,27 @@ class PaperExecutor(Executor):
             price = bid if position["side"] == "BUY" else ask
             position["price_current"] = price
 
-            hit_sl = position["sl"] and (
-                price <= position["sl"] if position["side"] == "BUY"
-                else price >= position["sl"])
-            hit_tp = position["tp"] and (
-                price >= position["tp"] if position["side"] == "BUY"
-                else price <= position["tp"])
+            sl = position["sl"]
+            tp = position["tp"]
+            if position["side"] == "BUY":
+                hit_sl = bool(sl) and bid <= sl
+                hit_tp = bool(tp) and bid >= tp
+                if sl and tp and bid <= sl and ask >= tp:
+                    hit_sl = hit_tp = True
+            else:
+                hit_sl = bool(sl) and ask >= sl
+                hit_tp = bool(tp) and ask <= tp
+                if sl and tp and ask >= sl and bid <= tp:
+                    hit_sl = hit_tp = True
 
-            if hit_sl or hit_tp:
-                result = self.close(ticket)
+            if hit_sl and hit_tp:
+                result = self.close(ticket, reason="AMBIGUOUS_SL_TP")
+                result.message = "AMBIGUOUS_SL_TP"
+                closed.append({"ticket": ticket, "reason": "AMBIGUOUS_SL_TP",
+                               "result": result})
+            elif hit_sl or hit_tp:
+                why = "SL" if hit_sl else "TP"
+                result = self.close(ticket, reason=why)
                 result.message = "closed on stop loss" if hit_sl else "closed on take profit"
                 closed.append({"ticket": ticket, "reason": result.message,
                                "result": result})

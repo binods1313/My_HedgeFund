@@ -1,11 +1,6 @@
-"""Read-only Signals page with status tabs and decision-chain view.
+"""Signals page: status tabs, Approve/Reject queue buttons, decision chain.
 
-This page shows signals grouped by status in tabs. It is read-only by design:
-no approval buttons, no executor calls, no order submission. Signals are
-written by the scan cycle and reviewed here; approval lives in Stage 2c.
-
-Tabs: Pending/Awaiting Approval, Approved, Rejected, Expired, Superseded,
-Executed, Failed.
+Approve and Reject only enqueue commands. They do not call an executor.
 """
 from __future__ import annotations
 
@@ -16,7 +11,7 @@ import pandas as pd
 import streamlit as st
 
 from ui.components.cards import accent_card
-from ui.data_access import read_journal_table
+from ui.data_access import queue_signal_decision, read_journal_table
 
 _TAB_STATUSES = [
     ("PENDING", "Pending / Awaiting Approval"),
@@ -37,7 +32,11 @@ _SIGNAL_COLUMNS = [
 
 
 def render_signals_page(db_path=None) -> None:
-    """Render the read-only Signals page with status tabs."""
+    """Render Signals tabs. Pending rows can queue approve/reject commands."""
+    st.caption(
+        "PAPER only. execution_mode=approve_first. Approve and Reject queue "
+        "a command; they do not place an order."
+    )
     labels = [label for _, label in _TAB_STATUSES]
     default = "Pending / Awaiting Approval"
 
@@ -85,15 +84,37 @@ def _render_tab(status: str, *, db_path) -> None:
     display = _format_signals(filtered)
 
     with accent_card("violet", "signals-table"):
-        st.caption(f"Status: {status} · {len(display)} row(s) · read-only")
+        st.caption(f"Status: {status} · {len(display)} row(s)")
         st.dataframe(
             display,
             width="stretch",
             hide_index=True,
             use_container_width=True,
         )
+        if status == "PENDING":
+            _render_pending_actions(filtered)
 
     _render_test_signal_warning(filtered)
+
+
+def _render_pending_actions(frame: pd.DataFrame) -> None:
+    """Approve/Reject enqueue only. No executor import, no order call."""
+    if "decision_id" not in frame.columns:
+        return
+    for row in frame.to_dict("records"):
+        did = row.get("decision_id")
+        if not did:
+            continue
+        tag = " TEST SIGNAL" if int(row.get("is_test") or 0) == 1 else ""
+        left, right = st.columns(2)
+        with left:
+            if st.button(f"Approve{tag}", key=f"approve_{did}"):
+                result = queue_signal_decision("APPROVE_SIGNAL", str(did))
+                (st.success if result.ok else st.warning)(result.message)
+        with right:
+            if st.button(f"Reject{tag}", key=f"reject_{did}"):
+                result = queue_signal_decision("REJECT_SIGNAL", str(did))
+                (st.success if result.ok else st.warning)(result.message)
 
 
 def _format_signals(frame: pd.DataFrame) -> pd.DataFrame:
