@@ -36,6 +36,21 @@ from engine.journal import (
 )
 
 
+def _highest_journal_ticket(journal: Journal | None) -> int:
+    """Largest ticket already stored, or 0 when the journal is empty."""
+    if journal is None:
+        return 0
+    highs: list[int] = []
+    for table in ("trades", "positions"):
+        try:
+            row = journal.query_one(f"SELECT MAX(ticket) AS n FROM {table}")
+        except Exception:  # noqa: BLE001
+            continue
+        if row is not None and row["n"] is not None:
+            highs.append(int(row["n"]))
+    return max(highs) if highs else 0
+
+
 def _decision_id_for_ticket(journal: Journal, ticket: int) -> str:
     """The decision id last journaled for this ticket, or empty."""
     try:
@@ -297,6 +312,18 @@ class PaperExecutor(Executor):
     tick_provider: Any = None
     _next_ticket: int = 9_000_000
     _positions: dict[int, dict] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.seed_ticket_sequence()
+
+    def seed_ticket_sequence(self) -> None:
+        """Start after MAX(ticket) in trades and positions.
+
+        A restart that begins at 9_000_000 again collides with an existing
+        PAPER ticket (9000001). The next mint must be strictly greater.
+        """
+        highest = _highest_journal_ticket(self.journal)
+        self._next_ticket = max(int(self._next_ticket), highest)
 
     def prepare_order(self, symbol: str, side: str, volume: float, sl: float,
                       tp: float | None = None, comment: str = "") -> OrderRequest:

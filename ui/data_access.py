@@ -582,14 +582,16 @@ def _highest_journal_ticket(journal: Journal) -> int:
     tickets and collide on the `trades` UNIQUE and `positions` primary key, so
     the counter is seeded past whatever is already stored.
     """
-    try:
-        row = journal.query_one("SELECT MAX(ticket) AS highest FROM trades")
-    except Exception as exc:   # noqa: BLE001
-        LOG.warning("could not read the highest journal ticket: %s", exc)
-        return 0
-    if not row or row["highest"] is None:
-        return 0
-    return int(row["highest"])
+    highs: list[int] = []
+    for table in ("trades", "positions"):
+        try:
+            row = journal.query_one(f"SELECT MAX(ticket) AS highest FROM {table}")
+        except Exception as exc:   # noqa: BLE001
+            LOG.warning("could not read the highest journal ticket: %s", exc)
+            continue
+        if row and row["highest"] is not None:
+            highs.append(int(row["highest"]))
+    return max(highs) if highs else 0
 
 
 def _journal_account_matches() -> Result | None:
