@@ -8,11 +8,11 @@
 | 2 | Forming-bar exclusion — `read_history(start_pos=1)` skips index 0 | `test_gateway_history.py` (9 tests); `Gateway.read_history` uses owner-thread dispatch via `call()` | TESTED-ONLY |
 | 3 | Weekend expiry — `_clamp_to_trading_day` removed; expiry = `min(bar_close+900s, created+1800s)` only | `test_signal_expiry.py` (12 tests) covers Friday expiry, Sat/Sun not pushed to Monday, +3h/-3h broker skew | TESTED-ONLY |
 | 4 | Needs-review banner — `NEEDS_REVIEW` only, not ordinary `PENDING` | `ui/data_access.py` queries `NEEDS_REVIEW`; `test_needs_review_banner.py` (5 tests) | TESTED-ONLY |
-| 5 | Live journal — schema v4, integrity OK, engine restarted, heartbeat fresh | `data/engine_5057151780.db` schema_version=4 (v4 @ 06:37Z); `PRAGMA integrity_check` = ok; engine PID 21444 (restarted 23:20Z) | PROVEN |
+| 5 | Live journal — schema v4, integrity OK, engine restarted, heartbeat fresh | `data/engine_5057151780.db` schema_version=4 (v4 @ 06:37Z); `PRAGMA integrity_check` = ok; final engine PID 22208 (restarted 02:10Z) | PROVEN |
 | 6 | Real-broker probe — 300 bars for 3 symbols, last bar closed, start_pos=1 skip | EURUSD/GBPUSD/XAUUSD return 300 rows; last closed bar ≤ now; `copy_rates_from_pos(symbol, tf, 1, 300)` | PROVEN |
-| 7 | Broker clock skew — bar_ts +3h ahead of real UTC | bar_ts epoch 1792380956 = 2026-10-19T03:35:56Z; real UTC 00:35:55Z; offset +2.99h across all 16 symbols | PROVEN |
+| 7 | Broker clock skew — bar_ts +3h ahead of real UTC | bar_ts epoch 1792387062 = 2026-10-19T05:17:42Z; real UTC 02:17:42Z; offset +2.99h across all 16 symbols | PROVEN |
 | 8 | Signal path wired — ScanCycle._try_signal active | `read_history` + `evaluate_strategy` injected via `build_engine`; all 16 symbols evaluated per cycle | PROVEN |
-| 9 | Signals written — strategy ran but no actionable signals on observed bars | 0 signals in DB; strategy DEBUG logs "no actionable signal" for all symbols; no INSUFFICIENT_HISTORY (≥206 bars for all) | PROVEN (path active, no signal) |
+| 9 | Signals written — strategy ran but no actionable signals on observed bars | 0 signals in DB; strategy DEBUG logs "no actionable signal" for all 16 symbols; no INSUFFICIENT_HISTORY (≥206 bars) | PROVEN (path active, no signal) |
 
 ## Relabel note
 Unit-test results are TESTED-ONLY. PROVEN requires live journal + broker evidence. Signal generation is PROVEN (path runs) but no signals were generated — the confluence strategy found no actionable setups on the observed bars.
@@ -27,22 +27,22 @@ Skipped tests are pre-existing, unrelated to Stage 2b changes.
 
 ## 1. HEALTH NOW (read-only)
 
-UTC time: 2026-10-19T00:36:36+00:00 (checked at report time)
+UTC time: 2026-10-19T02:18:13+00:00 (checked at report time)
 
 ```
-heartbeat_id: 153660
-heartbeat_ts: 2026-10-19T00:36:35+00:00
+heartbeat_id: 155419
+heartbeat_ts: 2026-10-19T02:18:13+00:00
 heartbeat_connected: 1
-heartbeat_age_s: 0.000187
+heartbeat_age_s: 0.000159
 engine_state: IDLE
 engine_mode: PAPER
 ```
 
-Engine process: PID 21444, started via `E:\HedgeFund_Binod_v2\.venv\Scripts\python.exe -u -m engine` (PAPER, `ai_signals_enabled: true`).
+Engine process: PID 22208, started via `E:\HedgeFund_Binod_v2\.venv\Scripts\python.exe -u -m engine` (PAPER, `ai_signals_enabled: true`).
 Account login: ****1780 (matches journal — MATCH verified at startup).
 
-No lock holder: SQLite is embedded, WAL mode. The only writer is the engine process (PID 21444).
-Backup before restart: `backups/engine_5057151780_restart_20261018T231951Z.db`.
+No lock holder: SQLite is embedded, WAL mode. The only writer is the engine process (PID 22208).
+Backup before restart: `backups/engine_5057151780_restart_20261019T021001Z.db`.
 
 ## 2. EVIDENCE
 
@@ -198,7 +198,8 @@ engine/__main__.py (build_engine):
 ## 4. EVIDENCE FIXES
 
 ### Engine restart time reconciliation
-Report timestamp: 2026-10-19T00:36:36Z. Engine restarted at ~23:22Z after committing the `ai_signals_enabled: true` config change. Events from the live DB:
+
+Two restarts occurred: first at ~23:22Z (PID 21444) to verify the initial wiring, then final at 02:10Z (PID 22208) from the project venv on latest commit `b344dd8` to verify the final state.
 
 ```
 schema_version rows (all):
@@ -208,13 +209,12 @@ schema_version rows (all):
   v4 @ 2026-10-18T06:37:03+00:00
 ```
 
-The v4 migration was applied at 06:37Z — before this session's restart. The backup at `backups/engine_5057151780_restart_20261018T231951Z.db` predates the restart but postdates the v4 migration (1760 scan_results at backup time vs 1858 live now).
+The v4 migration was applied at 06:37Z — before both restarts. The latest backup `backups/engine_5057151780_restart_20261019T021001Z.db` predates the final restart at 02:10Z.
 
-Startup events (post-restart, first 5):
+Startup events (post-final-restart, first scan cycle):
 ```
-[2026-10-18T23:22:39+00:00] INFO state engine: IDLE -> SCANNING  (engine restart)
-[2026-10-18T23:22:39+00:00] signal DEBUG: XAUAUD: strategy returned no actionable signal (direction=None)
-[2026-10-18T23:22:55+00:00] INFO scan: recorded (16 scanned, 0 skipped, 0 signals)
+[2026-10-19T02:10:01Z] INFO engine: mode=PAPER, db=engine_5057151780.db, ai_signals_enabled=True
+[2026-10-19T02:17:42Z] INFO scan: recorded (16 scanned, 0 skipped, 0 signals)
 ```
 
 ## 5. TIME HANDLING
@@ -223,13 +223,13 @@ Startup events (post-restart, first 5):
 
 `scan_symbols.bar_ts` is stored as the **raw broker epoch** (INTEGER). The engine's `scan_symbols.ts` is recorded in engine UTC.
 
-Raw evidence (EURUSD, latest cycle at 2026-10-19T00:35:55Z):
+Raw evidence (EURUSD, latest cycle at 2026-10-19T02:17:42Z):
 ```
-bar_ts (raw epoch):  1792380956
-bar_ts as broker UTC: 2026-10-19T03:35:56+00:00
-bar_ts as IST:       2026-10-19T09:05:56+05:30
-real UTC now:        2026-10-19T00:36:36+00:00
-scan ts (engine UTC): 2026-10-19T00:35:55+00:00
+bar_ts (raw epoch):  1792387062
+bar_ts as broker UTC: 2026-10-19T05:17:42+00:00
+bar_ts as IST:       2026-10-19T09:47:42+05:30
+real UTC now:        2026-10-19T02:18:13+00:00
+scan ts (engine UTC): 2026-10-19T02:17:42+00:00
 broker offset:        +2.99 hours (exactly +3h, not IST +5:30)
 ```
 
@@ -278,12 +278,12 @@ AUDJPY   status=scanned  bar_ts=2026-10-19T00:17:21Z
 CHFJPY   status=scanned  bar_ts=2026-10-19T00:17:01Z
 ```
 
-### Metals symbols (4) — `status=scanned` with new closed bars (same as forex now):
+### Metals symbols (4) — `status=scanned` with new closed bars:
 ```
-XAUUSD   status=scanned  bar_ts=2026-10-19T03:35:56Z (broker UTC, +3h offset)
-XAGUSD   status=scanned  bar_ts=2026-10-19T03:35:56Z
-XAUEUR   status=scanned  bar_ts=2026-10-19T03:35:56Z
-XAUAUD   status=scanned  bar_ts=2026-10-19T03:35:56Z
+XAUUSD   status=scanned  bar_ts=2026-10-19T05:17:43Z  (broker UTC, +3h offset)
+XAGUSD   status=scanned  bar_ts=2026-10-19T05:17:42Z
+XAUEUR   status=scanned  bar_ts=2026-10-19T05:17:42Z
+XAUAUD   status=scanned  bar_ts=2026-10-19T05:17:42Z
 ```
 
 All 16 symbols (12 forex + 4 metals) now show `status=scanned` — the market is open and all symbols have new closed bars.
@@ -292,7 +292,13 @@ All 16 symbols (12 forex + 4 metals) now show `status=scanned` — the market is
 
 ### Signals: 0 rows
 
-The signal path **is wired and active** since the engine restart with `ai_signals_enabled: true`. All 16 symbols are evaluated via `ScanCycle._try_signal` → `Engine.read_history` → `Engine.evaluate_strategy`. The confluence strategy ran on 3 bar cycles and returned "no actionable signal" for every symbol (DEBUG logs). 0 PENDING rows written.
+The signal path **is wired and active** since the engine restart with `ai_signals_enabled: true`. All 16 symbols are evaluated via `ScanCycle._try_signal` → `Engine.read_history` → `Engine.evaluate_strategy`. The confluence strategy ran on 3 bar cycles (00:35Z, 00:36Z, 02:17Z) and returned "no actionable signal" for every symbol:
+
+```
+2026-10-19T02:17:42+00:00 DEBUG: EURUSD: strategy returned no actionable signal (direction=None)
+2026-10-19T02:17:42+00:00 DEBUG: GBPUSD: strategy returned no actionable signal (direction=None)
+... (14 more, all identical pattern)
+```
 
 This is **PROVEN (path active)** but **no signals generated** — the strategy found no actionable setups on observed bars. No INSUFFICIENT_HISTORY (all symbols have ≥206 closed bars). The strategy returns `signal=None` when no blocks agree.
 
@@ -307,5 +313,7 @@ This is **PROVEN (path active)** but **no signals generated** — the strategy f
 | Signal path wired (read_history + evaluate_strategy active) | PROVEN |
 | Signal generation (strategy evaluated, no actionable signal) | PROVEN (path active, 0 signals) |
 | Weekend expiry fix (no Monday clamp) | TESTED-ONLY (no weekend to observe live) |
+
+All 11 commits in `feature/echofi-ui` through `b344dd8` (docs: update Stage 2b report). Final engine running on latest commit, PID 22208, now stopped.
 
 All 10 commits in `feature/echofi-ui` through `9a80177` (config: enable ai_signals_enabled). Engine running on latest commit, PID 21444.
