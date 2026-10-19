@@ -322,6 +322,17 @@ def test_submit_order_passes_a_positive_stop_and_records_it(
 
     assert result.ok, result.message
     assert "executor" in captured
+    assert isinstance(captured["executor"], PaperExecutor)
+    assert result.ticket is not None and int(result.ticket) > 9_000_000
+    journal = Journal(tmp_path / "engine.db", migrate=False)
+    try:
+        trades = journal.query("SELECT ticket, broker, status FROM trades")
+        assert len(trades) == 1
+        assert trades[0]["broker"] == "PAPER"
+        assert trades[0]["status"] == "OPEN"
+        assert int(trades[0]["ticket"]) == int(result.ticket)
+    finally:
+        journal.close()
 
 
 @pytest.mark.parametrize("direction", ["", None, "LONG", "buy-ish"])
