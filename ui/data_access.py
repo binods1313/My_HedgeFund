@@ -1001,7 +1001,9 @@ def close_position(ticket: int) -> Result:
 #: an arbitrary table name would turn a read-only view into a read-any-file
 #: primitive, and every query is built from these fixed strings instead.
 JOURNAL_TABLES: dict[str, tuple[str, ...]] = {
-    "signals": ("id", "symbol", "direction", "score", "bar_ts", "ts"),
+    "signals": ("id", "symbol", "direction", "score", "bar_ts", "ts",
+                "decision_id", "status", "strategy", "expires_at",
+                "reject_reason", "is_test", "test_tag"),
     "risk_decisions": ("id", "trade_id", "symbol", "approved",
                        "reasons_json", "ts"),
     "llm_calls": ("id", "decision", "confidence", "ok", "latency_ms",

@@ -74,6 +74,9 @@ def _render_tab(status: str, *, db_path) -> None:
     if frame is None or frame.empty:
         st.caption(f"No signals with status {status} recorded yet.")
         return
+    if "status" not in frame.columns:
+        st.warning("Signals table is missing status; cannot group by tab.")
+        return
 
     filtered = frame[frame["status"] == status].copy()
 

@@ -65,7 +65,10 @@ class ApprovalContext:
             journal=engine.journal,
             mode=str(getattr(getattr(engine, "config", None), "mode", "PAPER")),
             state=str(getattr(engine.state, "state", "")),
-            account_ok=bool(getattr(engine, "_account_verified", False)),
+            account_ok=bool(
+                getattr(getattr(engine, "guard", None), "verified", False)
+                or getattr(engine, "_account_verified", False)
+            ),
             account=getattr(engine, "account", None),
             risk=getattr(engine, "risk", None),
             executor=getattr(engine, "executor", None),
