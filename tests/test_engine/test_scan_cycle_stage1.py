@@ -202,7 +202,7 @@ def test_market_closed_is_recorded_before_stale_quote(tmp_path):
     )
     row = _symbols(journal)[0]
     assert row["reason"] == "MARKET_CLOSED"
-    body = inspect.getsource(ScanCycle._one_symbol)
+    body = inspect.getsource(ScanCycle._eligibility)
     assert body.find("MARKET_CLOSED") < body.find("STALE_QUOTE")
 
 

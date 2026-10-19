@@ -24,9 +24,19 @@ from engine.state import STATE_IDLE, StateMachine
 from engine.strategy import Signal, Block
 
 
-def _make_history() -> pd.DataFrame:
-    """206 closed M15 bars of flat price with a recent low sweep.
+# Friday 16 Oct 2026 20:45 UTC. Divisible by 900, so it is an M15 bar open.
+_BAR_OPEN = datetime(2026, 10, 16, 20, 45, tzinfo=timezone.utc)
+_BAR_OPEN_EPOCH = int(_BAR_OPEN.timestamp())
 
+
+def _m15_times(n: int, last: int = _BAR_OPEN_EPOCH) -> list[int]:
+    return [last - 900 * (n - 1 - i) for i in range(n)]
+
+
+def _make_history() -> pd.DataFrame:
+    """206 closed M15 bars of flat price.
+
+    The ``time`` column is the bar open epoch. The last open is M15-aligned.
     Prices are forex-scale (around 1.0900) so signal.price and the
     derived stop loss are on the same numeric scale as the LotSizer
     tick spec.
@@ -36,7 +46,7 @@ def _make_history() -> pd.DataFrame:
     low = [b - 0.0010 for b in base]
     high = [b + 0.0010 for b in base]
     return pd.DataFrame({
-        "time": range(n),
+        "time": _m15_times(n),
         "open": base,
         "high": high,
         "low": low,
@@ -56,7 +66,7 @@ def _make_df_with_sweep() -> pd.DataFrame:
     close = list(base)
     close[-1] = low[-1] + 0.0005  # closes above the swept low
     return pd.DataFrame({
-        "time": range(n),
+        "time": _m15_times(n),
         "open": base,
         "high": high,
         "low": low,
@@ -212,7 +222,7 @@ def _new_engine(tmp_path, *, approved=True, strategy_fn=None,
 def test_e2e_no_signal_produces_no_row(tmp_path):
     """Strategy returns None → no signal rows, 0 signals."""
     journal, engine = _new_engine(tmp_path, strategy_fn=lambda s, df: None)
-    scanner = ScanCycle(symbols=["EURUSD"], interval_seconds=0)
+    scanner = ScanCycle(symbols=["EURUSD"], interval_seconds=0, broker_offset_seconds=0)
 
     outcome = scanner.run_with_engine(engine)
 
@@ -236,7 +246,7 @@ def test_e2e_actionable_signal_passes_risk(tmp_path):
         tmp_path, approved=True, strategy_fn=strategy_fn,
         df=_make_df_with_sweep(),
     )
-    scanner = ScanCycle(symbols=["EURUSD"], interval_seconds=0)
+    scanner = ScanCycle(symbols=["EURUSD"], interval_seconds=0, broker_offset_seconds=0)
 
     outcome = scanner.run_with_engine(engine)
 
@@ -271,7 +281,7 @@ def test_e2e_actionable_signal_fails_risk(tmp_path):
         tmp_path, approved=False, strategy_fn=strategy_fn,
         df=_make_df_with_sweep(),
     )
-    scanner = ScanCycle(symbols=["EURUSD"], interval_seconds=0)
+    scanner = ScanCycle(symbols=["EURUSD"], interval_seconds=0, broker_offset_seconds=0)
 
     outcome = scanner.run_with_engine(engine)
 
@@ -305,7 +315,7 @@ def test_e2e_insufficient_history(tmp_path):
         tmp_path, approved=True, strategy_fn=strategy_fn,
         df=short_df,
     )
-    scanner = ScanCycle(symbols=["EURUSD"], interval_seconds=0)
+    scanner = ScanCycle(symbols=["EURUSD"], interval_seconds=0, broker_offset_seconds=0)
 
     outcome = scanner.run_with_engine(engine)
 
@@ -332,7 +342,7 @@ def test_e2e_deterministic_decision_id(tmp_path):
         df=_make_df_with_sweep(),
         bar_ts="2026-10-18T21:00:00+00:00",
     )
-    scanner = ScanCycle(symbols=["EURUSD"], interval_seconds=0)
+    scanner = ScanCycle(symbols=["EURUSD"], interval_seconds=0, broker_offset_seconds=0)
 
     # First cycle: new bar → signal written
     out1 = scanner.run_with_engine(engine)
@@ -355,32 +365,160 @@ def test_e2e_deterministic_decision_id(tmp_path):
     journal.close()
 
 
-def test_e2e_history_read_once_per_new_bar(tmp_path):
-    """read_history called exactly once per new bar, not per cycle."""
+def test_e2e_history_frame_not_the_tick_decides_the_bar(tmp_path):
+    """The closed-bar open in the frame is the identity. The tick is not.
+
+    A repeat of the same frame reads history again (that is how the cycle
+    knows the bar) and does not write a second signal. Advancing the
+    frame's last open is what counts as the next bar. Moving only the
+    snapshot tick does nothing.
+    """
     def strategy_fn(symbol, df):
-        return None  # no signal, but history is still read
+        return None
 
     journal, engine = _new_engine(
         tmp_path, approved=True, strategy_fn=strategy_fn,
     )
+    scanner = ScanCycle(
+        symbols=["EURUSD"], interval_seconds=0, broker_offset_seconds=0,
+    )
+    tick = str(int(datetime(2026, 10, 16, 5, 17, 42, tzinfo=timezone.utc).timestamp()))
+    engine.gateway._bar_ts = tick
 
-    bar_ts_1 = "2026-10-18T21:00:00+00:00"
-    bar_ts_2 = "2026-10-18T21:15:00+00:00"
-
-    scanner = ScanCycle(symbols=["EURUSD"], interval_seconds=0)
-
-    # Cycle 1: new bar
-    engine.gateway._bar_ts = bar_ts_1
     scanner.run_with_engine(engine)
-    assert len(engine.gateway.read_history_calls) == 1
+    assert engine.gateway.read_history_calls == ["EURUSD"]
+    row = journal.query("SELECT bar_ts, reason FROM scan_symbols")[0]
+    assert int(row["bar_ts"]) == _BAR_OPEN_EPOCH
+    assert row["bar_ts"] != tick
 
-    # Cycle 2: same bar → no read
-    scanner.run_with_engine(engine)
-    assert len(engine.gateway.read_history_calls) == 1
-
-    # Cycle 3: new bar → one more read
-    engine.gateway._bar_ts = bar_ts_2
     scanner.run_with_engine(engine)
     assert len(engine.gateway.read_history_calls) == 2
+    assert journal.query("SELECT COUNT(*) AS n FROM signals")[0]["n"] == 0
 
+    engine.gateway._bar_ts = str(int(tick) + 60)
+    next_open = _BAR_OPEN_EPOCH + 900
+    frame = engine.gateway._df.copy()
+    frame.loc[frame.index[-1], "time"] = next_open
+    engine.gateway._df = frame
+    scanner.run_with_engine(engine)
+    assert len(engine.gateway.read_history_calls) == 3
+    latest = journal.query("SELECT bar_ts FROM scan_symbols ORDER BY id DESC")[0]
+    assert int(latest["bar_ts"]) == next_open
+
+    journal.close()
+
+
+def test_actionable_frame_is_pending_idempotent_and_superseded(tmp_path):
+    """Real ScanCycle: one PENDING row, then the next bar supersedes it.
+
+    No order function is called. decision_id is the closed bar open.
+    expires_at is min(bar_close_utc + 900s, created_utc + 1800s).
+    """
+    import uuid
+
+    from engine.scan_cycle import _SIGNAL_NAMESPACE, _STRATEGY_LABEL
+
+    orders: list = []
+
+    def send_order(*args, **kwargs):
+        orders.append((args, kwargs))
+
+    def strategy_fn(symbol, df):
+        return Signal(
+            symbol=symbol, direction="BUY", price=1.0900,
+            blocks=[Block("test", True, "ok")], confidence=0.9,
+        )
+
+    created = "2026-10-16T21:00:10+00:00"
+    journal, engine = _new_engine(
+        tmp_path, approved=True, strategy_fn=strategy_fn,
+        df=_make_df_with_sweep(),
+        bar_ts=str(int(datetime(2026, 10, 16, 5, 17, 42, tzinfo=timezone.utc).timestamp())),
+    )
+    engine.gateway.send_order = send_order
+    engine.gateway.order_send = send_order
+    scanner = ScanCycle(
+        symbols=["EURUSD"], interval_seconds=0, broker_offset_seconds=0,
+    )
+
+    def run_once(cycle: ScanCycle):
+        return cycle.run(
+            state=engine.state, journal=journal, mode="PAPER",
+            read_market=engine.gateway.snapshot,
+            read_history=engine.gateway.read_history,
+            evaluate_strategy=engine.evaluate_strategy,
+            now_iso=created,
+        )
+
+    first = run_once(scanner)
+    assert first.signals == 1
+    expected_id = str(uuid.uuid5(
+        _SIGNAL_NAMESPACE, f"EURUSD|{_STRATEGY_LABEL}|{_BAR_OPEN_EPOCH}",
+    ))
+    # close 21:00:00 + 900s = 21:15:00; created+1800 = 21:30:10
+    expected_expiry = "2026-10-16T21:15:00+00:00"
+    rows = journal.query(
+        "SELECT status, decision_id, bar_ts, expires_at FROM signals ORDER BY id")
+    assert len(rows) == 1
+    assert rows[0]["status"] == "PENDING"
+    assert int(rows[0]["bar_ts"]) == _BAR_OPEN_EPOCH
+    assert rows[0]["decision_id"] == expected_id
+    assert rows[0]["expires_at"] == expected_expiry
+
+    second = run_once(scanner)
+    assert second.signals == 0
+    assert len(journal.query("SELECT id FROM signals")) == 1
+    assert orders == []
+    assert journal.query("SELECT COUNT(*) AS n FROM trades")[0]["n"] == 0
+
+    # A new process (empty bar memory) still does not insert a duplicate.
+    fresh = ScanCycle(symbols=["EURUSD"], interval_seconds=0, broker_offset_seconds=0)
+    third = run_once(fresh)
+    assert third.signals == 0
+    assert len(journal.query("SELECT id FROM signals")) == 1
+
+    next_open = _BAR_OPEN_EPOCH + 900
+    frame = _make_df_with_sweep()
+    frame.loc[frame.index[-1], "time"] = next_open
+    engine.gateway._df = frame
+    nxt = ScanCycle(symbols=["EURUSD"], interval_seconds=0, broker_offset_seconds=0)
+    fourth = run_once(nxt)
+    assert fourth.signals == 1
+    again = journal.query(
+        "SELECT status, decision_id, bar_ts FROM signals ORDER BY id")
+    assert [row["status"] for row in again] == ["SUPERSEDED", "PENDING"]
+    assert int(again[1]["bar_ts"]) == next_open
+    assert again[1]["decision_id"] != expected_id
+    assert orders == []
+    journal.close()
+
+
+def test_unaligned_timestamp_is_not_used(tmp_path):
+    """05:17:42 is a tick, not an M15 open. It must not be stored or hashed."""
+    tick_dt = datetime(2026, 10, 16, 5, 17, 42, tzinfo=timezone.utc)
+    tick = int(tick_dt.timestamp())
+    assert tick % 900 != 0
+
+    frame = _make_history()
+    frame.loc[frame.index[-1], "time"] = tick
+
+    def strategy_fn(symbol, df):
+        return Signal(
+            symbol=symbol, direction="BUY", price=1.0900,
+            blocks=[Block("test", True, "ok")], confidence=1.0,
+        )
+
+    journal, engine = _new_engine(
+        tmp_path, strategy_fn=strategy_fn, df=frame, bar_ts=str(tick),
+    )
+    scanner = ScanCycle(
+        symbols=["EURUSD"], interval_seconds=0, broker_offset_seconds=0,
+    )
+    outcome = scanner.run_with_engine(engine)
+    assert outcome.signals == 0
+    assert outcome.scanned == 0
+    row = journal.query("SELECT bar_ts, reason FROM scan_symbols")[0]
+    assert row["bar_ts"] is None
+    assert row["reason"] == "BAR_TIME_NOT_ALIGNED"
+    assert journal.query("SELECT COUNT(*) AS n FROM signals")[0]["n"] == 0
     journal.close()

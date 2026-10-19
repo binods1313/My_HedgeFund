@@ -6,8 +6,8 @@ The read_history method must:
      copy_rates_from_pos with start_pos=1 (which skips the forming bar
      at index 0 in real MT5).
   3. Return None on empty feed (fail-closed).
-  4. Not perform a per-symbol read when no new bar has closed since the last
-     cycle — the scan cycle's _last_bar tracking prevents redundant reads.
+  4. On the signal path, read history every eligible cycle. The closed bar's
+     open time in that frame is the identity. The snapshot tick is not.
 
 Run: python -m pytest tests/test_engine/test_gateway_history.py -v
 """
@@ -180,13 +180,71 @@ class TestReadHistory:
             gw.stop()
 
 
-class TestScanCycleNoRedundantReads:
-    """The scan cycle must not issue per-symbol history reads when bars
-    haven't closed — preventing symbols × cycles of redundant API calls.
+class TestScanCycleBarIdentity:
+    """Signal-path identity is the history frame's last M15 open.
+
+    The cycle reads history on every eligible pass. A repeat of the same
+    open is a skip. A tick time is never stored. An unaligned frame is
+    refused.
     """
 
-    def test_no_history_read_when_bar_has_not_advanced(self, tmp_path):
-        """When the bar_ts hasn't changed, read_history is never called."""
+    def test_empty_history_is_a_skip_and_is_read_again(self, tmp_path):
+        """No frame means no closed bar. The next cycle reads again."""
+        from engine.scan_cycle import ScanCycle
+        from engine.state import STATE_IDLE, StateMachine
+
+        journal = Journal(tmp_path / "scan.db")
+        state = StateMachine(journal)
+        state.transition(STATE_IDLE, "ENABLE_AI")
+        history_reads: list[str] = []
+        tick = "1760599062"  # 2026-10-16 05:17:42 UTC, not an M15 open
+
+        def read_market(names):
+            return {"symbols": {
+                n: {"market_open": True, "stale": False, "bar_ts": tick,
+                    "trade_mode": 4, "bid": 1.0900, "ask": 1.0902}
+                for n in names
+            }}
+
+        def read_history(symbol):
+            history_reads.append(symbol)
+            return None
+
+        def evaluate_strategy(symbol, df):
+            return None
+
+        scanner = ScanCycle(
+            symbols=["EURUSD"], interval_seconds=0, remind_every=600,
+            broker_offset_seconds=0,
+        )
+        out1 = scanner.run(
+            state=state, journal=journal, mode="PAPER",
+            read_market=read_market, read_history=read_history,
+            evaluate_strategy=evaluate_strategy,
+        )
+        assert out1.scanned == 0
+        assert out1.skipped == 1
+        assert history_reads == ["EURUSD"]
+        row = journal.query("SELECT bar_ts, reason FROM scan_symbols")[0]
+        assert row["bar_ts"] is None
+        assert row["reason"] == "NO_NEW_CLOSED_BAR"
+        assert row["bar_ts"] != tick
+
+        out2 = scanner.run(
+            state=state, journal=journal, mode="PAPER",
+            read_market=read_market, read_history=read_history,
+            evaluate_strategy=evaluate_strategy,
+        )
+        assert out2.skipped == 1
+        assert history_reads == ["EURUSD", "EURUSD"]
+        journal.close()
+
+    def test_frame_open_is_the_bar_and_an_unaligned_frame_is_refused(self, tmp_path):
+        """The stored bar is the frame open. range() times are not M15 opens."""
+        from datetime import datetime, timezone
+
+        import pandas as pd
+
         from engine.scan_cycle import ScanCycle
         from engine.state import STATE_IDLE, StateMachine
 
@@ -194,105 +252,94 @@ class TestScanCycleNoRedundantReads:
         state = StateMachine(journal)
         state.transition(STATE_IDLE, "ENABLE_AI")
 
-        history_reads = {"symbols": []}
+        open_epoch = int(datetime(2026, 10, 16, 14, 45, tzinfo=timezone.utc).timestamp())
+        assert open_epoch % 900 == 0
+        tick = str(open_epoch + 17 * 60 + 42)
+        assert int(tick) % 900 != 0
+        history_reads = {"count": 0, "last": open_epoch}
+
+        def _frame(last: int, n: int = 30) -> pd.DataFrame:
+            times = [last - 900 * (n - 1 - i) for i in range(n)]
+            return pd.DataFrame({
+                "time": times,
+                "open": [1.0] * n,
+                "high": [1.01] * n,
+                "low": [0.99] * n,
+                "close": [1.0] * n,
+                "tick_volume": [100] * n,
+            })
 
         def read_market(names):
             return {"symbols": {
-                n: {"market_open": True, "stale": False, "bar_ts": "2026-10-16T14:45:00",
-                     "trade_mode": 4, "bid": 1.0900, "ask": 1.0902}
-                for n in names
-            }}
-
-        def read_history(symbol):
-            history_reads["symbols"].append(symbol)
-            return None
-
-        def evaluate_strategy(symbol, df):
-            return None
-
-        scanner = ScanCycle(symbols=["EURUSD"], interval_seconds=0, remind_every=600)
-
-        # First cycle: bar is new, history read happens.
-        out1 = scanner.run(
-            state=state, journal=journal, mode="PAPER",
-            read_market=read_market, read_history=read_history,
-            evaluate_strategy=evaluate_strategy,
-        )
-        assert out1.scanned == 1
-        assert len(history_reads["symbols"]) == 1
-
-        # Second cycle: same bar_ts, no history read.
-        history_reads["symbols"].clear()
-        out2 = scanner.run(
-            state=state, journal=journal, mode="PAPER",
-            read_market=read_market, read_history=read_history,
-            evaluate_strategy=evaluate_strategy,
-        )
-        assert out2.skipped == 1, f"expected skip on no-new-bar, got {out2}"
-        assert len(history_reads["symbols"]) == 0, (
-            "read_history must not be called when the bar hasn't advanced"
-        )
-        journal.close()
-
-    def test_history_read_count_equals_new_bar_count(self, tmp_path):
-        """read_history is called exactly once per new closed bar, not per cycle."""
-        from engine.scan_cycle import ScanCycle, _MIN_BARS_FOR_SIGNAL
-        from engine.state import STATE_IDLE, StateMachine
-
-        journal = Journal(tmp_path / "scan.db")
-        state = StateMachine(journal)
-        state.transition(STATE_IDLE, "ENABLE_AI")
-
-        history_reads = {"count": 0}
-        import pandas as pd
-        bars_ts = ["2026-10-16T14:45:00", "2026-10-16T15:00:00", "2026-10-16T15:15:00"]
-        call_idx = {"i": 0}
-
-        def read_market(names):
-            i = call_idx["i"]
-            ts = bars_ts[i] if i < len(bars_ts) else bars_ts[-1]
-            call_idx["i"] += 1
-            return {"symbols": {
-                n: {"market_open": True, "stale": False, "bar_ts": ts,
-                     "trade_mode": 4, "bid": 1.0900, "ask": 1.0902}
+                n: {"market_open": True, "stale": False, "bar_ts": tick,
+                    "trade_mode": 4, "bid": 1.0900, "ask": 1.0902}
                 for n in names
             }}
 
         def read_history(symbol):
             history_reads["count"] += 1
-            return pd.DataFrame({
-                "time": range(_MIN_BARS_FOR_SIGNAL),
-                "open": [1.0] * _MIN_BARS_FOR_SIGNAL,
-                "high": [1.01] * _MIN_BARS_FOR_SIGNAL,
-                "low": [0.99] * _MIN_BARS_FOR_SIGNAL,
-                "close": [1.0] * _MIN_BARS_FOR_SIGNAL,
-                "tick_volume": [100] * _MIN_BARS_FOR_SIGNAL,
-            })
+            last = history_reads["last"]
+            if last == "unaligned":
+                return pd.DataFrame({
+                    "time": list(range(30)),
+                    "open": [1.0] * 30,
+                    "high": [1.01] * 30,
+                    "low": [0.99] * 30,
+                    "close": [1.0] * 30,
+                    "tick_volume": [100] * 30,
+                })
+            return _frame(int(last))
 
         def evaluate_strategy(symbol, df):
-            from engine.strategy import Signal, Block
-            return Signal(symbol=symbol, direction="BUY", price=1.0900,
-                          blocks=[Block("test", True, "ok")], confidence=1.0)
+            return None
 
-        scanner = ScanCycle(symbols=["EURUSD"], interval_seconds=0, remind_every=600)
-
-        # Cycle 1: new bar → 1 history read
-        scanner.run(state=state, journal=journal, mode="PAPER",
-                    read_market=read_market, read_history=read_history,
-                    evaluate_strategy=evaluate_strategy)
-        assert history_reads["count"] == 1
-
-        # Cycle 2: same bar → no history read (no new closed bar)
-        def read_market_same(names):
-            return {"symbols": {
-                n: {"market_open": True, "stale": False, "bar_ts": bars_ts[0],
-                     "trade_mode": 4, "bid": 1.0900, "ask": 1.0902}
-                for n in names
-            }}
-        scanner.run(state=state, journal=journal, mode="PAPER",
-                    read_market=read_market_same, read_history=read_history,
-                    evaluate_strategy=evaluate_strategy)
-        assert history_reads["count"] == 1, (
-            "read_history must not re-fire for a bar that hasn't advanced"
+        scanner = ScanCycle(
+            symbols=["EURUSD"], interval_seconds=0, remind_every=600,
+            broker_offset_seconds=0,
         )
+        first = scanner.run(
+            state=state, journal=journal, mode="PAPER",
+            read_market=read_market, read_history=read_history,
+            evaluate_strategy=evaluate_strategy,
+        )
+        assert first.scanned == 1
+        assert history_reads["count"] == 1
+        stored = journal.query("SELECT bar_ts FROM scan_symbols ORDER BY id DESC")[0]
+        assert int(stored["bar_ts"]) == open_epoch
+        assert stored["bar_ts"] != tick
+
+        second = scanner.run(
+            state=state, journal=journal, mode="PAPER",
+            read_market=read_market, read_history=read_history,
+            evaluate_strategy=evaluate_strategy,
+        )
+        assert second.skipped == 1
+        assert history_reads["count"] == 2
+        repeat = journal.query(
+            "SELECT bar_ts, reason FROM scan_symbols ORDER BY id DESC")[0]
+        assert int(repeat["bar_ts"]) == open_epoch
+        assert repeat["reason"] == "NO_NEW_CLOSED_BAR"
+
+        history_reads["last"] = open_epoch + 900
+        third = scanner.run(
+            state=state, journal=journal, mode="PAPER",
+            read_market=read_market, read_history=read_history,
+            evaluate_strategy=evaluate_strategy,
+        )
+        assert third.scanned == 1
+        advanced = journal.query("SELECT bar_ts FROM scan_symbols ORDER BY id DESC")[0]
+        assert int(advanced["bar_ts"]) == open_epoch + 900
+
+        history_reads["last"] = "unaligned"
+        fourth = scanner.run(
+            state=state, journal=journal, mode="PAPER",
+            read_market=read_market, read_history=read_history,
+            evaluate_strategy=evaluate_strategy,
+        )
+        assert fourth.scanned == 0
+        refused = journal.query(
+            "SELECT bar_ts, reason FROM scan_symbols ORDER BY id DESC")[0]
+        assert refused["bar_ts"] is None
+        assert refused["reason"] == "BAR_TIME_NOT_ALIGNED"
+        assert journal.query("SELECT COUNT(*) AS n FROM signals")[0]["n"] == 0
         journal.close()

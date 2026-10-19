@@ -24,6 +24,7 @@ from typing import Any, Callable
 
 from engine.journal import Journal, utc_now_iso
 from engine.state import STATE_IDLE, STATE_SCANNING
+from quote_clock import detect_broker_offset_seconds
 
 # Market-closed is first on purpose. A symbol that is both closed and
 # stale must be recorded as MARKET_CLOSED, never as STALE_QUOTE.
@@ -32,6 +33,8 @@ _TRADE_DISABLED = "TRADE_DISABLED"
 _MARKET_CLOSED = "MARKET_CLOSED"
 _STALE_QUOTE = "STALE_QUOTE"
 _NO_NEW_BAR = "NO_NEW_CLOSED_BAR"
+_BAR_NOT_ALIGNED = "BAR_TIME_NOT_ALIGNED"
+_OFFSET_UNSAFE = "BROKER_OFFSET_UNSAFE"
 _BUDGET = "CYCLE_BUDGET_EXHAUSTED"
 _TERMINAL = "TERMINAL_OFFLINE"
 _MISMATCH = "ACCOUNT_MISMATCH"
@@ -52,6 +55,84 @@ _TIMEFRAME_LABEL = "M15"
 # or 15 minutes past the bar close that generated it — whichever is first.
 _EXPIRY_BAR_WINDOW = 900
 _EXPIRY_CREATION_WINDOW = 1800
+_M15_SECONDS = 900
+
+
+def closed_bar_open_epoch(df: Any) -> int | None:
+    """Return the last closed bar's open epoch, or None.
+
+    The epoch is the history frame's last ``time`` value, which MetaTrader
+    stores as the bar open. It is accepted only when it falls on an M15
+    boundary (divisible by 900). A tick time such as 05:17:42 is refused.
+    """
+    if not _is_history_frame(df) or len(df) == 0 or "time" not in df.columns:
+        return None
+    epoch = _as_broker_epoch(df["time"].iloc[-1])
+    if epoch is None or epoch % _M15_SECONDS != 0:
+        return None
+    return epoch
+
+
+def _is_history_frame(df: Any) -> bool:
+    try:
+        import pandas as pd
+    except ImportError:
+        return False
+    return isinstance(df, pd.DataFrame)
+
+
+def _as_broker_epoch(raw: Any) -> int | None:
+    """Integer seconds of a history ``time`` cell.
+
+    Naive datetimes and pandas timestamps are the broker epoch decoded as
+    UTC, which is how ``pandas.to_datetime(..., unit='s')`` renders the
+    column. Their nanosecond value is that epoch. ``Timestamp.timestamp()``
+    is not used for naive values, because it would apply the machine zone.
+    """
+    if raw is None or isinstance(raw, bool):
+        return None
+    if isinstance(raw, str):
+        text = raw.strip()
+        if text.isdigit() or (text.startswith("-") and text[1:].isdigit()):
+            return int(text)
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return int(parsed.timestamp())
+    value = getattr(raw, "value", None)
+    if isinstance(value, int) and value > 10**14:
+        # pandas Timestamp is a datetime subclass. Its nanosecond value is
+        # the epoch; Timestamp.timestamp() would apply the machine zone
+        # to a naive value, so it is not used here.
+        if getattr(raw, "tzinfo", None) is None:
+            return int(value // 1_000_000_000)
+        return int(raw.timestamp())
+    if isinstance(raw, datetime):
+        if raw.tzinfo is None:
+            raw = raw.replace(tzinfo=timezone.utc)
+        return int(raw.timestamp())
+    try:
+        number = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if number != number:  # NaN
+        return None
+    return int(round(number))
+
+
+def _tick_epoch(value: Any) -> int | None:
+    """A snapshot tick epoch, or None when the field is not an integer."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    text = str(value).strip()
+    if text.isdigit() or (text.startswith("-") and text[1:].isdigit()):
+        return int(text)
+    return None
 
 
 @dataclass
@@ -81,6 +162,11 @@ class ScanCycle:
     _last_journaled: dict[str, float] = field(default_factory=dict)
     _last_bar: dict[str, str] = field(default_factory=dict)
     _last_attempt: float | None = None
+    #: Whole-hour broker offset in seconds. None detects it from fresh ticks.
+    broker_offset_seconds: int | None = None
+    #: Last offset this process accepted. A later jump other than ±3600s
+    #: (DST) is refused until the process restarts.
+    _accepted_offset: int | None = None
 
     def run_with_engine(self, engine) -> ScanOutcome:
         """Adapt the live engine. Reads the gateway once per started cycle."""
@@ -207,6 +293,7 @@ class ScanCycle:
         evaluate_strategy: Callable[[str, Any], Any] | None = None,
         build_order_intent: Callable[[str, str, float, float, dict],
                                      tuple[float, str, list[str]]] | None = None,
+        utc_now_epoch: float | None = None,
     ) -> ScanOutcome:
         """Attempt one cycle. Returns to IDLE if it entered SCANNING."""
         clock = monotonic or time.monotonic
@@ -240,6 +327,8 @@ class ScanCycle:
                 return _finish(ScanOutcome(status="empty", reason=_TERMINAL))
 
             views = snapshot.get("symbols", snapshot) if isinstance(snapshot, dict) else {}
+            now_epoch = time.time() if utc_now_epoch is None else float(utc_now_epoch)
+            offset = self._cycle_offset(views, now_epoch)
             cycle_id = uuid.uuid4().hex
             started = clock()
             computed = scanned = errors = deferred = skipped = signals = 0
@@ -275,8 +364,16 @@ class ScanCycle:
                 view = views.get(symbol) if isinstance(views, dict) else None
                 if not isinstance(view, dict):
                     view = {}
+                signal_path = read_history is not None and evaluate_strategy is not None
+                history_df = None
+                bar_open_epoch = None
                 try:
-                    status, why, did_compute = self._one_symbol(symbol, view, compute)
+                    if signal_path:
+                        status, why, did_compute, history_df, bar_open_epoch = (
+                            self._signal_symbol(symbol, view, compute, read_history, offset)
+                        )
+                    else:
+                        status, why, did_compute = self._one_symbol(symbol, view, compute)
                 except Exception as exc:
                     status, why, did_compute = "error", f"{type(exc).__name__}: {exc}", False
                     errors += 1
@@ -289,14 +386,20 @@ class ScanCycle:
                         scanned += 1
                     if did_compute:
                         computed += 1
-                    if status == "scanned" and read_history is not None and evaluate_strategy is not None:
+                    if (status == "scanned" and signal_path
+                            and bar_open_epoch is not None and offset is not None):
                         wrote = self._try_signal(
                             journal, cycle_id, symbol, view, stamp,
-                            read_history, evaluate_strategy, build_order_intent,
+                            history_df, int(bar_open_epoch), int(offset),
+                            evaluate_strategy, build_order_intent,
                         )
                         if wrote is not None:
                             signals += wrote
-                self._symbol_row(journal, cycle_id, symbol, status, why, view.get("bar_ts"), stamp)
+                if signal_path:
+                    stored_bar = None if bar_open_epoch is None else str(bar_open_epoch)
+                else:
+                    stored_bar = view.get("bar_ts")
+                self._symbol_row(journal, cycle_id, symbol, status, why, stored_bar, stamp)
 
             header_status = "empty" if scanned == 0 else "recorded"
             self._header(
@@ -336,8 +439,8 @@ class ScanCycle:
             return _MISMATCH
         return None
 
-    def _one_symbol(self, symbol, view, compute) -> tuple[str, str, bool]:
-        """Filter, then optionally compute.
+    def _eligibility(self, view: dict) -> tuple[str, str] | None:
+        """Return a skip pair, or None when the symbol may be scanned.
 
         Existence precedes trade-mode, which precedes market-open, which
         precedes staleness: a symbol the broker does not list is NOT_FOUND,
@@ -347,13 +450,24 @@ class ScanCycle:
         """
         trade_mode = view.get("trade_mode")
         if trade_mode is None:
-            return "skipped", _SYMBOL_NOT_FOUND, False
+            return "skipped", _SYMBOL_NOT_FOUND
         if trade_mode == 0:
-            return "skipped", _TRADE_DISABLED, False
+            return "skipped", _TRADE_DISABLED
         if not view.get("market_open", False):
-            return "skipped", _MARKET_CLOSED, False
+            return "skipped", _MARKET_CLOSED
         if view.get("stale"):
-            return "skipped", _STALE_QUOTE, False
+            return "skipped", _STALE_QUOTE
+        return None
+
+    def _one_symbol(self, symbol, view, compute) -> tuple[str, str, bool]:
+        """Stage 1 path: the snapshot tick time is only a change detector.
+
+        Signal writing does not use this. A wired cycle calls
+        ``_signal_symbol``, which takes the bar open from the history frame.
+        """
+        skip = self._eligibility(view)
+        if skip is not None:
+            return skip[0], skip[1], False
         bar = view.get("bar_ts")
         bar_key = "" if bar is None else str(bar)
         if not bar_key or self._last_bar.get(symbol) == bar_key:
@@ -363,55 +477,114 @@ class ScanCycle:
         self._last_bar[symbol] = bar_key
         return "scanned", "", True if compute is not None else False
 
-    def _compute_decision_id(self, symbol: str, bar_close_ts: str) -> str:
-        """Deterministic UUID5 so the same bar never yields two decisions."""
+    def _signal_symbol(self, symbol, view, compute, read_history, offset):
+        """New-bar detection from the closed bar's open time.
+
+        Returns status, reason, did_compute, history frame, bar-open epoch.
+        The snapshot tick time is not a bar identity and is not stored.
+        An unaligned open is refused. An unsafe broker offset does not
+        consume the bar, so the next cycle can try again.
+        """
+        skip = self._eligibility(view)
+        if skip is not None:
+            return skip[0], skip[1], False, None, None
+        try:
+            df = read_history(symbol)
+        except Exception as exc:
+            return "error", f"{type(exc).__name__}: {exc}", False, None, None
+        epoch = closed_bar_open_epoch(df)
+        if epoch is None:
+            if not _is_history_frame(df) or len(df) == 0:
+                return "skipped", _NO_NEW_BAR, False, None, None
+            return "skipped", _BAR_NOT_ALIGNED, False, df, None
+        if self._last_bar.get(symbol) == str(epoch):
+            return "skipped", _NO_NEW_BAR, False, df, epoch
+        if offset is None:
+            return "skipped", _OFFSET_UNSAFE, False, df, epoch
+        if compute is not None:
+            compute(symbol, view)
+        self._last_bar[symbol] = str(epoch)
+        return "scanned", "", compute is not None, df, epoch
+
+    def _cycle_offset(self, views: Any, utc_now: float) -> int | None:
+        """Broker offset for this cycle, in seconds, or None to fail closed.
+
+        An explicit ``broker_offset_seconds`` is used as given (tests and a
+        known override). Otherwise the offset is detected from fresh tick
+        epochs on the snapshot. A detected value is kept only when it is
+        the first this process has seen, the same as the last, or exactly
+        one hour away from the last.
+        """
+        if self.broker_offset_seconds is not None:
+            return int(self.broker_offset_seconds)
+        epochs: list[int] = []
+        if isinstance(views, dict):
+            for view in views.values():
+                if isinstance(view, dict):
+                    epoch = _tick_epoch(view.get("bar_ts"))
+                    if epoch is not None:
+                        epochs.append(epoch)
+        detected = detect_broker_offset_seconds(epochs, utc_now)
+        return self._accept_offset(detected)
+
+    def _accept_offset(self, detected: int | None) -> int | None:
+        """Accept a detected offset, or None when the jump is not DST."""
+        if detected is None:
+            return None
+        previous = self._accepted_offset
+        if previous is None or detected == previous or abs(detected - previous) == 3600:
+            self._accepted_offset = int(detected)
+            return int(detected)
+        return None
+
+    def _compute_decision_id(self, symbol: str, bar_open_epoch: int) -> str:
+        """Deterministic UUID5 so the same closed bar never yields two decisions.
+
+        Inputs, in order, joined by ``|``: symbol, strategy label
+        ``confluence``, and the closed bar's open epoch (integer seconds
+        from the history frame).
+        """
         return str(uuid.uuid5(
-            _SIGNAL_NAMESPACE, f"{symbol}|{_STRATEGY_LABEL}|{bar_close_ts}",
+            _SIGNAL_NAMESPACE,
+            f"{symbol}|{_STRATEGY_LABEL}|{int(bar_open_epoch)}",
         ))
 
-    def _compute_expiry(self, bar_close_ts: str, created_iso: str) -> str:
+    def _expiry_from_bar_open(self, bar_open_epoch: int, created_iso: str,
+                              offset_seconds: int) -> str:
+        """Convert a broker bar open to UTC, then apply the expiry formula.
+
+        ``offset_seconds`` is broker-server minus UTC. Subtracting it from
+        the history epoch puts the bar open on the UTC clock. The bar close
+        is 15 minutes after that open. Expiry is
+        ``min(bar_close_utc + 900s, created_utc + 1800s)``.
+        """
+        open_utc = datetime.fromtimestamp(
+            int(bar_open_epoch) - int(offset_seconds), tz=timezone.utc,
+        )
+        close_utc = open_utc + timedelta(minutes=15)
+        return self._compute_expiry(close_utc.isoformat(), created_iso)
+
+    def _compute_expiry(self, bar_close_utc: str, created_iso: str) -> str:
         """Signal expiry in UTC ISO.
 
-        ``min(bar_close_ts + 900s, signal_created_at + 1800s)``.
+        ``min(bar_close_utc + 900s, created_utc + 1800s)``.
 
-        No weekend clamping: a signal whose raw expiry falls on a Saturday
-        or Sunday is simply expired at that time. The market is closed
-        anyway, so no approval can occur. Forward-clamping to Monday would
-        extend validity across the weekend, which is forbidden.
-
-        ``bar_close_ts`` may arrive as either an ISO-8601 string or a Unix
-        timestamp string (what the gateway stores from ``tick.time``).
-
-        Clock skew guard: when the bar close is more than ``MAX_CLOCK_SKEW``
-        (900 s) away from the signal-creation stamp, the two values are on
-        different clocks (e.g. the broker terminal is 3 h ahead of the
-        engine). Falling back to the creation bound alone keeps the expiry
-        on one consistent clock and prevents an immediate expiry (bar in
-        the past) or an over-long hold (bar in the far future).
+        Both arguments are UTC. Broker epochs are converted by
+        ``_expiry_from_bar_open`` before they reach this function. There is
+        no skew fallback and no weekend clamp: a Friday close that expires
+        on Friday stays on Friday.
         """
-        from engine.equity import MAX_CLOCK_SKEW_SECONDS
-
         try:
-            close_dt = datetime.fromisoformat(bar_close_ts)
+            close_dt = datetime.fromisoformat(bar_close_utc)
         except ValueError:
             close_dt = datetime.fromtimestamp(
-                float(bar_close_ts), tz=timezone.utc,
+                float(bar_close_utc), tz=timezone.utc,
             )
         if close_dt.tzinfo is None:
             close_dt = close_dt.replace(tzinfo=timezone.utc)
         created_dt = datetime.fromisoformat(created_iso)
         if created_dt.tzinfo is None:
             created_dt = created_dt.replace(tzinfo=timezone.utc)
-
-        skew = abs((close_dt - created_dt).total_seconds())
-        if skew > MAX_CLOCK_SKEW_SECONDS:
-            # The bar timestamp is from a different clock than the creation
-            # stamp (broker terminal 3 h ahead is the measured case). Use only
-            # the creation bound so the expiry stays on one consistent clock.
-            return (created_dt + timedelta(
-                seconds=_EXPIRY_CREATION_WINDOW
-            )).isoformat()
-
         raw_expiry = min(
             close_dt + timedelta(seconds=_EXPIRY_BAR_WINDOW),
             created_dt + timedelta(seconds=_EXPIRY_CREATION_WINDOW),
@@ -420,31 +593,32 @@ class ScanCycle:
 
     def _try_signal(self, journal: Journal, cycle_id: str, symbol: str,
                     view: dict, stamp: str,
-                    read_history: Callable[[str], Any],
+                    df: Any, bar_open_epoch: int, offset_seconds: int,
                     evaluate_strategy: Callable[[str, Any], Any],
                     build_order_intent: Callable | None) -> int | None:
-        """Attempt to read history, evaluate the strategy, and write a signal.
+        """Evaluate one closed bar and write at most one signal row.
+
+        ``bar_open_epoch`` is the history frame's last open, already checked
+        to be M15-aligned. The decision id, the stored ``bar_ts``, and the
+        idempotency key all use that integer. This method does not send an
+        order.
 
         Returns 1 if a signal row was written (PENDING or REJECTED), 0 if the
-        symbol was skipped for insufficient history, or None if no action was
-        taken (callables not wired).  Every row written is visible to the UI.
+        symbol was skipped, or None if evaluation failed.
         """
-        bar_ts = view.get("bar_ts")
-        if bar_ts is None:
-            return None
-        bar_close_ts = str(bar_ts)
-        decision_id = self._compute_decision_id(symbol, bar_close_ts)
+        decision_id = self._compute_decision_id(symbol, bar_open_epoch)
+        decision_inputs = f"{symbol}|{_STRATEGY_LABEL}|{int(bar_open_epoch)}"
+        existing = journal.query(
+            "SELECT id FROM signals WHERE symbol = ? AND strategy = ? "
+            "AND bar_ts = ? AND is_test = 0",
+            (symbol, _STRATEGY_LABEL, int(bar_open_epoch)),
+        )
+        if existing:
+            return 0
 
-        try:
-            df = read_history(symbol)
-        except Exception as exc:
-            journal.log_event(
-                "signal", f"{symbol}: history read failed: {exc}",
-                severity="WARNING", source="engine",
-                context={"kind": "history_read_error", "symbol": symbol,
-                         "cycle_id": cycle_id, "ts": stamp},
-            )
-            return None
+        bar_ts = int(bar_open_epoch)
+        expires_at = self._expiry_from_bar_open(
+            bar_ts, stamp, int(offset_seconds))
 
         if df is None or len(df) < _MIN_BARS_FOR_SIGNAL:
             journal.log_event(
@@ -453,7 +627,7 @@ class ScanCycle:
                 f"need {_MIN_BARS_FOR_SIGNAL})",
                 severity="DEBUG", source="engine",
                 context={"kind": _INSUFFICIENT_HISTORY, "symbol": symbol,
-                         "bar_ts": bar_close_ts, "cycle_id": cycle_id, "ts": stamp},
+                         "bar_ts": bar_ts, "cycle_id": cycle_id, "ts": stamp},
             )
             return 0
 
@@ -468,6 +642,11 @@ class ScanCycle:
             )
             return None
 
+        self._log_evaluation(
+            journal, symbol, signal, bar_ts, decision_id, decision_inputs,
+            cycle_id, stamp,
+        )
+
         if signal is None or not getattr(signal, "is_actionable", False):
             direction = getattr(signal, "direction", None) if signal else None
             journal.log_event(
@@ -476,7 +655,7 @@ class ScanCycle:
                 f"(direction={direction})",
                 severity="DEBUG", source="engine",
                 context={"kind": _STRATEGY_NO_SIGNAL, "symbol": symbol,
-                         "bar_ts": bar_close_ts, "decision_id": decision_id,
+                         "bar_ts": bar_ts, "decision_id": decision_id,
                          "cycle_id": cycle_id, "ts": stamp},
             )
             return 0
@@ -494,10 +673,11 @@ class ScanCycle:
                 threshold = 0.5 * abs(entry_price - stop_loss)
                 if threshold > 0 and drift > threshold:
                     self._write_signal_row(
-                        journal, symbol, direction, signal, bar_close_ts,
+                        journal, symbol, direction, signal, bar_ts,
                         stamp, decision_id, "REJECTED",
                         reject_reason=_DRIFT_BLOCKED,
                         blocks_json=self._blocks_json(signal),
+                        expires_at=expires_at,
                         is_test=False,
                     )
                     journal.log_lifecycle(
@@ -511,10 +691,11 @@ class ScanCycle:
         stop_loss = self._derive_stop(signal, df)
         if stop_loss is None:
             self._write_signal_row(
-                journal, symbol, direction, signal, bar_close_ts,
+                journal, symbol, direction, signal, bar_ts,
                 stamp, decision_id, "REJECTED",
                 reject_reason="no_stop_loss",
                 blocks_json=self._blocks_json(signal),
+                expires_at=expires_at,
                 is_test=False,
             )
             journal.log_lifecycle(
@@ -530,10 +711,11 @@ class ScanCycle:
             )
             if risk_reason:
                 self._write_signal_row(
-                    journal, symbol, direction, signal, bar_close_ts,
+                    journal, symbol, direction, signal, bar_ts,
                     stamp, decision_id, "REJECTED",
                     reject_reason=risk_reason,
                     blocks_json=self._blocks_json(signal),
+                    expires_at=expires_at,
                     is_test=False,
                 )
                 journal.log_lifecycle(
@@ -547,9 +729,8 @@ class ScanCycle:
             if score is None:
                 score = 0.0
             take_profit = getattr(signal, "take_profit", None)
-            expires_at = self._compute_expiry(bar_close_ts, stamp)
             self._write_signal_row(
-                journal, symbol, direction, signal, bar_close_ts,
+                journal, symbol, direction, signal, bar_ts,
                 stamp, decision_id, "PENDING",
                 entry_price=entry_price,
                 stop_loss=stop_loss,
@@ -569,9 +750,8 @@ class ScanCycle:
             return 1
 
         # No risk pre-check callable — write PENDING without sizing.
-        expires_at = self._compute_expiry(bar_close_ts, stamp)
         self._write_signal_row(
-            journal, symbol, direction, signal, bar_close_ts,
+            journal, symbol, direction, signal, bar_ts,
             stamp, decision_id, "PENDING",
             entry_price=entry_price,
             stop_loss=self._derive_stop(signal, df),
@@ -589,6 +769,37 @@ class ScanCycle:
             decision_id=decision_id, context={"kind": "signal_pending"},
         )
         return 1
+
+    def _log_evaluation(self, journal, symbol, signal, bar_open_epoch,
+                        decision_id, decision_inputs, cycle_id, stamp) -> None:
+        """Record one evaluate() result: five blocks, counts, decision."""
+        blocks = list(getattr(signal, "blocks", []) or []) if signal is not None else []
+        agree = sum(1 for block in blocks if getattr(block, "agrees", False))
+        payload = [{
+            "name": getattr(block, "name", str(block)),
+            "agrees": bool(getattr(block, "agrees", False)),
+            "detail": getattr(block, "detail", None),
+        } for block in blocks]
+        decision = getattr(signal, "direction", None) if signal is not None else None
+        journal.log_event(
+            "signal",
+            f"{symbol}: evaluate decision={decision or 'NONE'} "
+            f"agree={agree} disagree={len(blocks) - agree}",
+            severity="INFO", source="engine",
+            context={
+                "kind": "strategy_evaluation",
+                "symbol": symbol,
+                "decision": decision,
+                "agree": agree,
+                "disagree": len(blocks) - agree,
+                "blocks": payload,
+                "bar_open_epoch": int(bar_open_epoch),
+                "decision_id": decision_id,
+                "decision_id_inputs": decision_inputs,
+                "cycle_id": cycle_id,
+                "ts": stamp,
+            },
+        )
 
     def _drift_quote(self, view: dict, direction: str) -> float | None:
         """Return the executable quote for drift checking.
@@ -652,7 +863,7 @@ class ScanCycle:
         the bar close so the row is always valid.
         """
         if expires_at is None and status != "LEGACY":
-            expires_at = self._compute_expiry(bar_ts, stamp)
+            expires_at = self._expiry_from_bar_open(int(bar_ts), stamp, 0)
         score = getattr(signal, "confidence", 0.0)
         if score is None:
             score = 0.0

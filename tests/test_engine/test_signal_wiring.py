@@ -71,11 +71,20 @@ def test_engine_run_with_engine_wires_callables():
     }
     engine.guard = None
 
-    scanner = ScanCycle(symbols=["EURUSD"], interval_seconds=0)
-    # If run_with_engine cannot read read_history or evaluate_strategy,
-    # the outcome will have signals=0 and a scanned row only.
+    tick = "2026-10-18T21:00:00+00:00"
+    engine.gateway.snapshot.return_value["symbols"]["EURUSD"]["bar_ts"] = tick
+    scanner = ScanCycle(symbols=["EURUSD"], interval_seconds=0, broker_offset_seconds=0)
+    # A MagicMock history is not a frame. The cycle must call read_history
+    # and must not scan or store the snapshot tick as the bar.
     outcome = scanner.run_with_engine(engine)
-    assert outcome.scanned == 1
+    assert engine.read_history.called
+    assert engine.evaluate_strategy.called is False
+    assert outcome.scanned == 0
+    assert outcome.signals == 0
+    row = journal.query("SELECT bar_ts, reason FROM scan_symbols")[0]
+    assert row["bar_ts"] is None
+    assert row["reason"] == "NO_NEW_CLOSED_BAR"
+    assert row["bar_ts"] != tick
 
     # Engine.read_history and Engine.evaluate_strategy must be real methods,
     # not MagicMock auto-attrs, so the wiring is explicit.
@@ -85,3 +94,18 @@ def test_engine_run_with_engine_wires_callables():
         getattr(Engine, "evaluate_strategy", None) is not None
 
     journal.close()
+
+
+def test_scanner_ai_signals_enabled_loads_without_a_top_level_key():
+    """config.yaml sets the flag under scanner. The loader must see it."""
+    from pathlib import Path
+
+    import yaml
+
+    from engine.config import load_engine_config
+
+    root = Path(__file__).resolve().parents[2]
+    raw = yaml.safe_load((root / "config.yaml").read_text(encoding="utf-8"))
+    assert "ai_signals_enabled" not in raw
+    assert raw["scanner"]["ai_signals_enabled"] is True
+    assert load_engine_config().ai_signals_enabled is True

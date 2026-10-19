@@ -233,7 +233,8 @@ def load_engine_config(root: Path | str | None = None,
         scan_symbols=_flatten_whitelist(symbols_section.get("whitelist")),
         max_scan_seconds=max_scan_seconds,
         execution_mode=execution_mode,
-        ai_signals_enabled=bool(raw.get("ai_signals_enabled", False)),
+        ai_signals_enabled=bool(scanner_raw.get(
+            "ai_signals_enabled", raw.get("ai_signals_enabled", False))),
         volume_caps=_parse_volume_caps(symbols_section),
         volume_cap_default_multiplier=int(
             symbols_section.get("volume_cap_default_multiplier", 10)

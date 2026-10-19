@@ -42,16 +42,24 @@ class TestExpiryFormula:
         assert expiry == pytest.approx(expected_min.isoformat())
 
     def test_creation_bound_is_a_safety_cap(self):
-        """When the bar close is far from creation (clock skew > 900 s),
-        expiry falls back to created + 1800 s, staying on one consistent clock.
+        """min() keeps the earlier bound. A late creation does not replace it.
+
+        Bar close 20:59 and created 22:00: bar+900 (21:14) is earlier than
+        created+1800 (22:30). There is no skew fallback to created+1800.
         """
         cycle = _make_cycle()
         bar_close = "2026-10-16T20:59:00+00:00"
         created = "2026-10-16T22:00:00+00:00"  # 61 min after bar close
         expiry = cycle._compute_expiry(bar_close, created)
-        created_dt = datetime(2026, 10, 16, 22, 0, 0, tzinfo=timezone.utc)
-        expected = created_dt + timedelta(seconds=_EXPIRY_CREATION_WINDOW)
+        close_dt = datetime(2026, 10, 16, 20, 59, 0, tzinfo=timezone.utc)
+        expected = close_dt + timedelta(seconds=_EXPIRY_BAR_WINDOW)
         assert expiry == expected.isoformat()
+
+    def test_expiry_source_has_no_skew_fallback(self):
+        import inspect
+        source = inspect.getsource(ScanCycle._compute_expiry)
+        assert "MAX_CLOCK_SKEW" not in source
+        assert "falls back" not in source.lower()
 
 
 class TestFridayExpiry:
@@ -166,51 +174,85 @@ class TestUnixTimestampHandling:
         assert expiry_dt == min(expected_close, expected_created)
 
 
-class TestBrokerClockSkew:
-    """When the broker terminal clock differs from engine UTC, expiry must
-    fall back to the creation bound alone so both clocks are not mixed.
+def _expiry_for_offset(offset_hours: int) -> datetime:
+    """Friday 20:45 UTC bar open, seen on a broker clock ``offset_hours`` ahead.
 
-    Measured on the live MetaQuotes-Demo terminal: tick.time reported a
-    broker server epoch 3 h ahead of real UTC (UTC+3). A signal generated
-    Sunday 21:17 UTC would see bar_close = 00:17 Monday if the skew is not
-    detected — bar_close + 900 s is ~3 h in the future, and the only sane
-    expiry is created + 1800 s.
+    Close is 21:00 UTC. Created is 21:00:05 UTC. Expiry is the bar-close
+    bound, 21:15 UTC, not created+1800.
+    """
+    cycle = _make_cycle()
+    real_open = datetime(2026, 10, 16, 20, 45, tzinfo=timezone.utc)
+    broker_epoch = int(real_open.timestamp()) + offset_hours * 3600
+    assert broker_epoch % 900 == 0
+    created = "2026-10-16T21:00:05+00:00"
+    expiry = cycle._expiry_from_bar_open(broker_epoch, created, offset_hours * 3600)
+    return datetime.fromisoformat(expiry)
+
+
+class TestBrokerOffsetExpiry:
+    """Broker epochs are converted to UTC before the min() formula.
+
+    The old path treated a tick more than 900 s from creation as a reason
+    to ignore the bar and use created+1800. That path is gone.
     """
 
-    def test_plus_3h_broker_offset_falls_back_to_creation_bound(self):
-        """Bar close is 3 h ahead: expiry is created + 1800 s, not bar + 900 s."""
-        cycle = _make_cycle()
-        # Real UTC: Sunday 21:17
-        created = "2026-10-18T21:17:00+00:00"
-        # Broker ticks 3 h ahead → bar close reads Monday 00:17 UTC
-        bar_close_skewed = "2026-10-19T00:17:00+00:00"
-        expiry = cycle._compute_expiry(bar_close_skewed, created)
-        expiry_dt = datetime.fromisoformat(expiry)
-        created_dt = datetime(2026, 10, 18, 21, 17, 0, tzinfo=timezone.utc)
-        expected = created_dt + timedelta(seconds=_EXPIRY_CREATION_WINDOW)
-        assert expiry_dt == expected
+    def test_plus_3h_converts_to_utc_bar_close(self):
+        expiry = _expiry_for_offset(3)
+        assert expiry == datetime(2026, 10, 16, 21, 15, tzinfo=timezone.utc)
+        created = datetime(2026, 10, 16, 21, 0, 5, tzinfo=timezone.utc)
+        assert expiry != created + timedelta(seconds=_EXPIRY_CREATION_WINDOW)
 
-    def test_minus_3h_broker_offset_falls_back_to_creation_bound(self):
-        """Bar close is 3 h behind: expiry is still created + 1800 s."""
-        cycle = _make_cycle()
-        created = "2026-10-18T21:17:00+00:00"
-        bar_close_skewed = "2026-10-18T18:17:00+00:00"  # 3 h behind
-        expiry = cycle._compute_expiry(bar_close_skewed, created)
-        expiry_dt = datetime.fromisoformat(expiry)
-        created_dt = datetime(2026, 10, 18, 21, 17, 0, tzinfo=timezone.utc)
-        expected = created_dt + timedelta(seconds=_EXPIRY_CREATION_WINDOW)
-        assert expiry_dt == expected
+    def test_plus_2h_converts_to_utc_bar_close(self):
+        expiry = _expiry_for_offset(2)
+        assert expiry == datetime(2026, 10, 16, 21, 15, tzinfo=timezone.utc)
 
-    def test_plus_3h_unix_epoch_bar_ts(self):
-        """Same scenario but bar_ts is a Unix epoch (what the gateway stores)."""
+    def test_zero_offset_uses_the_epoch_as_utc(self):
+        expiry = _expiry_for_offset(0)
+        assert expiry == datetime(2026, 10, 16, 21, 15, tzinfo=timezone.utc)
+
+    def test_friday_close_expires_before_saturday(self):
+        """An M15 bar that opens Friday 20:45 UTC closes 21:00 and expires 21:15."""
+        expiry = _expiry_for_offset(0)
+        assert expiry.weekday() == 4
+        assert expiry.hour == 21 and expiry.minute == 15
+        saturday = datetime(2026, 10, 17, 0, 0, tzinfo=timezone.utc)
+        monday = datetime(2026, 10, 19, 0, 0, tzinfo=timezone.utc)
+        assert expiry < saturday < monday
+
+
+class TestBrokerOffsetDetection:
+    """Offset detection fails closed. DST is the only accepted change."""
+
+    def test_fresh_plus_3h_tick_is_three_hours(self):
+        from quote_clock import detect_broker_offset_seconds
+        now = 1_700_000_000.0
+        assert detect_broker_offset_seconds([int(now) + 10_800 - 2], now) == 10_800
+
+    def test_fresh_plus_2h_and_zero(self):
+        from quote_clock import detect_broker_offset_seconds
+        now = 1_700_000_000.0
+        assert detect_broker_offset_seconds([int(now) + 7_200], now) == 7_200
+        assert detect_broker_offset_seconds([int(now) + 5], now) == 0
+
+    def test_stale_tick_is_not_an_offset(self):
+        from quote_clock import detect_broker_offset_seconds
+        now = 1_700_000_000.0
+        stale = int(now) + 10_800 - 86_400
+        assert detect_broker_offset_seconds([stale], now) is None
+
+    def test_half_hour_offset_fails_closed(self):
+        from quote_clock import detect_broker_offset_seconds
+        now = 1_700_000_000.0
+        assert detect_broker_offset_seconds([int(now) + 5 * 3600 + 1800], now) is None
+
+    def test_dst_one_hour_step_is_accepted(self):
         cycle = _make_cycle()
-        # Real UTC: Sunday 21:17
-        created = "2026-10-18T21:17:00+00:00"
-        # Broker epoch is 3 h ahead: 00:17 Monday UTC as Unix ts
-        real_ts = datetime(2026, 10, 18, 21, 17, 0, tzinfo=timezone.utc).timestamp()
-        skewed_ts = str(int(real_ts) + 10_800)  # +3 h in seconds
-        expiry = cycle._compute_expiry(skewed_ts, created)
-        expiry_dt = datetime.fromisoformat(expiry)
-        created_dt = datetime(2026, 10, 18, 21, 17, 0, tzinfo=timezone.utc)
-        expected = created_dt + timedelta(seconds=_EXPIRY_CREATION_WINDOW)
-        assert expiry_dt == expected
+        assert cycle._accept_offset(2 * 3600) == 2 * 3600
+        assert cycle._accept_offset(3 * 3600) == 3 * 3600
+        assert cycle._accepted_offset == 3 * 3600
+
+    def test_two_hour_jump_is_refused(self):
+        cycle = _make_cycle()
+        assert cycle._accept_offset(0) == 0
+        assert cycle._accept_offset(2 * 3600) is None
+        assert cycle._accepted_offset == 0
