@@ -36,6 +36,7 @@ class ApprovalContext:
     executor: Any
     tick_provider: Callable[[str], Any]
     market_view: Callable[[str], dict]
+    spec_provider: Callable[[str], dict | None] | None = None
     decided_by: str = "engine"
 
     @classmethod
@@ -49,6 +50,21 @@ class ApprovalContext:
                 return gateway.symbol_info_tick(symbol)
             except Exception:  # noqa: BLE001
                 return None
+
+        def spec(symbol: str) -> dict | None:
+            if gateway is None:
+                return None
+            try:
+                info = gateway.symbol_info(symbol)
+            except Exception:  # noqa: BLE001
+                return None
+            if info is None:
+                return None
+            value = float(getattr(info, "trade_tick_value", 0.0) or 0.0)
+            size = float(getattr(info, "trade_tick_size", 0.0) or 0.0)
+            if not value or not size:
+                return None
+            return {"trade_tick_value": value, "trade_tick_size": size}
 
         def view(symbol: str) -> dict:
             if gateway is None:
@@ -74,6 +90,7 @@ class ApprovalContext:
             executor=getattr(engine, "executor", None),
             tick_provider=tick,
             market_view=view,
+            spec_provider=spec,
             decided_by="engine",
         )
 
@@ -147,6 +164,12 @@ def _handle(ctx: ApprovalContext, params: dict, *, approve: bool) -> CommandOutc
 
     if ctx.risk is None or ctx.account is None:
         return _fail("risk gate unavailable", decision_id=decision_id)
+    if ctx.risk._spec_for(symbol) is None and ctx.spec_provider is not None:
+        loaded = ctx.spec_provider(symbol)
+        if loaded:
+            merged = dict(getattr(ctx.risk, "_specs", {}) or {})
+            merged[symbol.upper()] = loaded
+            ctx.risk.set_symbol_specs(merged)
     try:
         intent = ctx.risk.build_order_intent(
             symbol=symbol, side=direction, volume=volume,
