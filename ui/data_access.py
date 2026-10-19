@@ -1123,6 +1123,12 @@ def read_journal_table(
 
 
 
+def get_production_stats() -> dict[str, Any]:
+    """Portfolio/header numbers that may be fed by trades. TEST SIGNAL excluded."""
+    from ui.stats import production_stats
+    return production_stats(_configured_db_path())
+
+
 def system_status(db_path: Path | None = None) -> dict[str, Any]:
     """Read-only system facts for the System Status card.
 
@@ -1206,19 +1212,18 @@ def system_status(db_path: Path | None = None) -> dict[str, Any]:
                 pending_signals = int(sig_row["n"]) if sig_row else 0
             except sqlite3.OperationalError:
                 pass
-            # -- last executed trade + trades today (journal-derived) --------
-            # Run on the open connection. Querying after the block above closes
-            # it raised ProgrammingError, which was swallowed, so the card never
-            # showed a real trade count. trades_today stays None unless counted.
-            trade = conn.execute(
-                "SELECT ticket, symbol, side, volume, entry_price, "
-                "exit_price, status, ts FROM trades ORDER BY id DESC LIMIT 1"
-            ).fetchone()
-            today = datetime.now(timezone.utc).date()
-            counted = conn.execute(
-                "SELECT COUNT(*) AS n FROM trades WHERE DATE(ts) = ?",
-                (today.isoformat(),),
-            ).fetchone()
+            # -- last executed trade + trades today (production only) --------
+            # TEST SIGNAL tickets are excluded. A real zero is only reported
+            # after the trades table was actually classified.
+            from engine.test_signal import classify_trades
+            classified = classify_trades(conn)
+            production = [row for row in classified if not row["is_test"]]
+            trade = production[-1] if production else None
+            today = datetime.now(timezone.utc).date().isoformat()
+            counted_n = sum(
+                1 for row in production
+                if str(row["ts"] or "").startswith(today)
+            )
     except sqlite3.Error as exc:
         LOG.warning("system status read failed: %s", exc)
         return status
@@ -1236,7 +1241,7 @@ def system_status(db_path: Path | None = None) -> dict[str, Any]:
             "status": trade["status"],
             "ts": trade["ts"],
         }
-    status["trades_today"] = int(counted["n"]) if counted else None
+    status["trades_today"] = counted_n
 
     status["schema_version"] = version["v"] if version else None
     if schema_old:

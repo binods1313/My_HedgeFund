@@ -387,7 +387,7 @@ def list_proposals(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 
 
 def link_journal(conn: sqlite3.Connection, engine_db: Path) -> int:
-    """Copy trade ids from the journal. Realised P&L stays empty when the journal has none."""
+    """Copy production trade ids. TEST SIGNAL tickets are not linked."""
     if not engine_db.is_file():
         return 0
     uri = engine_db.resolve().as_uri() + "?mode=ro"
@@ -395,8 +395,13 @@ def link_journal(conn: sqlite3.Connection, engine_db: Path) -> int:
     source.row_factory = sqlite3.Row
     try:
         trades = source.execute(
-            "SELECT id, symbol FROM trades ORDER BY id"
+            "SELECT id, ticket, symbol FROM trades ORDER BY id"
         ).fetchall()
+        from engine.test_signal import is_test_ticket
+        trades = [
+            trade for trade in trades
+            if not is_test_ticket(source, int(trade["ticket"]))
+        ]
     except sqlite3.Error:
         source.close()
         return 0

@@ -10,6 +10,7 @@ from ui.components.data_cache import equity_history
 from ui.components.journal_tables import render_journal_tables, render_system_status
 from ui.components.snapshot import RunSnapshot
 from ui.equity_curve import clean_equity_points
+from ui.data_access import get_production_stats
 from ui.performance import performance_report, slice_window
 
 
@@ -35,10 +36,12 @@ def render_portfolio_view(snapshot: RunSnapshot) -> None:
 
 
 def render_performance(currency: str, values: list[float]) -> None:
-    """Equity-snapshot metrics. Win/loss stays hidden until realised P&L exists."""
+    """Snapshot change/drawdown/Sharpe; win/loss from production trades only."""
     with accent_card("green", "portfolio-performance"):
         st.subheader("Performance")
-        st.caption("from equity snapshots")
+        st.caption("Equity change, drawdown, Sharpe: broker equity snapshots")
+        stats = get_production_stats()
+        realised = stats["realised"] or None
         window = st.segmented_control(
             "Equity window",
             ["All", "Last 30", "Last 7"],
@@ -47,7 +50,8 @@ def render_performance(currency: str, values: list[float]) -> None:
             width="stretch",
             wrap=True,
         )
-        report = performance_report(slice_window(values, window or "All"), realised=None)
+        report = performance_report(
+            slice_window(values, window or "All"), realised=realised)
         st.caption(str(report["annualisation"]))
         change = report["change"]
         drawdown = report["max_drawdown_pct"]
@@ -65,6 +69,10 @@ def render_performance(currency: str, values: list[float]) -> None:
         if "win_loss" in report:
             ratio = report["win_loss"]
             st.metric("Win/loss", "—" if ratio is None else f"{ratio:.2f}")
+        st.caption(
+            "Win/loss: closed production trades (TEST SIGNAL excluded). "
+            + str(stats["sources"]["win_loss"])
+        )
 
 
 def _portfolio_equity(snapshot: RunSnapshot) -> list[float]:

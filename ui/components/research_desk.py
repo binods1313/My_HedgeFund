@@ -218,6 +218,7 @@ def _age(stamp: str) -> str:
 
 
 def _track(conn, agent_id: str, horizon: int, minimum: int) -> str:
+    """Shadow prediction samples. Journal TEST SIGNAL trades are not counted."""
     if conn is None:
         return "samples 0 · INSUFFICIENT"
     summary = summarise(samples_for(conn, agent_id, horizon), minimum=minimum)

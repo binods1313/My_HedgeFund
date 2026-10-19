@@ -51,7 +51,7 @@ def render_analytics_row(frame: pd.DataFrame, account: AccountSnapshot | None) -
     with equity_col:
         with st.container(border=True, key="card-green-equity"):
             _function_icon(_EQUITY_ICON)
-            st.caption("📈 Engine equity curve")
+            st.caption("📈 Engine equity curve (broker snapshots)")
             view = _chart_choice("Equity chart", ["Line", "Area"], "w_equity_view", "Line")
             points = _equity_points()
             currency = account.currency if account and account.currency else None
