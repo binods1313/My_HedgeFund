@@ -38,7 +38,10 @@ def _confirm_close_all_dialog() -> None:
     if positions is None or getattr(positions, "empty", True):
         tickets: list[int] = []
     else:
-        tickets = [int(ticket) for ticket in positions.get("ticket", []) if pd.notna(ticket)]
+        managed = positions
+        if "managed" in positions.columns:
+            managed = positions[positions["managed"] == True]  # noqa: E712
+        tickets = [int(ticket) for ticket in managed.get("ticket", []) if pd.notna(ticket)]
     st.warning(f"This will send close requests for {len(tickets)} open position(s).")
     cancel_col, confirm_col = st.columns(2)
     with cancel_col:
@@ -83,6 +86,8 @@ def render_positions_matrix(snapshot: RunSnapshot) -> None:
                         f"sl {row.get('sl')}  tp {row.get('tp')}  ·  P&L {arrow} {pnl_text}"
                     )
                 with action:
+                    if not row.get("managed"):
+                        continue
                     if st.button("Close", key=f"close_{int(ticket)}", width="stretch"):
                         st.session_state["pending_close_ticket"] = int(ticket)
                         st.rerun(scope="app")

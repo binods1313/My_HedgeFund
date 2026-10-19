@@ -19,6 +19,7 @@ dangerous.
 
 from __future__ import annotations
 
+import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
@@ -33,6 +34,28 @@ from engine.journal import (
     Journal,
     utc_now_iso,
 )
+
+
+def _decision_id_for_ticket(journal: Journal, ticket: int) -> str:
+    """The decision id last journaled for this ticket, or empty."""
+    try:
+        rows = journal.query(
+            "SELECT context_json FROM events "
+            "WHERE json_extract(context_json, '$.ticket') = ? "
+            "ORDER BY id DESC LIMIT 8",
+            (int(ticket),),
+        )
+    except Exception:  # noqa: BLE001
+        return ""
+    for row in rows:
+        try:
+            ctx = json.loads(row["context_json"] or "{}")
+        except (TypeError, ValueError):
+            continue
+        did = ctx.get("decision_id")
+        if did:
+            return str(did)
+    return ""
 
 MODE_PAPER = "PAPER"
 MODE_LIVE = "LIVE"
@@ -364,7 +387,8 @@ class PaperExecutor(Executor):
                                price=price, mode=MODE_PAPER,
                                message="simulated fill")
 
-    def close(self, ticket: int) -> ExecutionResult:
+    def close(self, ticket: int, *, reason: str = "",
+              decision_id: str = "") -> ExecutionResult:
         position = self._positions.get(int(ticket))
         if position is None and self.journal:
             rows = self.journal.query(
@@ -383,15 +407,25 @@ class PaperExecutor(Executor):
 
         self._positions.pop(int(ticket), None)
         if self.journal:
+            chain_id = decision_id or _decision_id_for_ticket(
+                self.journal, int(ticket))
             self.journal.delete_position(int(ticket))
             self.journal.execute(
                 "UPDATE trades SET status = ?, exit_price = ?, updated_at = ? "
                 "WHERE ticket = ?",
                 (TRADE_CLOSED, price, utc_now_iso(), int(ticket)))
+            context = {"ticket": int(ticket), "profit": profit,
+                       "price": price, "reason": reason or "",
+                       "decision_id": chain_id}
             self.journal.log_event("trade", "paper position closed",
-                                   source="executor",
-                                   context={"ticket": int(ticket),
-                                            "profit": profit})
+                                   source="executor", context=context)
+            if chain_id:
+                self.journal.log_lifecycle(
+                    Journal.LIFECYCLE_ORDER_CLOSED,
+                    f"paper position closed ticket={int(ticket)} "
+                    f"reason={reason or 'CLOSE'}",
+                    decision_id=chain_id, source="executor",
+                    context=context)
 
         return ExecutionResult(ok=True, status=TRADE_CLOSED,
                                ticket=int(ticket), price=price,

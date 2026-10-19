@@ -44,6 +44,9 @@ _ENGINE_STATE_MAP = {
 #: the harness's lookback headroom so a manual anchor is comparable to an
 #: automated one.
 _ANCHOR_BARS = 100
+#: PaperExecutor mints tickets from this floor. A broker ticket is never
+#: in this sequence, and a paper ticket is never sent to MT5.
+_PAPER_TICKET_FLOOR = 9_000_000
 
 
 @dataclass(frozen=True)
@@ -296,10 +299,59 @@ def get_recent_events(limit: int = 100) -> pd.DataFrame:
     )
 
 
+def _journal_paper_position_rows() -> list[dict[str, Any]]:
+    """Open PAPER fills from the journal. They never appear in MT5."""
+    try:
+        journal = Journal(_ui_journal_path(), migrate=False)
+    except Exception:  # noqa: BLE001
+        return []
+    try:
+        trades = journal.query(
+            "SELECT ticket, symbol, side, volume, entry_price, sl, tp, "
+            "magic, ts FROM trades WHERE broker = 'PAPER' AND status = ?",
+            ("OPEN",),
+        )
+        positions = {int(row["ticket"]): row for row in journal.positions()}
+        rows: list[dict[str, Any]] = []
+        for trade in trades:
+            ticket = int(trade["ticket"])
+            if ticket < _PAPER_TICKET_FLOOR:
+                continue
+            pos = positions.get(ticket, {})
+            rows.append({
+                "ticket": ticket,
+                "symbol": trade["symbol"],
+                "type": trade["side"],
+                "volume": trade["volume"],
+                "price_open": pos.get("price_open", trade["entry_price"]),
+                "price_current": pos.get("price_current", trade["entry_price"]),
+                "sl": pos.get("sl", trade["sl"]),
+                "tp": pos.get("tp", trade["tp"]),
+                "profit": pos.get("profit", 0.0),
+                "magic": pos.get("magic", trade["magic"]),
+                "time": trade["ts"],
+            })
+        return rows
+    except Exception as exc:  # noqa: BLE001
+        LOG.warning("journal paper positions unreadable: %s", exc)
+        return []
+    finally:
+        try:
+            journal.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def get_active_positions() -> pd.DataFrame:
     """Return the fixed schema the UI expects, even when the broker is offline."""
     try:
         raw = get_open_positions() if initialize_mt5() else []
+        seen = {int(pos["ticket"]) for pos in raw if pos.get("ticket") is not None}
+        for pos in _journal_paper_position_rows():
+            ticket = int(pos["ticket"])
+            if ticket not in seen:
+                raw.append(pos)
+                seen.add(ticket)
         symbol_infos = {}
         for pos in raw:
             symbol = pos.get("symbol")
@@ -801,22 +853,108 @@ def submit_order(asset: str, direction: str, lots: float,
                   str(result.message or result.status), result.ticket)
 
 
+def _ui_journal_path() -> Path:
+    """The journal the dashboard writes and reads.
+
+    ``submit_order`` uses ``config.db_path``. Close and the positions
+    matrix must use the same path so a paper fill is visible to close.
+    """
+    try:
+        config = load_engine_config()
+        path = getattr(config, "db_path", None)
+        if path:
+            return Path(path)
+    except Exception:  # noqa: BLE001
+        pass
+    return _configured_db_path()
+
+
+def _is_paper_ticket(journal: Journal, ticket: int) -> bool:
+    """True only when the journal proves this ticket is a PAPER fill.
+
+    Both ``broker=PAPER`` and the 9_000_000 sequence are required. A
+    broker ticket, even one whose number happens to look similar, must
+    take the live close path. A paper ticket must never reach
+    ``mt5.order_send``.
+    """
+    row = journal.query_one(
+        "SELECT broker, ticket FROM trades WHERE ticket = ?", (int(ticket),))
+    if row is None:
+        return False
+    try:
+        number = int(row["ticket"])
+    except (TypeError, ValueError):
+        return False
+    return str(row["broker"] or "") == "PAPER" and number >= _PAPER_TICKET_FLOOR
+
+
+def _close_paper_ticket(journal: Journal, ticket: int) -> Result:
+    """Close a paper fill through PaperExecutor. Never calls the broker."""
+    from engine.executor import PaperExecutor
+
+    snapshot = get_account_snapshot()
+    executor = PaperExecutor(
+        journal=journal,
+        state=_ENGINE_STATE_MAP.get(snapshot.engine_state),
+        tick_provider=_live_tick,
+    )
+    try:
+        result = executor.close(int(ticket), reason="MANUAL")
+    except ExecutionRejected as exc:
+        return Result(False, "EXECUTION_REJECTED", str(exc), int(ticket))
+    except Exception as exc:  # noqa: BLE001
+        LOG.warning("paper close failed for %s: %s", ticket, exc)
+        return Result(False, "EXECUTION_ERROR",
+                      "The paper close failed; see application log", int(ticket))
+    if not result.ok:
+        return Result(False, str(result.status),
+                      str(result.message or result.status), int(ticket))
+    return Result(True, str(result.status),
+                  str(result.message or "simulated close"), int(ticket))
+
+
 def close_position(ticket: int) -> Result:
-    """Close a position through the existing engine path and surface any refusal cleanly."""
+    """Close a paper ticket in the journal, or a broker ticket on MT5.
+
+    Account mismatch is checked first. A PAPER 9_000_000-sequence ticket
+    is closed through ``PaperExecutor.close`` and never reaches
+    ``mt5.order_send``. Any other ticket keeps the existing broker close.
+    """
     mismatch = _journal_account_matches()
     if mismatch is not None:
         return mismatch
+
+    ticket = int(ticket)
+    from engine.journal import SchemaTooOld
+    journal = None
     try:
-        payload = broker_close_position(int(ticket))
+        journal = Journal(_ui_journal_path(), migrate=False)
+        if _is_paper_ticket(journal, ticket):
+            return _close_paper_ticket(journal, ticket)
+    except SchemaTooOld:
+        return Result(False, "SCHEMA_OLD", SchemaTooOld.TEXT, ticket)
+    except Exception as exc:  # noqa: BLE001
+        LOG.warning("close_position journal read failed for %s: %s", ticket, exc)
+    finally:
+        if journal is not None:
+            try:
+                journal.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    try:
+        payload = broker_close_position(ticket)
     except Exception as exc:
         LOG.warning("close_position failed for %s: %s", ticket, exc)
-        return Result(False, "BROKER_ERROR", "Close request failed; see application log", int(ticket))
+        return Result(False, "BROKER_ERROR", "Close request failed; see application log", ticket)
 
     if not isinstance(payload, dict):
         LOG.warning("close_position returned an unexpected result type: %s", type(payload).__name__)
-        return Result(False, "BROKER_ERROR", "Broker returned an invalid close result", int(ticket))
+        return Result(False, "BROKER_ERROR", "Broker returned an invalid close result", ticket)
     if not payload.get("success", False):
-        return Result(False, str(payload.get("status", "CLOSE_FAILED")), str(payload.get("message", "Close failed")), int(ticket))
+        return Result(False, str(payload.get("status", "CLOSE_FAILED")), str(payload.get("message", "Close failed")), ticket)
+    return Result(True, str(payload.get("status", "CLOSED")),
+                  str(payload.get("message") or "closed"), ticket)
 
 
 # -- read-only journal tables (Journal tab) ---------------------------------

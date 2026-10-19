@@ -72,6 +72,7 @@ def get_open_positions() -> list:
             "profit": round(pos.profit, 2),
             "swap": pos.swap,
             "comment": pos.comment,
+            "magic": getattr(pos, "magic", None),
         })
     return pos_list
 
