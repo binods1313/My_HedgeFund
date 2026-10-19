@@ -434,6 +434,34 @@ class TestAccountMismatch:
     class exists to prove the guard actually bites.
     """
 
+    def test_matching_paper_account_is_allowed(self, monkeypatch, tmp_path):
+        """The live BUY failed here: Row has no .get, so the check raised
+        AttributeError and the UI reported 'could not be verified'."""
+        db = tmp_path / "engine.db"
+        journal = Journal(db)
+        journal.set_account_fingerprint(
+            login=5057151780, currency="USD",
+            server="MetaQuotes-Demo", magic=100100)
+        journal.close()
+        monkeypatch.setattr(data_access, "_ui_journal_path", lambda: db)
+        monkeypatch.setattr(data_access, "_configured_db_path", lambda: db)
+        monkeypatch.setattr(
+            data_access.data_engine, "get_account_telemetry",
+            lambda: {"connected": True, "login": 5057151780,
+                     "currency": "USD", "server": "MetaQuotes-Demo"})
+        assert data_access._journal_account_matches() is None
+
+    def test_fingerprint_row_get_does_not_raise(self, tmp_path):
+        journal = Journal(tmp_path / "fp.db")
+        journal.set_account_fingerprint(
+            login=5057151780, currency="USD",
+            server="MetaQuotes-Demo", magic=100100)
+        stored = journal.get_account_fingerprint()
+        journal.close()
+        assert isinstance(stored, dict)
+        assert stored.get("login") == 5057151780
+        assert stored.get("currency") == "USD"
+
     def test_submit_order_is_refused_on_a_mismatched_account(
             self, monkeypatch, tmp_path):
         _stub_market(monkeypatch, tmp_path)

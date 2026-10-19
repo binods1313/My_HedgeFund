@@ -630,7 +630,7 @@ def _journal_account_matches() -> Result | None:
 
         from engine.journal import Journal, SchemaTooOld
         try:
-            journal = Journal(_configured_db_path(), migrate=False)
+            journal = Journal(_ui_journal_path(), migrate=False)
         except SchemaTooOld:
             return Result(False, "SCHEMA_OLD", SchemaTooOld.TEXT)
         try:
@@ -643,14 +643,17 @@ def _journal_account_matches() -> Result | None:
                           "This journal has no account fingerprint; "
                           "order not submitted.")
         if not live.matches(Fingerprint(
-                login=stored.get("login"), currency=stored.get("currency"))):
+                login=stored.get("login"),
+                currency=stored.get("currency"),
+                server=stored.get("server"))):
             return Result(False, "ACCOUNT_MISMATCH",
                           "Account mismatch; order not submitted.")
         return None
     except Exception as exc:
         LOG.warning("account fingerprint check failed: %s", exc)
         return Result(False, "ACCOUNT_MISMATCH",
-                      "Account could not be verified; order not submitted.")
+                      f"Account could not be verified ({type(exc).__name__}); "
+                      "order not submitted.")
 
 
 def submit_order(asset: str, direction: str, lots: float,

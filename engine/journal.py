@@ -601,12 +601,17 @@ class Journal:
         )
 
     def get_account_fingerprint(self) -> dict | None:
-        """The account this journal was created for, or None if unset."""
+        """The account this journal was created for, or None if unset.
+
+        Always a plain dict. sqlite3.Row has no ``.get``; the UI fingerprint
+        check used that and turned the AttributeError into a false mismatch.
+        """
         if self.current_version() < 2:
             return None
-        return self.query_one(
+        row = self.query_one(
             "SELECT login, currency, server, magic, recorded_at "
             "FROM journal_account WHERE id = 1")
+        return dict(row) if row else None
 
     def get_state(self) -> dict | None:
         row = self.query_one("SELECT * FROM engine_state WHERE id = 1")
