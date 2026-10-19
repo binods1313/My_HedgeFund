@@ -52,7 +52,7 @@ def _confirm_order_dialog() -> None:
                 stop_units=pending["stop_units"],
                 slippage=pending["slippage"],
                 whitelist=pending["whitelist"],
-                submit_token=pending["token"],
+                order_token=pending["token"],
             )
             if not report.ok:
                 st.error("Order blocked by current checks")
