@@ -78,7 +78,7 @@ If a click lands on one of those, stop and say so. Do not confirm a second dialo
 
 ## Per view
 
-Exchange. Heading area shows the selected symbol. The chart is in the wide column. Ideas watchlist is under the chart and the secondary-data panel, inside `st-key-ideas-watchlist`. The order form is in the narrow column. Submit stays disabled when the broker is disconnected. Limit and conditional stay disabled with the caption `engine does not support this yet`. Pattern marks are shapes. Hover one for the short code. They are not required to show a long name on the candle.
+Exchange. Heading area shows the selected symbol. The chart is in the wide column. Ideas watchlist is under the chart and the secondary-data panel, inside `st-key-ideas-watchlist`. The order form is in the narrow column. Submit stays disabled when the broker is disconnected. Limit and conditional stay disabled with the caption `Not available yet (market orders only)`. Pattern marks are shapes. Hover one for the short code. They are not required to show a long name on the candle.
 
 Portfolio. Click `💼 Portfolio`. The view title is `Portfolio`. Equity and Open P&L match the header metrics from the same run, to the cent. There is no second number from a different fetch.
 

@@ -19,7 +19,11 @@ def test_alert_signature_and_dismiss() -> None:
 def test_unsupported_order_sentence() -> None:
     assert unsupported_order_message("Market") == ""
     assert unsupported_order_message("limit") == UNSUPPORTED
-    assert unsupported_order_message("Conditional") == "engine does not support this yet"
+    assert unsupported_order_message("Conditional") == "Not available yet (market orders only)"
+    assert UNSUPPORTED == "Not available yet (market orders only)"
+    from ui.order_types import CONDITIONAL_HELP, LIMIT_HELP
+    assert UNSUPPORTED in LIMIT_HELP
+    assert UNSUPPORTED in CONDITIONAL_HELP
 
 
 def test_equity_cleaner_drops_gaps_and_non_positive() -> None:

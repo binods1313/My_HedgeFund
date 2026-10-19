@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-UNSUPPORTED = "engine does not support this yet"
+UNSUPPORTED = "Not available yet (market orders only)"
 
 MARKET_HELP = "Fills now at the current price."
 LIMIT_HELP = (

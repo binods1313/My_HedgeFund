@@ -1,6 +1,6 @@
 # Pending orders — design only
 
-This document does not change the engine. Limit, stop, and conditional orders stay unavailable in the UI until an operator signs the checklist at the end. The current caption remains `engine does not support this yet`. Market orders, Submit, and Close are unchanged.
+This document does not change the engine. Limit, stop, and conditional orders stay unavailable in the UI until an operator signs the checklist at the end. The current caption remains `Not available yet (market orders only)`. Market orders, Submit, and Close are unchanged.
 
 ## States
 
