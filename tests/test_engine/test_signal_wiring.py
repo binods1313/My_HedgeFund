@@ -96,6 +96,35 @@ def test_engine_run_with_engine_wires_callables():
     journal.close()
 
 
+def test_evaluate_strategy_calls_the_function_build_engine_stores():
+    """build_engine assigns engine.strategy.evaluate, a bare function.
+
+    Engine.evaluate_strategy must call that function. Calling .evaluate
+    on it raises AttributeError and the scan writes no verdict.
+    """
+    seen = {}
+
+    def strategy_fn(symbol, df):
+        seen["symbol"] = symbol
+        seen["df"] = df
+        return "signal"
+
+    engine = Engine.__new__(Engine)
+    engine.strategy = strategy_fn
+    assert engine.evaluate_strategy("EURUSD", ["bars"]) == "signal"
+    assert seen == {"symbol": "EURUSD", "df": ["bars"]}
+
+
+def test_evaluate_strategy_calls_an_object_with_evaluate():
+    class Box:
+        def evaluate(self, symbol, df):
+            return (symbol, len(df))
+
+    engine = Engine.__new__(Engine)
+    engine.strategy = Box()
+    assert engine.evaluate_strategy("GBPUSD", [1, 2, 3]) == ("GBPUSD", 3)
+
+
 def test_scanner_ai_signals_enabled_loads_without_a_top_level_key():
     """config.yaml sets the flag under scanner. The loader must see it."""
     from pathlib import Path

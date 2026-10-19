@@ -145,7 +145,14 @@ class Engine:
         """
         if self.strategy is None:
             return None
-        return self.strategy.evaluate(symbol, df)
+        # build_engine stores the evaluate function. A double may be an
+        # object with an evaluate method. A bare function has no evaluate
+        # attribute; calling .evaluate on it raises AttributeError and
+        # the scan records no verdict.
+        method = getattr(self.strategy, "evaluate", None)
+        if callable(method):
+            return method(symbol, df)
+        return self.strategy(symbol, df)
 
     @property
     def account(self) -> Any:
