@@ -1214,16 +1214,24 @@ def system_status(db_path: Path | None = None) -> dict[str, Any]:
                 pass
             # -- last executed trade + trades today (production only) --------
             # TEST SIGNAL tickets are excluded. A real zero is only reported
-            # after the trades table was actually classified.
-            from engine.test_signal import classify_trades
-            classified = classify_trades(conn)
-            production = [row for row in classified if not row["is_test"]]
-            trade = production[-1] if production else None
-            today = datetime.now(timezone.utc).date().isoformat()
-            counted_n = sum(
-                1 for row in production
-                if str(row["ts"] or "").startswith(today)
-            )
+            # after the trades table was actually classified. classify_trades
+            # queries the decision_id column on signals, which only exists in
+            # the current schema; skip it on older journals to avoid a crash
+            # that would mask the schema-notice path below.
+            if not schema_old:
+                from engine.test_signal import classify_trades
+                classified = classify_trades(conn)
+                production = [row for row in classified if not row["is_test"]]
+                trade = production[-1] if production else None
+                today = datetime.now(timezone.utc).date().isoformat()
+                counted_n = sum(
+                    1 for row in production
+                    if str(row["ts"] or "").startswith(today)
+                )
+            else:
+                production = []
+                trade = None
+                counted_n = 0
     except sqlite3.Error as exc:
         LOG.warning("system status read failed: %s", exc)
         return status
