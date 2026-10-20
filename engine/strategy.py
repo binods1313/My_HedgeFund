@@ -44,6 +44,22 @@ from engine.indicators.trend import EmaRibbon, ema_ribbon, vwap
 BUY = "BUY"
 SELL = "SELL"
 
+#: Sweep/setup side is BUY/SELL; the ribbon speaks BULLISH/BEARISH/MIXED.
+_SIDE_TO_RIBBON = {BUY: "BULLISH", SELL: "BEARISH"}
+
+
+def ribbon_matches_side(wanted: str | None, ribbon_direction: str) -> bool:
+    """True when the EMA ribbon direction is the same side as the setup.
+
+    BUY maps to BULLISH, SELL to BEARISH. MIXED and the opposite stack
+    disagree. Comparing the raw strings (BUY == BULLISH) is always false
+    and made five-block agreement unreachable.
+    """
+    mapped = _SIDE_TO_RIBBON.get(str(wanted or "").upper())
+    if mapped is None:
+        return False
+    return str(ribbon_direction) == mapped
+
 
 @dataclass(frozen=True)
 class Block:
@@ -178,7 +194,7 @@ def evaluate(symbol: str, df: pd.DataFrame, *,
     # -- 4. EMA ribbon ---------------------------------------------------
     ribbon = ema_ribbon(df)
     signal.ribbon = ribbon
-    ribbon_ok = (ribbon.direction == wanted)
+    ribbon_ok = ribbon_matches_side(wanted, ribbon.direction)
     signal.blocks.append(Block(
         "ema ribbon", ribbon_ok,
         f"{ribbon.direction} stack "
