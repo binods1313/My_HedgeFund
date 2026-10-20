@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+import random
 import sys
 import time
 from collections import defaultdict
@@ -83,10 +85,11 @@ def pip_size(point: float, digits: int, symbol: str) -> float:
 
 
 def sweep_stop(side: str, entry: float, sweep, atr: float,
-               spec: BrokerStops) -> tuple[float, float, float] | None:
+               spec: BrokerStops, *, atr_k: float = 1.0
+               ) -> tuple[float, float, float] | None:
     """Return (stop, distance, min_dist) or None to reject.
 
-    Distance is always |entry - stop|. min_dist = max(ATR, broker_min).
+    Distance is always |entry - stop|. min_dist = max(atr_k * ATR, broker_min).
     """
     if sweep is None or side not in ("BUY", "SELL"):
         return None
@@ -100,7 +103,7 @@ def sweep_stop(side: str, entry: float, sweep, atr: float,
     if tick <= 0:
         return None
     broker_min = max(0.0, float(spec.stops_level_points) + float(spec.spread_points)) * float(spec.point)
-    min_dist = max(float(atr) * 1.0, broker_min)
+    min_dist = max(float(atr) * float(atr_k), broker_min)
     if min_dist <= 0:
         return None
     entry_f = float(entry)
@@ -346,7 +349,7 @@ def replay_symbol(symbol: str, df: pd.DataFrame, spec: BrokerStops,
             "buy": 0, "sell": 0, "rejected_stop": 0,
             "by_day": defaultdict(int),
             "outcomes": defaultdict(int), "r_sum": 0.0, "r_n": 0,
-            "examples": [],
+            "examples": [], "trades": [],
         }
         for name, _, _ in VARIANTS
     }
@@ -375,7 +378,14 @@ def replay_symbol(symbol: str, df: pd.DataFrame, spec: BrokerStops,
 
         stamp = window["time"].iloc[-1]
         day = str(pd.Timestamp(stamp).date())
-        placed = sweep_stop(wanted, price, signal.sweep, atr, spec) if wanted else None
+        placed = sweep_stop(wanted, price, signal.sweep, atr, spec, atr_k=1.0) if wanted else None
+        placed_k = {
+            1.0: placed,
+            0.75: (sweep_stop(wanted, price, signal.sweep, atr, spec, atr_k=0.75)
+                   if wanted else None),
+            1.5: (sweep_stop(wanted, price, signal.sweep, atr, spec, atr_k=1.5)
+                  if wanted else None),
+        }
 
         for name, _ribbon_mode, ote_key in VARIANTS:
             rec = buckets[name]
@@ -405,12 +415,21 @@ def replay_symbol(symbol: str, df: pd.DataFrame, spec: BrokerStops,
             tp = price + dist * RR if wanted == "BUY" else price - dist * RR
             outcome = _forward(df, i, wanted, sl_f, tp)
             rec["outcomes"][outcome] += 1
+            r_val = None
             if outcome == "tp_first":
                 rec["r_sum"] += RR
                 rec["r_n"] += 1
+                r_val = RR
             elif outcome in ("sl_first", "ambiguous_adverse"):
                 rec["r_sum"] += -1.0
                 rec["r_n"] += 1
+                r_val = -1.0
+            rec["trades"].append({
+                "symbol": symbol, "ts": str(stamp), "direction": wanted,
+                "entry": price, "sl": sl_f, "tp": tp, "dist": dist,
+                "atr": atr, "outcome": outcome, "r": r_val,
+                "spread_points": spec.spread_points, "point": spec.point,
+            })
             if len(rec["examples"]) < 5:
                 blocks = []
                 for b in signal.blocks:
@@ -439,6 +458,28 @@ def replay_symbol(symbol: str, df: pd.DataFrame, spec: BrokerStops,
                     "outcome_indicative": outcome,
                     "blocks": blocks,
                 })
+        opt1 = buckets["b_ribbon_fix_ote_option1"]
+        opt1.setdefault("sens", {0.75: defaultdict(float), 1.5: defaultdict(float)})
+        if (wanted and ribbon_fixed and ote_ok.get("pre_sweep")
+                and _all_required(base, ribbon_ok=True, ote_ok=True)):
+            for k in (0.75, 1.5):
+                srec = opt1["sens"][k]
+                pk = placed_k[k]
+                if pk is None:
+                    srec["rejected"] += 1
+                    continue
+                slk, distk, _md = pk
+                tpk = price + distk * RR if wanted == "BUY" else price - distk * RR
+                oc = _forward(df, i, wanted, slk, tpk)
+                srec["n"] += 1
+                srec[oc] += 1
+                if oc == "tp_first":
+                    srec["r_sum"] += RR
+                    srec["r_n"] += 1
+                elif oc in ("sl_first", "ambiguous_adverse"):
+                    srec["r_sum"] += -1.0
+                    srec["r_n"] += 1
+
         done = i - start_i + 1
         if done == 1 or done % 50 == 0 or done == n_plan:
             print(
@@ -478,6 +519,8 @@ def replay_symbol(symbol: str, df: pd.DataFrame, spec: BrokerStops,
             "ambiguous_share_of_resolved": round(amb / resolved, 4) if resolved else None,
             "average_R_resolved": round(rec["r_sum"] / rec["r_n"], 4) if rec["r_n"] else None,
             "examples": rec["examples"],
+            "trades": rec["trades"],
+            "sens": {str(k): dict(v) for k, v in rec.get("sens", {}).items()},
         }
     print(f"  {symbol} done in {time.time() - t_sym:.1f}s", flush=True)
     return out
@@ -656,9 +699,125 @@ def main() -> int:
         print("examples", json.dumps(row["examples"], default=str), flush=True)
 
     print(f"\nelapsed_s {payload['elapsed_s']}", flush=True)
+    extras = _extras_report(per_symbol)
+    payload["extras_indicative"] = extras
+    Path(args.out).write_text(json.dumps(payload, default=str, indent=2), encoding="utf-8")
+    print("\n===== EXTRAS INDICATIVE =====", flush=True)
+    print(json.dumps(extras, default=str, indent=2), flush=True)
     print(payload["note"], flush=True)
     print(f"wrote {args.out}", flush=True)
     return 0
+
+
+def _spread_price(symbol: str, spread_points: float, point: float) -> tuple[float, str]:
+    pts = float(spread_points or 0.0)
+    source = "live_tick_spread"
+    if pts <= 0:
+        source = "asset_class_estimate"
+        name = str(symbol).upper()
+        if name.startswith("XAU"):
+            pts = 25.0
+        elif name.startswith("XAG"):
+            pts = 10.0
+        elif "JPY" in name:
+            pts = 20.0
+        else:
+            pts = 10.0
+    return pts * float(point), source
+
+
+def _extras_report(per_symbol: dict) -> dict:
+    trades = []
+    for _sym, variants in per_symbol.items():
+        trades.extend(variants.get("b_ribbon_fix_ote_option1", {}).get("trades") or [])
+    trades.sort(key=lambda t: str(t.get("ts") or ""))
+    resolved = [t for t in trades if t.get("r") is not None]
+    r_vals = [float(t["r"]) for t in resolved]
+    n = len(r_vals)
+    avg = sum(r_vals) / n if n else None
+    se = (math.sqrt(sum((x - avg) ** 2 for x in r_vals) / (n - 1)) / math.sqrt(n)
+          if n > 1 else None)
+    net = []
+    sources = defaultdict(int)
+    for t in resolved:
+        spread_px, src = _spread_price(t["symbol"], t.get("spread_points") or 0, t.get("point") or 1e-5)
+        sources[src] += 1
+        dist = float(t["dist"] or 0)
+        cost_r = (spread_px / dist) if dist > 0 else 0.0
+        net.append(float(t["r"]) - cost_r)
+    avg_net = sum(net) / len(net) if net else None
+    stamps = [pd.Timestamp(t["ts"]) for t in trades if t.get("ts")]
+    weeks = None
+    if len(stamps) >= 2:
+        weeks = (max(stamps) - min(stamps)).total_seconds() / (7 * 86400)
+    split = None
+    if stamps:
+        ordered = sorted(trades, key=lambda t: str(t.get("ts") or ""))
+        cut = max(1, int(len(ordered) * 0.6))
+        def _wr(chunk):
+            rs = [c for c in chunk if c.get("r") is not None]
+            if not rs:
+                return {"n": 0, "avg_R": None, "win_rate": None}
+            wins = sum(1 for c in rs if c["outcome"] == "tp_first")
+            return {
+                "n": len(rs),
+                "avg_R": round(sum(c["r"] for c in rs) / len(rs), 4),
+                "win_rate": round(wins / len(rs), 4),
+            }
+        split = {"first_60": _wr(ordered[:cut]), "last_40": _wr(ordered[cut:])}
+    per_sym = {}
+    for t in trades:
+        rec = per_sym.setdefault(t["symbol"], {"signals": 0, "tp": 0, "sl": 0, "r_sum": 0.0, "r_n": 0})
+        rec["signals"] += 1
+        if t.get("outcome") == "tp_first":
+            rec["tp"] += 1
+        elif t.get("outcome") == "sl_first":
+            rec["sl"] += 1
+        if t.get("r") is not None:
+            rec["r_sum"] += t["r"]
+            rec["r_n"] += 1
+    per_sym_out = {
+        s: {
+            "signals": v["signals"], "tp": v["tp"], "sl": v["sl"],
+            "avg_R": round(v["r_sum"] / v["r_n"], 4) if v["r_n"] else None,
+        }
+        for s, v in sorted(per_sym.items())
+    }
+    rng = random.Random(1)
+    random_five = rng.sample(trades, k=min(5, len(trades))) if trades else []
+    first_five = trades[:5]
+    sens = {}
+    for _sym, variants in per_symbol.items():
+        block = variants.get("b_ribbon_fix_ote_option1", {}).get("sens") or {}
+        for k, rec in block.items():
+            acc = sens.setdefault(str(k), {"n": 0, "tp_first": 0, "sl_first": 0,
+                                           "r_sum": 0.0, "r_n": 0, "rejected": 0})
+            acc["n"] += rec.get("n", 0)
+            acc["tp_first"] += rec.get("tp_first", 0)
+            acc["sl_first"] += rec.get("sl_first", 0)
+            acc["r_sum"] += rec.get("r_sum", 0)
+            acc["r_n"] += rec.get("r_n", 0)
+            acc["rejected"] += rec.get("rejected", 0)
+    for k, acc in sens.items():
+        acc["avg_R"] = round(acc["r_sum"] / acc["r_n"], 4) if acc["r_n"] else None
+        acc["win_rate"] = round(acc["tp_first"] / acc["r_n"], 4) if acc["r_n"] else None
+    return {
+        "spread": {
+            "rule": "live tick.spread points * point; if 0, asset-class estimate "
+                    "FX 10pts, JPY 20pts, XAU 25pts, XAG 10pts",
+            "sources": dict(sources),
+            "avg_R_before_cost": None if avg is None else round(avg, 4),
+            "avg_R_after_cost": None if avg_net is None else round(avg_net, 4),
+        },
+        "sample_weeks": None if weeks is None else round(weeks, 2),
+        "n_resolved": n,
+        "se_avg_R": None if se is None else round(se, 4),
+        "in_sample_out_of_sample": split,
+        "per_symbol": per_sym_out,
+        "sensitivity_atr_k": sens,
+        "first_five": first_five,
+        "random_five_seed_1": random_five,
+    }
 
 
 if __name__ == "__main__":
