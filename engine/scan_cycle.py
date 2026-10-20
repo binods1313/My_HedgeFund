@@ -45,6 +45,7 @@ _INSUFFICIENT_HISTORY = "INSUFFICIENT_HISTORY"
 _RISK_PRECHECK_FAILED = "RISK_PRECHECK_FAILED"
 _DRIFT_BLOCKED = "DRIFT_BLOCKED"
 _STRATEGY_NO_SIGNAL = "STRATEGY_NO_SIGNAL"
+_STOP_QUALITY = "stop_quality"
 
 # Deterministic UUID5 namespace for signal decision IDs.
 _SIGNAL_NAMESPACE = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
@@ -659,6 +660,26 @@ class ScanCycle:
                          "cycle_id": cycle_id, "ts": stamp},
             )
             return 0
+
+        if getattr(signal, "stop_loss", None) is None:
+            from engine.strategy import attach_trade_levels, broker_stops_from_view
+            attach_trade_levels(signal, df, broker_stops_from_view(view))
+        if getattr(signal, "stop_loss", None) is None:
+            reason = getattr(signal, "reject_reason", None) or _STOP_QUALITY
+            self._write_signal_row(
+                journal, symbol, signal.direction, signal, bar_ts,
+                stamp, decision_id, "REJECTED",
+                reject_reason=reason,
+                blocks_json=self._blocks_json(signal),
+                expires_at=expires_at,
+                is_test=False,
+            )
+            journal.log_lifecycle(
+                Journal.LIFECYCLE_SIGNAL_REJECTED,
+                f"{symbol}: {reason}",
+                decision_id=decision_id, context={"kind": reason},
+            )
+            return 1
 
         # Strategy produced a signal — run drift check and risk pre-check.
         entry_price = float(signal.price)

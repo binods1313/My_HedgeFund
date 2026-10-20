@@ -30,12 +30,15 @@ from typing import Optional
 import pandas as pd
 
 from engine.indicators.structure import (
+    MIN_LEG_ATR_MULTIPLE,
     Sweep,
     SwingLeg,
     daily_extremes,
     find_swing_leg,
     in_ote_zone,
+    last_completed_swing,
     latest_sweep,
+    mean_true_range,
     unfilled_fvgs,
     validate_ohlcv,
 )
@@ -59,6 +62,105 @@ def ribbon_matches_side(wanted: str | None, ribbon_direction: str) -> bool:
     if mapped is None:
         return False
     return str(ribbon_direction) == mapped
+
+
+@dataclass(frozen=True)
+class BrokerStops:
+    """Broker freeze-level inputs for the approved stop floor."""
+
+    point: float
+    tick_size: float
+    stops_level_points: float
+    spread_points: float
+
+
+def broker_stops_from_view(view: dict | None) -> BrokerStops:
+    """Build BrokerStops from a scan snapshot. Spread from ask-bid when present."""
+    view = view or {}
+    point = float(view.get("point") or view.get("trade_point") or 1e-5)
+    if point <= 0:
+        point = 1e-5
+    tick = float(view.get("tick_size") or view.get("trade_tick_size") or point)
+    stops_level = float(view.get("trade_stops_level") or view.get("stops_level") or 0.0)
+    spread_pts = float(view.get("spread") or view.get("spread_points") or 0.0)
+    if spread_pts <= 0:
+        bid = view.get("bid")
+        ask = view.get("ask")
+        try:
+            if bid is not None and ask is not None and float(ask) > float(bid):
+                spread_pts = (float(ask) - float(bid)) / point
+        except (TypeError, ValueError):
+            spread_pts = 0.0
+    return BrokerStops(point, tick if tick > 0 else point, stops_level, spread_pts)
+
+
+def sweep_stop(side: str, entry: float, sweep, atr: float,
+               spec: BrokerStops, *, atr_k: float = 1.0
+               ) -> tuple[float, float, float] | None:
+    """Stop beyond the sweep wick, at least max(atr_k * ATR, broker min).
+
+    Returns (stop, distance, min_dist) or None to reject.
+    """
+    if sweep is None or side not in (BUY, SELL):
+        return None
+    if str(getattr(sweep, "direction", "")) != side:
+        return None
+    if atr is None or atr <= 0 or spec is None or spec.point <= 0:
+        return None
+    tick = spec.tick_size if spec.tick_size > 0 else spec.point
+    if tick <= 0:
+        return None
+    broker_min = max(0.0, float(spec.stops_level_points) + float(spec.spread_points)) * float(spec.point)
+    min_dist = max(float(atr) * float(atr_k), broker_min)
+    if min_dist <= 0:
+        return None
+    entry_f = float(entry)
+    level = float(sweep.level)
+    extreme = float(sweep.extreme)
+    if side == BUY:
+        wick = level - extreme
+        if wick >= entry_f:
+            return None
+        beyond = wick - tick
+        stop = min(beyond, entry_f - min_dist)
+        dist = entry_f - stop
+        if stop >= entry_f or dist + 1e-12 < min_dist:
+            return None
+    else:
+        wick = level + extreme
+        if wick <= entry_f:
+            return None
+        beyond = wick + tick
+        stop = max(beyond, entry_f + min_dist)
+        dist = stop - entry_f
+        if stop <= entry_f or dist + 1e-12 < min_dist:
+            return None
+    return (float(stop), float(dist), float(min_dist))
+
+
+def attach_trade_levels(signal: "Signal", df: pd.DataFrame, spec: BrokerStops,
+                        *, atr_k: float = 1.0) -> "Signal":
+    """Set stop_loss and take_profit (2R) or reject_reason=stop_quality."""
+    signal.reject_reason = None
+    if signal is None or not signal.is_actionable:
+        return signal
+    atr_value = mean_true_range(df)
+    placed = sweep_stop(signal.direction, signal.price, signal.sweep,
+                        atr_value, spec, atr_k=atr_k)
+    if placed is None:
+        signal.reject_reason = "stop_quality"
+        signal.stop_loss = None
+        signal.take_profit = None
+        signal.stop_distance = None
+        return signal
+    stop, dist, _min_dist = placed
+    signal.stop_loss = stop
+    signal.stop_distance = dist
+    if signal.direction == BUY:
+        signal.take_profit = float(signal.price) + 2.0 * dist
+    else:
+        signal.take_profit = float(signal.price) - 2.0 * dist
+    return signal
 
 
 @dataclass(frozen=True)
@@ -88,6 +190,10 @@ class Signal:
     leg: Optional[SwingLeg] = None
     ribbon: Optional[EmaRibbon] = None
     vwap_value: Optional[float] = None
+    stop_loss: Optional[float] = None
+    take_profit: Optional[float] = None
+    stop_distance: Optional[float] = None
+    reject_reason: Optional[str] = None
 
     @property
     def is_actionable(self) -> bool:
@@ -175,12 +281,17 @@ def evaluate(symbol: str, df: pd.DataFrame, *,
             "fair value gap", False,
             f"no unfilled {gap_direction or ''} gap".strip()))
 
-    # -- 3. Fibonacci OTE ------------------------------------------------
-    leg = find_swing_leg(df)
+    # -- 3. Fibonacci OTE (Option 1: last completed swing before this bar)
+    atr_value = atr if atr is not None else mean_true_range(df)
+    leg = last_completed_swing(df)
+    if leg is not None and atr_value and atr_value > 0:
+        span = abs(float(leg.end_price) - float(leg.start_price))
+        if span < MIN_LEG_ATR_MULTIPLE * atr_value:
+            leg = None
     signal.leg = leg
     if leg is None:
         signal.blocks.append(Block("fibonacci OTE", False,
-                                  "no confirmed swing leg"))
+                                  "no completed swing before the sweep bar"))
         in_zone = False
     else:
         in_zone = in_ote_zone(price, leg)

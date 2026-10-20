@@ -24,6 +24,8 @@ from engine.indicators.structure import (
     find_pivot_highs,
     find_pivot_lows,
     find_swing_leg,
+    last_completed_swing,
+    mean_true_range,
     in_ote_zone,
     latest_sweep,
     ote_zone,
@@ -43,7 +45,8 @@ __all__ = [
     "OTE_HIGH", "OTE_LOW",
     "FairValueGap", "Sweep", "SwingLeg", "EmaRibbon", "SESSION_WINDOWS",
     "daily_extremes", "detect_sweeps", "ema_ribbon", "find_fair_value_gaps",
-    "find_pivot_highs", "find_pivot_lows", "find_swing_leg", "in_ote_zone",
+    "find_pivot_highs", "find_pivot_lows", "find_swing_leg",
+    "last_completed_swing", "mean_true_range", "in_ote_zone",
     "latest_sweep", "ote_zone", "session_vwap", "typical_price",
     "unfilled_fvgs", "validate_ohlcv", "vwap",
 ]

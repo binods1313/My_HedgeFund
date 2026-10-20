@@ -240,6 +240,8 @@ def test_e2e_actionable_signal_passes_risk(tmp_path):
             price=1.0900,
             blocks=[Block("test", True, "ok")],
             confidence=0.9,
+            stop_loss=1.0800,
+            take_profit=1.1100,
         )
 
     journal, engine = _new_engine(
@@ -275,6 +277,8 @@ def test_e2e_actionable_signal_fails_risk(tmp_path):
             price=1.0900,
             blocks=[Block("test", True, "ok")],
             confidence=0.8,
+            stop_loss=1.1000,
+            take_profit=1.0700,
         )
 
     journal, engine = _new_engine(
@@ -308,6 +312,8 @@ def test_e2e_insufficient_history(tmp_path):
             price=1.0900,
             blocks=[Block("test", True, "ok")],
             confidence=0.9,
+            stop_loss=1.0800,
+            take_profit=1.1100,
         )
 
     short_df = _make_history().iloc[-10:]  # only 10 bars
@@ -335,6 +341,8 @@ def test_e2e_deterministic_decision_id(tmp_path):
             price=1.0900,
             blocks=[Block("test", True, "ok")],
             confidence=0.9,
+            stop_loss=1.0800,
+            take_profit=1.1100,
         )
 
     journal, engine = _new_engine(
@@ -427,6 +435,7 @@ def test_actionable_frame_is_pending_idempotent_and_superseded(tmp_path):
         return Signal(
             symbol=symbol, direction="BUY", price=1.0900,
             blocks=[Block("test", True, "ok")], confidence=0.9,
+            stop_loss=1.0800, take_profit=1.1100,
         )
 
     created = "2026-10-16T21:00:10+00:00"

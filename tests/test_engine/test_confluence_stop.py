@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 
 from engine.indicators.structure import Sweep
-from scripts.backtest_confluence import BrokerStops, sweep_stop
+from engine.strategy import BrokerStops, sweep_stop
 
 
 EUR = BrokerStops(point=0.00001, tick_size=0.00001, stops_level_points=0, spread_points=10)

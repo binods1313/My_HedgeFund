@@ -37,6 +37,10 @@ def render_signals_page(db_path=None) -> None:
         "PAPER only. execution_mode=approve_first. Approve and Reject queue "
         "a command; they do not place an order."
     )
+    st.caption(
+        "EXPERIMENTAL forward test: OTE Option 1 (last completed swing before "
+        "the sweep bar) plus the sweep-wick stop. Not a validated strategy."
+    )
     labels = [label for _, label in _TAB_STATUSES]
     default = "Pending / Awaiting Approval"
 

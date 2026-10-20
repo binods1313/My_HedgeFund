@@ -2,6 +2,8 @@
 
 UTC 2026-10-19T21:38:44Z. PAPER. No `--live`. Magic 100100. Brain parked.
 
+**EXPERIMENTAL forward test (2026-10-21):** OTE Option 1 (last completed swing before the sweep bar) with the sweep-wick stop (beyond the wick, at least max(1×ATR(14), broker stops level + spread), TP = 2R) is live on PAPER only. Indicative backtest only. Not a validated strategy. DEMO not approved.
+
 ## Verdict
 
 | Item | Verdict |

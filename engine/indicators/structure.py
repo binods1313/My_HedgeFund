@@ -402,6 +402,65 @@ def find_swing_leg(df: pd.DataFrame, lookback: int = 3) -> SwingLeg | None:
                     invalidation=float(last_high[1]))
 
 
+def last_completed_swing(df: pd.DataFrame, lookback: int = 3) -> SwingLeg | None:
+    """Pivot-to-pivot swing whose end pivot is confirmed BEFORE the last bar.
+
+    End price is the later confirmed pivot, not the current close. That is
+    what lets a sweep on the last bar sit as a retracement of a finished
+    impulse (OTE Option 1).
+    """
+    validate_ohlcv(df)
+    if len(df) < lookback * 2 + 4:
+        return None
+    work = df.iloc[:-1]
+    highs = find_pivot_highs(work, lookback=lookback)
+    lows = find_pivot_lows(work, lookback=lookback)
+    events = sorted(
+        [(i, p, "H") for i, p in highs] + [(i, p, "L") for i, p in lows]
+    )
+    if len(events) < 2:
+        return None
+    end = events[-1]
+    start = None
+    for prev in reversed(events[:-1]):
+        if prev[2] != end[2]:
+            start = prev
+            break
+    if start is None:
+        return None
+    if start[2] == "L":
+        direction = "BULLISH"
+        inv = float(start[1])
+    else:
+        direction = "BEARISH"
+        inv = float(start[1])
+    return SwingLeg(
+        start_index=int(start[0]),
+        end_index=int(end[0]),
+        start_price=float(start[1]),
+        end_price=float(end[1]),
+        direction=direction,
+        invalidation=inv,
+    )
+
+
+def mean_true_range(df: pd.DataFrame, n: int = 14) -> float:
+    """Mean true range of the last `n` closed bars. Zero when unusable."""
+    validate_ohlcv(df)
+    high = _column(df, "high").to_numpy(dtype=float)
+    low = _column(df, "low").to_numpy(dtype=float)
+    close = _column(df, "close").to_numpy(dtype=float)
+    if len(close) == 0:
+        return 0.0
+    prev = np.empty_like(close)
+    prev[0] = close[0]
+    prev[1:] = close[:-1]
+    tr = np.maximum(high - low, np.maximum(np.abs(high - prev), np.abs(low - prev)))
+    if len(tr) < n:
+        return float(tr.mean()) if len(tr) else 0.0
+    return float(tr[-n:].mean())
+
+
 #: A leg must span at least this multiple of ATR. Below it, the 'swing' is
 #: noise: a leg smaller than typical volatility has no structural meaning.
 MIN_LEG_ATR_MULTIPLE = 3.0
