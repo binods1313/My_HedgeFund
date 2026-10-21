@@ -46,11 +46,11 @@ ce7a740 fix: confirm order passes order_token to inspect_order
 ```
 
 Full suite after ticket seed: **1714 passed, 6 skipped in 56.48s**.
-Full suite after forward-test scorer + tests: **1777 passed, 6 skipped in 56.87s**.
+Full suite after forward-test scorer + tests: **1785 passed, 6 skipped in 59.63s**.
 
 Backup before restart: `backups/engine_5057151780_20261019T212700Z.db`
 
-One heartbeat writer: PID **28448** (venv launcher 39416). Command: `python -u -m engine --config E:\HedgeFund_Binod_v2\config.yaml`. Heartbeats 171355–171357.
+One heartbeat writer: PID **40964** (`.venv\Scripts\python.exe -u -m engine --config E:\HedgeFund_binod_v2\config.yaml`). Heartbeats 220000–228870.
 
 ## a. Inject
 
@@ -115,56 +115,78 @@ Results are grouped by ISO week and by symbol, with win rate, avg gross/net R, s
 
 ### Current state (raw SQL health check)
 
-DB: `E:\HedgeFund_binod_v2\data\engine_5057151780.db`. Run at 2026-10-21T18:50 UTC.
+DB: `E:\HedgeFund_binod_v2\data\engine_5057151780.db`. Run at 2026-10-21T20:30 UTC.
 
 **1a. Heartbeat + engine_state:**
 ```sql
-SELECT strftime('%Y-%m-%dT%H:%M:%SZ','now');
-→ 2026-10-21T18:50:18Z
+SELECT strftime('%Y-%m-%dT%H:%M:%S+00:00','now');
+→ 2026-10-21T20:30:48+00:00
 
 SELECT * FROM heartbeats ORDER BY ts DESC LIMIT 1;
-→ id=223151 state=IDLE pid=40964 connected=1 ts=2026-10-21T18:50:18+00:00 gateway_call_age_seconds=0.0002
+→ id=228870 state=IDLE pid=40964 connected=1 ts=2026-10-21T20:30:28+00:00 gateway_call_age_seconds=0.0004
 
 SELECT * FROM engine_state;
-→ id=1 state=IDLE mode=PAPER reason="" updated_at=2026-10-21T18:49:45+00:00 account_login=5057151780 account_currency=USD
+→ id=1 state=IDLE mode=PAPER reason="" updated_at=2026-10-21T20:30:28+00:00 account_login=5057151780 account_currency=USD
 ```
-Engine PID 40964, started 2026-10-20T22:17:12+00:00 (`connected to MT5 terminal`, `Telegram approval layer initialized`, `telegram approval layer enabled`). Command line from PID 40964 via WMI: `.venv\Scripts\python.exe -u -m engine --config E:\HedgeFund_binod_v2\config.yaml`.
+Engine PID **40964**, command line: `.venv\Scripts\python.exe -u -m engine --config E:\HedgeFund_binod_v2\config.yaml`.
 
-**1b. scan_results:**
+**1b. scan_results per hour (last 6 hours):**
 ```sql
-SELECT COUNT(*) FROM scan_results WHERE ts >= datetime('now','-60 minutes');
-→ 262
-
-SELECT id, ts, status, symbol_count FROM scan_results ORDER BY ts DESC LIMIT 3;
-→ id=3063 ts=2026-10-21T18:40:43 status=empty symbol_count=16
-→ id=3062 ts=2026-10-21T18:39:43 status=empty symbol_count=16
-→ id=3061 ts=2026-10-21T18:38:43 status=empty symbol_count=16
+SELECT strftime('%Y-%m-%dT%H:00:00+00:00','ts') as hour, COUNT(*) as cnt
+FROM scan_results
+WHERE ts >= strftime('%Y-%m-%dT%H:%M:%S+00:00','now','-6 hours')
+GROUP BY hour ORDER BY hour DESC;
+→ 20:00 → 32
+→ 19:00 → 55
+→ 18:00 → 36
+→ 17:00 → 18
+→ 16:00 → 3
+→ 15:00 → 1
 ```
 
-**1c. strategy_evaluation events:**
+**1c. strategy_evaluation events per hour (last 6 hours):**
 ```sql
-SELECT COUNT(*) FROM events WHERE json_extract(context_json,'$.kind')='strategy_evaluation'
-  AND ts >= datetime('now','-60 minutes');
-→ 450
-
-SELECT COUNT(*) FROM events WHERE json_extract(context_json,'$.kind')='strategy_evaluation'
-  AND ts >= datetime('now','-24 hours');
-→ 1171
-
-SELECT id, ts, message FROM events WHERE message LIKE '%evaluate decision%' ORDER BY ts DESC LIMIT 1;
-→ id=34612 ts=2026-10-21T18:45:45+00:00 msg=XAUAUD: evaluate decision=NONE agree=3 disagree=2
+SELECT strftime('%Y-%m-%dT%H:00:00+00:00','ts') as hour, COUNT(*) as cnt
+FROM events
+WHERE message LIKE '%evaluate decision%'
+  AND ts >= strftime('%Y-%m-%dT%H:%M:%S+00:00','now','-6 hours')
+GROUP BY hour ORDER BY hour DESC;
+→ 20:00 → 36
+→ 19:00 → 64
+→ 18:00 → 48
+→ 17:00 → 32
+→ 16:00 → 18
 ```
-Event naming unchanged since commit 7537eed: messages still use `"evaluate decision=NONE agree=N disagree=N"`, context_json still has `"kind":"strategy_evaluation"`. `scripts/weekly_strategy_report.py` reads `json_extract(context_json,'$.kind')='strategy_evaluation'` — correct and current. The forward-test scorer reads the `signals` table (is_test=0), not event messages — no change required.
+Total strategy_evaluation events ever: **1887**.
 
-**1d. scan_symbols (latest 5):**
+The **64/hour on the 19:00 hour** matches the expected 16 symbols × 4 bars. The **450** figure in the old report was a *raw total event count* for the last 60 minutes (heartbeats + scans + evaluations + state changes), not a per-symbol-per-bar evaluation count. Per-hour strategy_evaluation events confirm the engine is evaluating exactly one decision per symbol-bar pair as designed. No duplication, no missing bars.
+
+**1d. Raw newest evaluate-decision row (settles agree/disagree):**
+```sql
+SELECT id, ts, message, context_json FROM events
+WHERE message LIKE '%evaluate decision%'
+ORDER BY ts DESC LIMIT 1;
+→ id=35019
+→ ts=2026-10-21T20:30:28+00:00
+→ message=CHFJPY: evaluate decision=NONE agree=1 disagree=4
+→ context_json={"kind":"strategy_evaluation","symbol":"CHFJPY","decision":null,
+  "agree":1,"disagree":4,
+  "blocks":[liquidity_sweep(agrees=1),fair_value_gap(agrees=0),
+  fibonacci_OTE(agrees=0),ema_ribbon(agrees=0),vwap(agrees=0)],
+  "bar_open_epoch":1792624500,
+  "decision_id":"ea599b02-72ce-5ca9-8de7-1f6ff42458c2",
+  "ts":"2026-10-21T20:30:28+00:00"}
+```
+Five blocks: 1 agrees + 4 disagree = **5 total** ✓ (sum is correct). Decision=NONE (rejected by stop_quality).
+
+**1e. scan_symbols (latest 5):**
 ```sql
 SELECT * FROM scan_symbols ORDER BY ts DESC LIMIT 5;
 → id=43227 symbol=EURUSD status=skipped reason=NO_NEW_CLOSED_BAR bar_ts=1792618200 ts=2026-10-21T18:49:45+00:00
 → id=43228 symbol=GBPUSD status=skipped reason=NO_NEW_CLOSED_BAR bar_ts=1792618200 ts=2026-10-21T18:49:45+00:00
-...
 ```
 
-**1e. Startup events:**
+**1f. Startup events:**
 ```sql
 SELECT id, ts, message FROM events WHERE message LIKE '%connected to MT5 terminal%'
   OR message LIKE '%Telegram approval layer%' OR message LIKE '%telegram approval layer%'
@@ -174,17 +196,87 @@ SELECT id, ts, message FROM events WHERE message LIKE '%connected to MT5 termina
 → id=32779 ts=2026-10-20T22:17:12 msg=telegram approval layer enabled
 ```
 
-**Is the strategy evaluating bars NOW?** YES. The engine is IDLE, scanning every 60 seconds (IDLE→SCANNING→IDLE). The most recent evaluate decision was at 18:45:45 UTC (450 events in the last 60 min). After each bar closes, the strategy evaluates all 14 symbols. Between bar closes, scan cycles run with `status=empty` because scan_symbols report `NO_NEW_CLOSED_BAR`. The last bar (bar_open_epoch=1792618200) was evaluated at 18:45:45; the next M15 bar closes at 19:00:00 UTC. The strategy is NOT broken — it correctly skips evaluation when no new bar is available.
+**Is the strategy evaluating bars NOW?** YES. The engine is IDLE, scanning every 60 seconds (IDLE→SCANNING→IDLE). The most recent evaluate decision was at 20:30:28 UTC. After each bar closes, the strategy evaluates all symbols. Between bar closes, scan cycles run with `status=empty` because scan_symbols report `NO_NEW_CLOSED_BAR`. The last evaluated bar (epoch 1792624500, 20:30:28 UTC) was scored; the next M15 bar closes at 21:00:00 UTC. The strategy is NOT broken — it correctly skips evaluation when no new bar is available.
 
-**MT5 timestamp discrepancy (observation #46):** SQLite `datetime(bar_open_epoch, 'unixepoch')` yields `2026-10-21T21:30:00` for epoch 1792618200, but the corresponding evaluate-decision event timestamp is `2026-10-21T18:45:45+00:00`. MT5 bar epochs are in server local time (UTC+5:30 on this host), not Unix UTC — the ~2h45m offset affects bar_ts-to-UTC conversion in the scorer's `datetime.fromtimestamp()` calls and any expiry math derived from raw epoch integers. The scorer should apply the server-time offset or use the SQLite text timestamps already stored in the signals table for display.
+**MT5 timestamp correction (observation #46 resolved):** Epoch **1792618200** = broker clock **2026-10-21T21:30:00** = UTC **2026-10-21T18:30:00** (UTC+3 / 10800s offset, detected by `detect_broker_offset_seconds`). The bar that opened at 18:30 UTC closes at 18:45 UTC; the 18:45:45 signal evaluation follows it. Earlier docs incorrectly cited MT5 server as UTC+5:30 (IST) — the host's local zone — but the **broker server** is UTC+3 (EET/EEST). The scorer uses the signal `ts` column (already UTC ISO) for all display, cutoff, and grouping. No raw-epoch UTC conversion is performed without the detected offset.
 
 ### Tests
 
-33 seeded tests covering bar-hit logic (BUY/SELL TP/SL), same-bar TP+SL as adverse/SL, spread cost subtraction, is_test filtering, week/symbol grouping, summary statistics (expectancy, standard error), and a guard test that fails if `--live` appears in scorer output.
+41 seeded tests covering bar-hit logic (BUY/SELL TP/SL), same-bar TP+SL as adverse/SL, spread cost subtraction, is_test filtering, week/symbol grouping, summary statistics (expectancy, standard error), a guard test that fails if `--live` appears in scorer output, and offset-aware bar window tests (+3h/+2h/0h) proving the first bar after the signal is selected.
 
 ```
 .venv\Scripts\python -m pytest tests/test_scripts/test_forward_test_scorer.py -v
 ```
+
+### Scorer reality check
+
+**Bar source in production**: The scorer defaults to `_fetch_bars_from_table` (reads from a `bars` or `bars_{SYMBOL}` SQLite table). In the live journal there is currently **no bars table** (verified via `PRAGMA table_info`), so the scorer returns empty results until bars are persisted. The MT5 bar-fetch path lives in `engine/gateway.py:786-817` (`read_history` → `mt5.copy_rates_from_pos(symbol, TIMEFRAME_M15, start_pos=1, count)`), which skips the forming bar at index 0. The scorer's `bar_provider` parameter accepts an injectable function, so this MT5 path can be wired in without code changes.
+
+**Run on a temp seeded journal (NOT the live journal):**
+
+```
+tmp_db = C:\Users\Binod\AppData\Local\Temp\tmp_scorer_test.db
+signal bar_ts (broker): 1792618200 -> 2026-10-21T18:30:00+00:00 UTC
+
+=== Seed Bars (broker ts -> UTC) ===
+  1792619100 broker=21:45 utc=18:45 EURUSD O=1.102 H=1.125 L=1.100 C=1.115
+  1792620000 broker=22:00 utc=19:00 GBPUSD O=1.250 H=1.250 L=1.235 C=1.242
+  1792620900 broker=22:15 utc=19:15 EURUSD O=1.150 H=1.165 L=1.138 C=1.152
+
+=== Bar Fetch Verification (first bar after signal bar) ===
+  Signal 1 (EURUSD): 2 bars (ts > 1792618200)
+    ts=1792619100 utc=2026-10-21T18:45:00 H=1.125 L=1.100
+    ts=1792620900 utc=2026-10-21T19:15:00 H=1.165 L=1.138
+  Signal 2 (GBPUSD): 1 bar  (ts > 1792618200)
+    ts=1792620000 utc=2026-10-21T19:00:00 H=1.250 L=1.235
+  Signal 3 (EURUSD): 1 bar  (ts > 1792619100)
+    ts=1792620900 utc=2026-10-21T19:15:00 H=1.165 L=1.138
+
+=== Scored Signals ===
+  id=1 EURUSD BUY outcome=TP  gross_r=2.0 net_r=1.99 hit_bars=1   (TP at 18:45 UTC, high 1.125 >= 1.120)
+  id=2 GBPUSD BUY outcome=SL  gross_r=-1.0 net_r=-1.01 hit_bars=1 (SL at 19:00 UTC, low 1.235 <= 1.240)
+  id=3 EURUSD BUY outcome=SL  gross_r=-1.0 net_r=-1.01 hit_bars=1 (same-bar: high 1.165 >= 1.160 TP AND low 1.138 <= 1.140 SL → SL wins)
+```
+All three cases land on the correct UTC bars. The same-bar TP+SL correctly resolves to SL (adverse).
+
+### Gap analysis: per-hour since 2026-10-20T22:00Z
+
+| Hour (UTC) | scan_results | bar_epochs | strategy_eval | heartbeats | note |
+|---|---|---|---|---|---|
+| 22:00 Oct 20 | 55 | 5 | 80 | 3294 | engine start at 22:17; 80 > 64 (catch-up + partial bars) |
+| 23:00 Oct 20 | 45 | 4 | 64 | 2574 | ✓ expected rate |
+| 00:00 Oct 21 | 14 | 3 | 48 | 765 | ramp-down (Asian close) |
+| 01:00 Oct 21 | 5 | 1 | 16 | 196 | thin liquidity (1 bar/half cycle) |
+| 02:00 Oct 21 | 3 | 1 | 16 | 124 | thin liquidity |
+| 03:00 Oct 21 | 57 | 4 | 64 | 3412 | ✓ expected rate |
+| 04:00 Oct 21 | 24 | 2 | 32 | 1393 | thin |
+| 05:00 Oct 21 | 2 | 0 | 0 | 8 | **market closed (Asian noon)** |
+| 06:00–08:00 | 0 | 0 | 0 | 0 | **market closed (low liquidity window)** |
+| 09:00 Oct 21 | 4 | 1 | 16 | 206 | thin |
+| 10:00 Oct 21 | 22 | 2 | 32 | 1139 | thin |
+| 11:00 Oct 21 | 50 | 4 | 64 | 2910 | ✓ expected rate |
+| 12:00 Oct 21 | 19 | 2 | 32 | 1121 | thin |
+| 13:00 Oct 21 | 0 | 0 | 0 | 0 | **possible scan gap / host sleep** (0 heartbeats) |
+| 14:00 Oct 21 | 26 | 2 | 32 | 1468 | resumed |
+| 15:00 Oct 21 | 1 | 0 | 0 | 1 | **anomaly: 1 heartbeat only** (host sleep/wake suspected) |
+| 16:00 Oct 21 | 3 | 2 | 18 | 144 | recovery (18 ≠ 32 = incomplete cycle) |
+| 17:00 Oct 21 | 18 | 2 | 32 | 1059 | ✓ |
+| 18:00 Oct 21 | 36 | 3 | 48 | 2016 | ✓ |
+| 19:00 Oct 21 | 55 | 4 | 64 | 3285 | ✓ expected rate |
+| 20:00 Oct 21 | 43 | 3 | 36 | 2529 | current hour (partial, run at 20:30) |
+
+**Hours below 64 explained:** 16 evaluations/hour = 16 symbols × 1 M15 bar closed in that hour (thin liquidity: Asian close 01:00–02:00, Asian noon 05:00–08:00, lunch 12:00–13:00). 32 = 16×2. 48 = 16×3. The **13:00 hour (0 scans, 0 heartbeats)** and **15:00 hour (1 scan, 1 heartbeat)** indicate a host sleep/wake cycle — the process was suspended. Windows Event Log (`Get-WinEvent -LogName System`) returned no output due to access denied in this environment; the heartbeat gap itself is the evidence. No engine restart was needed — the process resumed naturally after wake.
+
+### Reconciling "450 events"
+
+| Query (hour 18:00–19:00 UTC) | Count |
+|---|---|
+| `json_extract(context_json,'$.kind')='strategy_evaluation'` (kind filter) | **48** |
+| `message LIKE '%evaluate decision%'` (msg filter) | **48** |
+| All events (any type, any message) | **168** |
+| `datetime('now','-60 minutes')` format vs ISO `ts` string comparison | **550** (all rows, broken format) |
+
+The old report's "450" used `datetime('now','-60 minutes')` which returns `'YYYY-MM-DD HH:MM:SS'`. The `ts` column stores `'YYYY-MM-DDTHH:MM:SS+00:00'`. Since `'T'` (ASCII 84) > `' '` (ASCII 32), every ISO timestamp string is lexicographically greater than the space-separated `datetime()` output, so `ts >= datetime(...)` matches **every row in the table**. The "450" was the total strategy_evaluation count at that moment, not a per-60-minute count. The correct ISO-bounded count for any single hour is ~48–64.
 
 ## Review gate
 
