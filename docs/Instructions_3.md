@@ -1,14 +1,14 @@
-2b report: accepted — live health (v4, integrity, indexes, heartbeat), broker probe (300 rows, closed bars), scan rows, and your disclosure that signal writing is not wired. NOT accepted as 2b complete. Hold 2c. PAPER only, no --live, approve-first, auto-execute off, brain parked, do not touch magic-234000.
+Previous task mostly done (scorer fixes, review gate accepted). Remaining items below. PAPER only, no --live, approve-first, auto-execute off, brain parked, do not touch magic-234000, DEMO blocked, no push. Do not edit strategy rules, stop formula or TP. Do not restart the engine without a backup and verified PID. No new documents (docs/Stage2b_Live_Report.md only). Report only what you ran, raw output; "not run" otherwise.
 
-1. COMMIT FIRST. git status shows modified gateway.py, scan_cycle.py, journal.py, config.yaml, config_loader.py, engine/config.py, sizing.py, app.py, ui files and new tests/signals_page.py. The engine was restarted on uncommitted code. Commit in logical commits (config/sizing, gateway history, journal record_signal, scan_cycle, UI, tests). Paste git log --oneline -12 and git status. Show git diff for config.yaml before committing it.
-
-2. WIRE THE SIGNAL PATH (this is 2b, not 2c). Engine must provide read_history and evaluate_strategy so ScanCycle actually calls _try_signal. Show the code. Rules unchanged: one batched owner-thread history read per cycle, only for symbols with a newly closed M15 bar, start_pos=1, at least 206 closed rows, INSUFFICIENT_HISTORY visible, deterministic decision_id, one PENDING per symbol, expiry min(bar_close+900s, created+1800s), drift check each loop (ASK for BUY, BID for SELL), visible rejects including "Too small to size within the risk limit". No approval commands, no executor, no order functions.
-   Add a mocked end-to-end test using the real ScanCycle with a fake gateway and a frame that yields an actionable signal: assert one PENDING row, the correct decision_id, expires_at, supersede on the next bar, idempotent re-run, and that no order function was called. Add a test that fails if Engine lacks the callables (so dead wiring cannot recur).
-
-3. TIME HANDLING. bar_ts values like 2026-10-19T00:17Z in a report written at 21:17Z Sunday, and metals "00:00:05Z", suggest broker server time (UTC+3) mixed with UTC. State the broker server offset, how bar_ts is stored (raw broker epoch or converted), and show one raw example: raw epoch, converted UTC, converted IST. Make expiry maths use one consistent clock; add a test with a +3h server offset.
-
-4. EVIDENCE FIXES. Reconcile engine restart time (21:18Z vs events at 21:17Z). Paste the live schema_version rows (all versions), the first 10 startup events with ids after the restart, and the backup's scan_results count versus its creation time, saying whether the backup predates the v4 migration. Relabel: signal generation is NOT PROVEN; only the unit/mocked tests exist.
-
-5. After wiring and commit, restart the engine by the verified procedure (backup first, verified PID, project venv, PAPER, no --live). Then paste scan_symbols and any signals rows from the next closed M15 bars (status, reject_reason, expires_at, decision_id). If the strategy produces no signal, say so; do not use the TEST SIGNAL injector yet. Also paste the evaluate() output summary per symbol (blocks agree/disagree counts) for one cycle so we can see it is actually running.
-
-REPORT: one-page table (PROVEN / PROBABLE / TESTED-ONLY / UNPROVEN), then raw output with exact commands, full suite last 15 lines. Stop after this. Do not start 2c.
+1. HEALTH CHECK, RAW SQL (the last report had no numbers and contradicted earlier evidence):
+ a. SELECT strftime('%Y-%m-%dT%H:%M:%SZ','now'); newest heartbeat id and ts; engine_state row.
+ b. newest scan_results id, ts, status; COUNT(*) of scan_results with ts in the last 60 minutes; newest 5 scan_results rows.
+ c. COUNT(*) of events with message LIKE '%evaluate decision%' in the last 60 minutes and in the last 24 hours; newest such event id and ts; the exact SQL you used. Earlier journals had hundreds of strategy_evaluation events per day, so "none found" must be explained (wrong filter, event name changed after 7537eed, or evaluation stopped).
+ d. newest 10 scan_symbols rows (symbol, status, reason, bar_ts).
+ e. Engine PID 40964 command line and start time as one clean UTC timestamp, and the last startup events with ids.
+ Say plainly whether the strategy is evaluating bars NOW. If not, find the cause (state, guard, terminal, code path) and report it. Do not restart without telling me.
+2. If evaluation events are named differently since 7537eed, say what changed and make sure scripts/weekly_strategy_report (or equivalent) and the scorer still read the right events.
+3. COMMIT scripts/forward_test_scorer.py, tests/test_scripts/ and the docs change in logical commits. Do not commit data/. Move the evidence from data/forward_test_report.md into docs/Stage2b_Live_Report.md and delete the data/ copy.
+4. If the "MT5 timestamp discrepancy" observation mentioned in your report affects signals, bar times or expiry, describe it in two sentences.
+5. git log --oneline -8, git status, last 15 lines of the full suite.
+REPORT: one-page table (PROVEN / PROBABLE / TESTED-ONLY / UNPROVEN), raw output. Stop after this.
