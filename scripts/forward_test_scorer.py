@@ -2,7 +2,9 @@
 r"""Forward-test scorer: scores live journal signals against historical bars.
 
 Read-only — no journal writes. Scores each production signal (is_test=0) by:
-1. Fetching M15 bar data from the signal's bar_ts onward.
+1. Fetching M15 bar data from the signal's bar_ts onward (bar_ts is the M15
+   closed-bar open in MetaTrader server time — not Unix UTC; the signal ts
+   field is UTC and is used for cutoffs and display).
 2. Determining whether TP or SL was hit first (or still open).
 3. Subtracting spread cost (matching backtest_confluence.py cost model).
 4. Grouping results by week and by symbol.
@@ -45,6 +47,7 @@ class ScoredSignal:
     bar_ts: int
     score: float
     bar_time: str
+    signal_ts: str
     outcome: str
     gross_r: float
     spread_r: float
@@ -146,6 +149,37 @@ def score_bar_hit(
     return None
 
 
+def _format_signal_ts(ts: str | None) -> str:
+    """Render a signal's UTC ``ts`` field for display.
+
+    The ``ts`` column is an ISO-8601 UTC string from the engine — the correct
+    reference for human-readable output. ``bar_ts`` (an MT5 server-time epoch)
+    must not be passed to ``datetime.fromtimestamp`` without the broker offset.
+    """
+    if not ts:
+        return "N/A"
+    try:
+        dt = datetime.fromisoformat(str(ts))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.strftime("%Y-%m-%d %H:%M UTC")
+    except (ValueError, TypeError):
+        return str(ts)
+
+
+def _parse_utc(ts: str | None) -> datetime | None:
+    """Parse a signal ``ts`` (UTC ISO) into a timezone-aware datetime, or None."""
+    if not ts:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(ts))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except (ValueError, TypeError):
+        return None
+
+
 def score_signal(
     signal: sqlite3.Row,
     bars: BarList,
@@ -195,9 +229,8 @@ def score_signal(
         take_profit=take_profit,
         bar_ts=signal["bar_ts"] or 0,
         score=float(signal["score"] or 0),
-        bar_time=datetime.fromtimestamp(signal["bar_ts"], tz=timezone.utc).strftime(
-            "%Y-%m-%d %H:%M UTC"
-        ) if signal["bar_ts"] else "N/A",
+        bar_time=_format_signal_ts(signal["ts"]),
+        signal_ts=str(signal["ts"] or ""),
         outcome=outcome,
         gross_r=round(gross_r, 4),
         spread_r=round(spread_r, 4),
@@ -207,12 +240,17 @@ def score_signal(
 
 
 def get_signals(conn: sqlite3.Connection, weeks: int) -> list[sqlite3.Row]:
-    """Fetch production signals (is_test=0) within the last `weeks` weeks."""
-    cutoff = int((datetime.now(timezone.utc) - timedelta(weeks=weeks)).timestamp())
+    """Fetch production signals (is_test=0) within the last `weeks` weeks.
+
+    Filters on the signal's ``ts`` column (UTC ISO text), not ``bar_ts``,
+    because ``bar_ts`` is a MetaTrader server-time epoch that is not Unix UTC.
+    """
+    cutoff_dt = datetime.now(timezone.utc) - timedelta(weeks=weeks)
+    cutoff_str = cutoff_dt.strftime("%Y-%m-%dT%H:%M:%S")
     cur = conn.execute(
         """SELECT * FROM signals
-           WHERE is_test=0 AND bar_ts >= ? ORDER BY bar_ts ASC""",
-        (cutoff,),
+           WHERE is_test=0 AND ts >= ? ORDER BY ts ASC""",
+        (cutoff_str,),
     )
     return cur.fetchall()
 
@@ -262,12 +300,18 @@ def score_signals(
 
 
 def build_weekly_results(scored: list[ScoredSignal]) -> list[dict]:
-    """Group scored signals by ISO week, computing aggregate metrics per week per symbol."""
+    """Group scored signals by ISO week, computing aggregate metrics per week per symbol.
+
+    Groups on the signal's UTC ``ts`` field, not ``bar_ts`` (which is MT5
+    server time and would group weeks incorrectly).
+    """
     week_map: dict[str, dict] = {}
     for s in scored:
-        if s.bar_ts == 0:
+        if not s.signal_ts:
             continue
-        dt = datetime.fromtimestamp(s.bar_ts, tz=timezone.utc)
+        dt = _parse_utc(s.signal_ts)
+        if dt is None:
+            continue
         week_start = dt.strftime("%Y-W%W")
         if week_start not in week_map:
             week_map[week_start] = {"week": week_start, "symbols": {}}

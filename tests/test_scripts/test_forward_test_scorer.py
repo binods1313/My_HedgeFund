@@ -54,19 +54,22 @@ def _make_signal_row(
     bar_ts=None,
     is_test=0,
     score=0.5,
+    signal_ts=None,
 ):
     """Insert a signal row and return it as a Row."""
     if bar_ts is None:
         bar_ts = TEST_BASE_TS
+    if signal_ts is None:
+        signal_ts = datetime.fromtimestamp(bar_ts, tz=timezone.utc).isoformat()
     conn.execute(
             """INSERT INTO signals (symbol, direction, score, bar_ts, ts, decision_id,
-                status, strategy, timeframe, entry_price, stop_loss, take_profit,
-                volume, expires_at, decided_by, decided_at, blocks_json, reject_reason,
-                superseded_by_decision_id, is_test, test_tag)
-               VALUES (?, ?, ?, ?, ?, ?, 'EXECUTED', 'confluence', 'M15', ?, ?, ?,
-                0.01, ?, 'engine', NULL, '{}', NULL, NULL, ?, NULL)""",
+              status, strategy, timeframe, entry_price, stop_loss, take_profit,
+              volume, expires_at, decided_by, decided_at, blocks_json, reject_reason,
+              superseded_by_decision_id, is_test, test_tag)
+             VALUES (?, ?, ?, ?, ?, ?, 'EXECUTED', 'confluence', 'M15', ?, ?, ?,
+              0.01, ?, 'engine', NULL, '{}', NULL, NULL, ?, NULL)""",
             (symbol, direction, float(score), bar_ts,
-             datetime.fromtimestamp(bar_ts, tz=timezone.utc).isoformat(),
+             signal_ts,
              f"test-decision-{signal_id}", entry_price, stop_loss, take_profit,
              datetime.fromtimestamp(bar_ts + 3600, tz=timezone.utc).isoformat(),
              is_test),
@@ -322,6 +325,57 @@ class TestGetSignals:
         assert len(signals) == 1
         assert signals[0]["id"] == 2
 
+    def test_cutoff_uses_ts_not_bar_ts(self, tmp_path):
+        """get_signals must filter on the UTC ts column, not bar_ts (broker epoch).
+
+        If a signal has a recent ts but a non-UTC bar_ts (e.g. MT5 server time
+        that leads UTC by hours), it must still be included. The filter must
+        never drop or include rows based on bar_ts.
+        """
+        conn = _make_db(tmp_path)
+        recent_utc = datetime.now(timezone.utc) - timedelta(hours=1)
+        _make_signal_row(
+            conn, signal_id=1, bar_ts=9999999999,
+            signal_ts=recent_utc.strftime("%Y-%m-%dT%H:%M:%S+00:00"),
+        )
+        signals = get_signals(conn, weeks=1)
+        assert len(signals) == 1
+
+
+class TestTimezoneFix:
+    def test_bar_time_uses_signal_ts(self, tmp_path):
+        """bar_time must come from signal ts (UTC), not datetime.fromtimestamp(bar_ts).
+
+        Simulate a broker epoch that leads UTC by ~10 hours (as seen with MT5).
+        The signal ts is the correct UTC reference.
+        """
+        conn = _make_db(tmp_path)
+        broker_epoch = 1792618200  # SQLite: 2026-10-21T21:30:00 UTC, but event ts is 18:45
+        utc_ts = "2026-10-21T18:45:45+00:00"
+        sig_row = _make_signal_row(
+            conn, signal_id=1, symbol="EURUSD", direction="BUY",
+            entry_price=1.1000, stop_loss=1.0900, take_profit=1.1200,
+            bar_ts=broker_epoch, signal_ts=utc_ts,
+        )
+        scored = score_signal(sig_row, [], "EURUSD")
+        assert scored.bar_time == "2026-10-21 18:45 UTC"
+        assert scored.signal_ts == "2026-10-21T18:45:45+00:00"
+
+    def test_weekly_grouping_uses_signal_ts(self):
+        """build_weekly_results groups by signal_ts, not bar_ts."""
+        scored = [
+            ScoredSignal(
+                signal_id=1, symbol="EURUSD", direction="BUY",
+                entry_price=1.1, stop_loss=1.09, take_profit=1.12,
+                bar_ts=1792618200, score=0.5, bar_time="x",
+                signal_ts="2026-10-21T18:45:45+00:00",
+                outcome="TP", gross_r=2.0, spread_r=0.1, net_r=1.9, hit_bars=3,
+            ),
+        ]
+        weekly = build_weekly_results(scored)
+        assert len(weekly) == 1
+        assert "2026-W" in weekly[0]["week"]
+
 
 class TestBuildSummary:
     def _make_scored(self, outcome, gross_r, net_r, spread_r=0.1, symbol="EURUSD"):
@@ -329,6 +383,7 @@ class TestBuildSummary:
             signal_id=1, symbol=symbol, direction="BUY",
             entry_price=1.1000, stop_loss=1.0900, take_profit=1.1200,
             bar_ts=TEST_BASE_TS, score=0.5, bar_time="2024-01-01 00:00 UTC",
+            signal_ts="2024-01-01T00:00:00+00:00",
             outcome=outcome, gross_r=gross_r, spread_r=spread_r, net_r=net_r,
             hit_bars=3,
         )
@@ -391,26 +446,29 @@ class TestBuildSummary:
 class TestBuildWeeklyResults:
     def test_grouping_by_week_and_symbol(self):
         from datetime import datetime, timezone
-        week1_ts = int(datetime(2024, 1, 1, tzinfo=timezone.utc).timestamp())
-        week2_ts = int(datetime(2024, 1, 8, tzinfo=timezone.utc).timestamp())
+        week1_ts = "2024-01-01T00:00:00+00:00"
+        week2_ts = "2024-01-08T00:00:00+00:00"
 
         scored = [
             ScoredSignal(
                 signal_id=1, symbol="EURUSD", direction="BUY",
                 entry_price=1.1, stop_loss=1.09, take_profit=1.12,
-                bar_ts=week1_ts, score=0.5, bar_time="x",
+                bar_ts=1704067200, score=0.5, bar_time="2024-01-01 00:00 UTC",
+                signal_ts=week1_ts,
                 outcome="TP", gross_r=2.0, spread_r=0.1, net_r=1.9, hit_bars=3,
             ),
             ScoredSignal(
                 signal_id=2, symbol="EURUSD", direction="BUY",
                 entry_price=1.1, stop_loss=1.09, take_profit=1.12,
-                bar_ts=week1_ts, score=0.5, bar_time="x",
+                bar_ts=1704067200, score=0.5, bar_time="2024-01-01 00:00 UTC",
+                signal_ts=week1_ts,
                 outcome="SL", gross_r=-1.0, spread_r=0.1, net_r=-1.1, hit_bars=5,
             ),
             ScoredSignal(
                 signal_id=3, symbol="GBPUSD", direction="SELL",
                 entry_price=1.25, stop_loss=1.26, take_profit=1.23,
-                bar_ts=week2_ts, score=0.4, bar_time="x",
+                bar_ts=1704672000, score=0.4, bar_time="2024-01-08 00:00 UTC",
+                signal_ts=week2_ts,
                 outcome="TP", gross_r=1.0, spread_r=0.1, net_r=0.9, hit_bars=10,
             ),
         ]
@@ -440,12 +498,13 @@ class TestFormatReport:
 
     def test_report_with_signals(self):
         scored = [
-            ScoredSignal(
-                signal_id=1, symbol="EURUSD", direction="BUY",
-                entry_price=1.1000, stop_loss=1.0900, take_profit=1.1200,
-                bar_ts=TEST_BASE_TS, score=0.5, bar_time="2024-01-01 00:00 UTC",
-                outcome="TP", gross_r=2.0, spread_r=0.1, net_r=1.9, hit_bars=3,
-            ),
+        ScoredSignal(
+            signal_id=1, symbol="EURUSD", direction="BUY",
+            entry_price=1.1000, stop_loss=1.0900, take_profit=1.1200,
+            bar_ts=TEST_BASE_TS, score=0.5, bar_time="2024-01-01 00:00 UTC",
+            signal_ts="2024-01-01T00:00:00+00:00",
+            outcome="TP", gross_r=2.0, spread_r=0.1, net_r=1.9, hit_bars=3,
+        ),
         ]
         weekly = build_weekly_results(scored)
         summary = build_summary(scored)
