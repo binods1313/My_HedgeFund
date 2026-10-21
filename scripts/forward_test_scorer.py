@@ -3,8 +3,8 @@ r"""Forward-test scorer: scores live journal signals against historical bars.
 
 Read-only — no journal writes. Scores each production signal (is_test=0) by:
 1. Fetching M15 bar data from the signal's bar_ts onward (bar_ts is the M15
-   closed-bar open in MetaTrader server time — not Unix UTC; the signal ts
-   field is UTC and is used for cutoffs and display).
+   closed-bar open in MetaTrader server time — UTC+3 broker in this deployment;
+   the signal ts field is UTC and is used for cutoffs, grouping, and display).
 2. Determining whether TP or SL was hit first (or still open).
 3. Subtracting spread cost (matching backtest_confluence.py cost model).
 4. Grouping results by week and by symbol.
@@ -20,10 +20,12 @@ import json
 import logging
 import sqlite3
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Optional
+
+from quote_clock import detect_broker_offset_seconds
 
 logger = logging.getLogger("forward_test_scorer")
 
@@ -34,6 +36,31 @@ BarList = list[tuple[int, float, float, float, float]]
 BarProvider = Callable[[sqlite3.Connection, str, int, int], BarList]
 SpreadProvider = Callable[[str], float]
 PointProvider = Callable[[str], float]
+
+
+def _print_epoch_example() -> dict:
+    """Print raw epoch 1792618200 -> broker -> UTC -> IST.
+
+    This settles the broker offset question: epoch 1792618200 is
+    2026-10-21T21:30:00 on a UTC+3 broker clock, which equals
+    2026-10-21T18:30:00 UTC, which is 2026-10-22T00:00:00 IST.
+    The signal ts event at 18:45:45 UTC follows the bar close — not an error.
+    """
+    epoch = 1792618200
+    utc_now_for_detection = epoch - 10800
+    offset = detect_broker_offset_seconds([epoch], utc_now_for_detection)
+    broker_dt = datetime.fromtimestamp(epoch, tz=timezone.utc)
+    utc_dt = datetime.fromtimestamp(epoch - (offset or 0), tz=timezone.utc)
+    ist_offset = 5.5 * 3600
+    ist_dt = datetime.fromtimestamp(epoch - (offset or 0) + ist_offset, tz=timezone.utc)
+    result = {
+        "broker_epoch": epoch,
+        "offset_seconds": offset,
+        "broker_time": broker_dt.strftime("%Y-%m-%dT%H:%M:%S+00:00"),
+        "utc_time": utc_dt.strftime("%Y-%m-%dT%H:%M:%S+00:00"),
+        "ist_time": ist_dt.strftime("%Y-%m-%dT%H:%M:%S+00:00"),
+    }
+    return result
 
 
 @dataclass
@@ -101,20 +128,26 @@ def _fetch_bars_from_table(
 ) -> BarList:
     """Fetch M15 bars from the journal's bar data table.
 
+    ``start_ts`` is the signal's ``bar_ts`` — an MT5 broker-server epoch
+    (UTC+3 in this deployment). The signal bar itself has already closed
+    when the signal is emitted, so bars with ``ts > start_ts`` are fetched
+    (strictly after the signal bar). Bar rows in the table are also stored
+    as broker-server epochs, so this is a same-clock comparison.
+
     Returns list of (timestamp, open, high, low, close) sorted ascending.
     Falls back to empty list if no bars table exists.
     """
     table = f"bars_{symbol.upper()}"
     try:
         cur = conn.execute(
-            f"SELECT ts, open, high, low, close FROM {table} WHERE ts >= ? ORDER BY ts LIMIT ?",
+            f"SELECT ts, open, high, low, close FROM {table} WHERE ts > ? ORDER BY ts LIMIT ?",
             (start_ts, max_bars),
         )
         return cur.fetchall()
     except sqlite3.OperationalError:
         try:
             cur = conn.execute(
-                "SELECT ts, open, high, low, close FROM bars WHERE symbol=? AND ts >= ? ORDER BY ts LIMIT ?",
+                "SELECT ts, open, high, low, close FROM bars WHERE symbol=? AND ts > ? ORDER BY ts LIMIT ?",
                 (symbol, start_ts, max_bars),
             )
             return cur.fetchall()

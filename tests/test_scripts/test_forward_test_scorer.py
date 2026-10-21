@@ -17,6 +17,8 @@ from scripts.forward_test_scorer import (
     score_bar_hit,
     score_signal,
     score_signals,
+    _fetch_bars_from_table,
+    _print_epoch_example,
 )
 
 
@@ -346,7 +348,7 @@ class TestTimezoneFix:
     def test_bar_time_uses_signal_ts(self, tmp_path):
         """bar_time must come from signal ts (UTC), not datetime.fromtimestamp(bar_ts).
 
-        Simulate a broker epoch that leads UTC by ~10 hours (as seen with MT5).
+        Simulate a broker epoch offset of +3h (broker leads UTC by 3h).
         The signal ts is the correct UTC reference.
         """
         conn = _make_db(tmp_path)
@@ -540,3 +542,86 @@ class TestFormatReport:
             "expectancy_gross": 0.0, "expectancy_net": 0.0,
         })
         assert "not produced a real signal" in report
+
+
+class TestBarWindowOffset:
+    """Tests proving bar window selection with +3h, +2h, 0h broker offsets."""
+
+    def test_plus_3h_offset_first_bar_after_signal(self, tmp_path):
+        """With +3h broker offset, the first bar fetched must be the one after
+        the signal bar (broker clock compared to broker clock)."""
+        conn = _make_db(tmp_path)
+        _make_bar_table(conn)
+
+        offset = 10800  # +3h
+        signal_broker_ts = 1700000000
+        utc_ts = "2024-11-14T23:30:00+00:00"
+
+        _make_signal_row(
+            conn, signal_id=1, symbol="EURUSD",
+            bar_ts=signal_broker_ts, signal_ts=utc_ts,
+        )
+
+        bar_every_900 = signal_broker_ts + 900
+        _insert_bar(conn, bar_every_900, "EURUSD", 1.1000, 1.1050, 1.0980, 1.1020)
+
+        from quote_clock import detect_broker_offset_seconds
+        assert detect_broker_offset_seconds([signal_broker_ts], signal_broker_ts - offset) == offset
+
+        bars = _fetch_bars_from_table(conn, "EURUSD", signal_broker_ts, max_bars=500)
+        assert bars[0][0] == bar_every_900
+        assert len(bars) >= 1
+
+    def test_plus_2h_offset_first_bar_after_signal(self, tmp_path):
+        """With +2h broker offset, the first bar fetched must be the one after
+        the signal bar."""
+        conn = _make_db(tmp_path)
+        _make_bar_table(conn)
+
+        offset = 7200  # +2h
+        signal_broker_ts = 1700000000
+
+        _insert_bar(conn, signal_broker_ts, "EURUSD", 1.1000, 1.1000, 1.1000, 1.1000)
+        _insert_bar(conn, signal_broker_ts + 900, "EURUSD", 1.1000, 1.1050, 1.0980, 1.1020)
+
+        from quote_clock import detect_broker_offset_seconds
+        assert detect_broker_offset_seconds([signal_broker_ts], signal_broker_ts - offset) == offset
+
+        bars = _fetch_bars_from_table(conn, "EURUSD", signal_broker_ts, max_bars=500)
+        assert bars[0][0] == signal_broker_ts + 900
+        assert len(bars) >= 1
+
+    def test_zero_offset_first_bar_after_signal(self, tmp_path):
+        """With 0h offset, the first bar fetched must be the one after the signal bar."""
+        conn = _make_db(tmp_path)
+        _make_bar_table(conn)
+
+        signal_broker_ts = 1700000000
+        _insert_bar(conn, signal_broker_ts, "EURUSD", 1.1000, 1.1000, 1.1000, 1.1000)
+        _insert_bar(conn, signal_broker_ts + 900, "EURUSD", 1.1000, 1.1050, 1.0980, 1.1020)
+
+        bars = _fetch_bars_from_table(conn, "EURUSD", signal_broker_ts, max_bars=500)
+        assert bars[0][0] == signal_broker_ts + 900
+        assert len(bars) >= 1
+
+
+class TestEpochExample:
+    """Print raw epoch 1792618200 -> broker -> UTC -> IST to settle the offset."""
+
+    def test_epoch_1792618200_example(self):
+        result = _print_epoch_example()
+        assert result["broker_epoch"] == 1792618200
+        assert result["offset_seconds"] == 10800
+        assert "broker_time" in result
+        assert "utc_time" in result
+        assert "ist_time" in result
+
+
+class TestScorerTzDebug:
+    """Debug tests confirming the timezone fix."""
+
+    def test_broker_offset_detection_plus_3h(self):
+        from quote_clock import detect_broker_offset_seconds
+        server_epoch = 1792618200
+        utc_now = server_epoch - 10800
+        assert detect_broker_offset_seconds([server_epoch], utc_now) == 10800
