@@ -46,6 +46,7 @@ ce7a740 fix: confirm order passes order_token to inspect_order
 ```
 
 Full suite after ticket seed: **1714 passed, 6 skipped in 56.48s**.
+Full suite after forward-test scorer + tests: **1777 passed, 6 skipped in 56.87s**.
 
 Backup before restart: `backups/engine_5057151780_20261019T212700Z.db`
 
