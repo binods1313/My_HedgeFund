@@ -460,7 +460,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Forward-test scorer for live journal signals"
     )
-    parser.add_argument("--db", required=True, help="Path to the journal SQLite DB (e.g. data\\engine_5057151780.db)")
+    parser.add_argument("--db", required=True, help="Path to the journal SQLite DB")
     parser.add_argument(
         "--weeks", type=int, default=DEFAULT_WEEKS,
         help=f"Weeks to look back (default {DEFAULT_WEEKS})",
