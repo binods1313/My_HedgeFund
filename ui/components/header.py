@@ -114,6 +114,23 @@ def _scan_badge(status: dict) -> str:
     )
 
 
+def _gap_text(status: dict) -> str:
+    """Describe the heartbeat gaps in the last six hours.
+
+    ``None`` on either field means the gap probe was not read (an older
+    journal schema, or an old SQLite without window functions). That renders
+    as "not read", never as a zero -- a card that reports "no gaps" because
+    it could not look is worse than one that admits it did not look.
+    """
+    count = status.get("heartbeat_gap_count")
+    longest = status.get("heartbeat_gap_max_s")
+    if count is None or longest is None:
+        return "not read"
+    if count == 0:
+        return "none"
+    return f"{count} (longest {longest / 60:.0f} min) · host likely slept"
+
+
 def render_header(whitelist: dict[str, list[str]]) -> str | None:
     categories = [category for category, symbols in whitelist.items() if symbols]
     if categories:
@@ -258,6 +275,9 @@ def _draw_status(snapshot) -> None:
             + '</div>'
             '<div class="status-shimmer">Guard posture · '
             + ("verified" if alive else "TerminalOffline/WARNING · writes throttled")
+            + '</div>'
+            '<div class="status-shimmer">Heartbeat gaps (6h) · '
+            + _gap_text(status)
             + '</div>'
             '<div class="status-shimmer">PAPER fills are simulated. They do not prove MT5 execution, fills or broker stop rules.</div>',
             unsafe_allow_html=True,

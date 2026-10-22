@@ -4,7 +4,7 @@ import logging
 import math
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -47,6 +47,11 @@ _ANCHOR_BARS = 100
 #: PaperExecutor mints tickets from this floor. A broker ticket is never
 #: in this sequence, and a paper ticket is never sent to MT5.
 _PAPER_TICKET_FLOOR = 9_000_000
+
+#: A heartbeat gap wider than this is a suspension, not a slow loop. The
+#: engine beats once a second (`engine.heartbeat_seconds: 5`, but the loop
+#: polls every second), so anything past a minute is the host having slept.
+HEARTBEAT_GAP_SECONDS = 60.0
 
 
 @dataclass(frozen=True)
@@ -1169,6 +1174,10 @@ def system_status(db_path: Path | None = None) -> dict[str, Any]:
         "execution_mode": None,
         "signals": "No signals yet",
         "pending_signals": None,
+        # Largest heartbeat gap in the recent window, in seconds, plus how many
+        # gaps exceeded the threshold. None means "not read", never "no gaps".
+        "heartbeat_gap_max_s": None,
+        "heartbeat_gap_count": None,
     }
     if not target.exists():
         return status
@@ -1197,6 +1206,40 @@ def system_status(db_path: Path | None = None) -> dict[str, Any]:
             heartbeat = conn.execute(
                 "SELECT ts, connected FROM heartbeats ORDER BY id DESC LIMIT 1"
             ).fetchone()
+            # -- heartbeat gaps (host sleep / suspension) --------------------
+            # A gap is the wall-clock distance between consecutive heartbeats.
+            # The engine beats once a second, so a gap far above that means the
+            # process was suspended -- typically the host sleeping -- not that
+            # the loop stalled. Reported as the largest gap and how many gaps
+            # crossed the threshold. Window functions need SQLite 3.25+; an
+            # older build leaves both fields at None ("not read") rather than
+            # inventing a zero.
+            try:
+                gap_cutoff = (
+                    datetime.now(timezone.utc) - timedelta(hours=6)
+                ).strftime("%Y-%m-%dT%H:%M:%S")
+                gap_row = conn.execute(
+                    """
+                    SELECT MAX(gap_s) AS max_gap, COUNT(*) AS n
+                    FROM (
+                        SELECT (julianday(ts) - julianday(
+                                    LAG(ts) OVER (ORDER BY ts)
+                                )) * 86400.0 AS gap_s
+                        FROM heartbeats
+                        WHERE ts >= ?
+                    )
+                    WHERE gap_s > ?
+                    """,
+                    (gap_cutoff, HEARTBEAT_GAP_SECONDS),
+                ).fetchone()
+                if gap_row is not None:
+                    status["heartbeat_gap_max_s"] = (
+                        round(float(gap_row["max_gap"]), 1)
+                        if gap_row["max_gap"] is not None else 0.0
+                    )
+                    status["heartbeat_gap_count"] = int(gap_row["n"] or 0)
+            except sqlite3.Error as exc:
+                LOG.debug("heartbeat gap probe unavailable: %s", exc)
             account = conn.execute(
                 "SELECT login, currency, server FROM journal_account WHERE id = 1"
             ).fetchone()

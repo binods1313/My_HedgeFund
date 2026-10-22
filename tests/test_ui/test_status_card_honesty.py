@@ -4,7 +4,9 @@ Covers the journal-derived fields (last trade, trades today, scan loop,
 signals). A count of zero is only shown when the trades table was read.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+
+import pytest
 
 from engine.journal import Journal
 from ui import data_access
@@ -62,3 +64,45 @@ def test_trades_today_counts_only_todays_rows(tmp_path):
     j.close()
     status = data_access.system_status(tmp_path / "card.db")
     assert status["trades_today"] == 2
+
+
+def _beat(j, ts):
+    j.execute(
+        "INSERT INTO heartbeats (state, pid, connected, ts) "
+        "VALUES ('IDLE', 40964, 1, ?)",
+        (ts,),
+    )
+
+
+def test_heartbeat_gap_is_reported_when_the_host_slept(tmp_path):
+    """A 40-minute hole in the beats is a suspension and must be visible."""
+    j = _journal(tmp_path)
+    j.set_state("IDLE", mode="PAPER")
+    now = datetime.now(timezone.utc)
+    for minutes in (50, 10):
+        _beat(j, (now - timedelta(minutes=minutes)).isoformat(timespec="seconds"))
+    j.close()
+
+    status = data_access.system_status(tmp_path / "card.db")
+    assert status["heartbeat_gap_count"] == 1
+    assert status["heartbeat_gap_max_s"] == pytest.approx(2400.0, abs=5.0)
+
+
+def test_no_heartbeat_gaps_reports_a_real_zero(tmp_path):
+    j = _journal(tmp_path)
+    j.set_state("IDLE", mode="PAPER")
+    now = datetime.now(timezone.utc)
+    for seconds in (0, 1, 2):
+        _beat(j, (now - timedelta(seconds=seconds)).isoformat(timespec="seconds"))
+    j.close()
+
+    status = data_access.system_status(tmp_path / "card.db")
+    assert status["heartbeat_gap_count"] == 0
+    assert status["heartbeat_gap_max_s"] == 0.0
+
+
+def test_unread_journal_reports_gaps_not_read_not_zero(tmp_path):
+    """An absent journal means the probe did not run. Not "no gaps"."""
+    status = data_access.system_status(tmp_path / "absent.db")
+    assert status["heartbeat_gap_count"] is None
+    assert status["heartbeat_gap_max_s"] is None
