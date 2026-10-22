@@ -20,10 +20,11 @@ import json
 import logging
 import sqlite3
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from quote_clock import detect_broker_offset_seconds
 
@@ -32,10 +33,18 @@ logger = logging.getLogger("forward_test_scorer")
 DEFAULT_WEEKS = 26
 DEFAULT_MAX_BARS = 500
 
+#: Bar source names accepted by ``--bar-source``.
+BAR_SOURCE_MT5 = "mt5"
+BAR_SOURCE_TABLE = "table"
+
+#: Bars returned by every provider: (epoch, open, high, low, close) ascending.
 BarList = list[tuple[int, float, float, float, float]]
 BarProvider = Callable[[sqlite3.Connection, str, int, int], BarList]
 SpreadProvider = Callable[[str], float]
 PointProvider = Callable[[str], float]
+
+class Mt5Unavailable(RuntimeError):
+    """The terminal could not be used. Bars are unknown, not absent."""
 
 
 def _print_epoch_example() -> dict:
@@ -80,6 +89,8 @@ class ScoredSignal:
     spread_r: float
     net_r: float
     hit_bars: int
+    #: Why the signal could not be scored. Empty when it could.
+    note: str = ""
 
 
 def asset_class_spread_points(symbol: str) -> float:
@@ -156,6 +167,113 @@ def _fetch_bars_from_table(
             return []
 
 
+def _fetch_bars_from_mt5(
+    symbol: str,
+    start_ts: int,
+    max_bars: int = DEFAULT_MAX_BARS,
+    *,
+    mt5_module: Any | None = None,
+    mt5_initialize: bool = True,
+) -> BarList:
+    """Fetch closed M15 bars from the live MT5 terminal, read-only.
+
+    ``start_ts`` is the signal's ``bar_ts`` — an MT5 broker-server epoch
+    (UTC+3 in this deployment). The broker server clock is compared against
+    itself: ``copy_rates_range`` takes broker-clock bounds, so no UTC
+    conversion happens here. The caller converts broker epochs to UTC using
+    the detected offset for display; the scorer's grouping and cutoffs use the
+    signal's UTC ``ts`` column and are unaffected.
+
+    The window starts at ``start_ts + 1`` so the signal bar itself — which has
+    already closed when the signal is emitted — is excluded. Only closed bars
+    are returned; the forming bar is never requested.
+
+    Terminal lifecycle is a single safe call: ``initialize()`` once, the
+    history read, then ``shutdown()`` in a ``finally`` so the terminal is
+    always released even when the read raises. Nothing is written to the
+    terminal and no order function is referenced.
+
+    Raises ``Mt5Unavailable`` — never returns an empty list — when the
+    terminal cannot be used. An empty list would be indistinguishable from
+    "the market printed no bars", and the caller must report INSUFFICIENT
+    rather than score a missing feed as a loss.
+    """
+    if mt5_module is None:
+        try:
+            import MetaTrader5 as mt5_module  # noqa: PLC0415 - optional dep
+        except ImportError as exc:
+            raise Mt5Unavailable("MetaTrader5 module not importable") from exc
+
+    if int(start_ts) <= 0:
+        raise Mt5Unavailable(f"signal bar_ts is {start_ts}, not a usable epoch")
+
+    started = False
+    if mt5_initialize:
+        try:
+            started = bool(mt5_module.initialize())
+        except Exception as exc:  # noqa: BLE001 - terminal faults are expected
+            raise Mt5Unavailable(
+                f"mt5.initialize() failed: {type(exc).__name__}: {exc}") from exc
+        if not started:
+            raise Mt5Unavailable("mt5.initialize() returned False")
+
+    try:
+        symbol = symbol.upper()
+        try:
+            mt5_module.symbol_select(symbol, True)
+        except Exception:  # noqa: BLE001 - not fatal; the read still decides
+            logger.debug("symbol_select(%s) failed; continuing to read", symbol)
+
+        timeframe = getattr(mt5_module, "TIMEFRAME_M15", 15)
+        end_ts = int(time.time()) + 86400  # generous: covers any broker offset
+        rates = None
+        copy_range = getattr(mt5_module, "copy_rates_range", None)
+        if copy_range is not None:
+            try:
+                rates = copy_range(symbol, timeframe,
+                                   int(start_ts) + 1, end_ts)
+            except Exception as exc:  # noqa: BLE001 - fall back to pos read
+                logger.debug("copy_rates_range failed (%s); trying from_pos", exc)
+                rates = None
+        if rates is None:
+            copy_pos = getattr(mt5_module, "copy_rates_from_pos", None)
+            if copy_pos is None:
+                raise Mt5Unavailable("MT5 exposes no history read function")
+            try:
+                rates = copy_pos(symbol, timeframe, 1, int(max_bars))
+            except Exception as exc:  # noqa: BLE001
+                raise Mt5Unavailable(
+                    f"mt5.copy_rates_from_pos failed: "
+                    f"{type(exc).__name__}: {exc}") from exc
+        if rates is None:
+            raise Mt5Unavailable("mt5 history read returned None")
+    finally:
+        if started:
+            try:
+                mt5_module.shutdown()
+            except Exception:  # noqa: BLE001 - shutdown must never mask the read
+                logger.debug("mt5.shutdown() raised; ignoring")
+
+    bars: BarList = []
+    for row in rates:
+        try:
+            epoch = int(row["time"])
+            open_p = float(row["open"])
+            high_p = float(row["high"])
+            low_p = float(row["low"])
+            close_p = float(row["close"])
+        except (KeyError, IndexError, TypeError, ValueError):
+            # A numpy structured record and a dict-like row both work; anything
+            # else is skipped rather than guessed at.
+            continue
+        if epoch > int(start_ts):
+            bars.append((epoch, open_p, high_p, low_p, close_p))
+
+    bars.sort(key=lambda b: b[0])
+    if len(bars) > max_bars:
+        bars = bars[:max_bars]
+    return bars
+
 def score_bar_hit(
     direction: str,
     entry_price: float,
@@ -219,8 +337,21 @@ def score_signal(
     symbol: str,
     spread_provider: SpreadProvider = default_spread,
     point_provider: PointProvider = default_point_size,
+    *,
+    bars_known: bool = True,
+    note: str = "",
 ) -> ScoredSignal:
-    """Score a single signal against its bars."""
+    """Score a single signal against its bars.
+
+    ``bars_known=False`` means the bar source could not be consulted at all
+    (no terminal, no bars table). The outcome is then INSUFFICIENT: the score
+    is *unknown*, which is a different fact from a scored loss and must not be
+    aggregated as one. ``bars_known=True`` with an empty ``bars`` list means
+    the source was read and the window really holds no bars, which is NO_DATA.
+
+    A missing entry or stop is also NO_DATA: the signal cannot be scored on
+    its own numbers, which is not the bar feed's fault and not a loss either.
+    """
     entry_price = float(signal["entry_price"] or 0)
     stop_loss = float(signal["stop_loss"] or 0)
     take_profit = float(signal["take_profit"] or 0)
@@ -236,9 +367,17 @@ def score_signal(
     net_r = 0.0
     outcome = "OPEN"
     hit_bars = 0
+    reason = note
 
-    if not bars or entry_price == 0 or stop_loss == 0:
+    if not bars_known:
+        outcome = "INSUFFICIENT"
+        reason = reason or "bar source unavailable"
+    elif not bars or entry_price == 0 or stop_loss == 0:
         outcome = "NO_DATA"
+        if entry_price == 0 or stop_loss == 0:
+            reason = reason or "signal has no entry or stop"
+        else:
+            reason = reason or "no bars in the window after the signal bar"
     else:
         for i, bar in enumerate(bars):
             hit = score_bar_hit(direction, entry_price, stop_loss, take_profit, bar)
@@ -269,6 +408,7 @@ def score_signal(
         spread_r=round(spread_r, 4),
         net_r=round(net_r, 4),
         hit_bars=hit_bars,
+        note=reason,
     )
 
 
@@ -288,6 +428,14 @@ def get_signals(conn: sqlite3.Connection, weeks: int) -> list[sqlite3.Row]:
     return cur.fetchall()
 
 
+def resolve_bar_provider(source: str) -> BarProvider:
+    """Return the bar provider for ``source`` (``mt5`` or ``table``)."""
+    if source == BAR_SOURCE_MT5:
+        def _provider(conn, symbol, start_ts, max_bars):
+            return _fetch_bars_from_mt5(symbol, start_ts, max_bars)
+        return _provider
+    return _fetch_bars_from_table
+
 def score_signals(
     conn: sqlite3.Connection,
     weeks: int = DEFAULT_WEEKS,
@@ -296,27 +444,54 @@ def score_signals(
     bar_provider: Optional[BarProvider] = None,
     spread_provider: Optional[SpreadProvider] = None,
     point_provider: Optional[PointProvider] = None,
+    bar_source: str = BAR_SOURCE_MT5,
+    bar_provider_factory: Optional[Callable[[str], BarProvider]] = None,
 ) -> list[ScoredSignal]:
-    """Score all production signals in the journal."""
+    """Score all production signals in the journal.
+
+    ``bar_source`` selects where bars come from: ``mt5`` (the live terminal,
+    read-only) or ``table`` (a ``bars``/``bars_{SYMBOL}`` table — the path the
+    tests use). Defaulting to ``mt5`` is deliberate: on the live journal there
+    is no bars table, so a table-default would silently score every real
+    signal as NO_DATA and read as a loss.
+
+    When the bar source is unavailable, every signal is INSUFFICIENT — not
+    NO_DATA, and never a loss. That distinction is the point: an unscored
+    signal must not move the review gate.
+    """
     conn.row_factory = sqlite3.Row
     signals = get_signals(conn, weeks)
 
     if verbose:
         logger.info("Found %d production signals in last %d weeks", len(signals), weeks)
 
-    bar_provider = bar_provider or _fetch_bars_from_table
+    if bar_provider is None:
+        factory = bar_provider_factory or resolve_bar_provider
+        bar_provider = factory(bar_source)
     spread_provider = spread_provider or default_spread
     point_provider = point_provider or default_point_size
 
     results: list[ScoredSignal] = []
     for sig in signals:
         symbol = sig["symbol"]
-        bars = bar_provider(conn, symbol, sig["bar_ts"] or 0, max_bars)
-        scored = score_signal(sig, bars, symbol, spread_provider, point_provider)
+        bars_known = True
+        note = ""
+        try:
+            bars = bar_provider(conn, symbol, sig["bar_ts"] or 0, max_bars)
+        except Mt5Unavailable as exc:
+            # The feed could not be consulted. Score nothing rather than zero.
+            bars = []
+            bars_known = False
+            note = str(exc)
+            if verbose:
+                logger.warning("  [%s] %s bars unavailable: %s",
+                               sig["id"], symbol, exc)
+        scored = score_signal(sig, bars, symbol, spread_provider, point_provider,
+                              bars_known=bars_known, note=note)
         results.append(scored)
         if verbose:
             logger.info(
-                "  [%d] %s %s entry=%.5f SL=%.5f TP=%.5f -> %s (R=%.2f net=%.2f bars=%d)",
+                "  [%d] %s %s entry=%.5f SL=%.5f TP=%.5f -> %s (R=%.2f net=%.2f bars=%d)%s",
                 scored.signal_id,
                 scored.symbol,
                 scored.direction,
@@ -327,6 +502,7 @@ def score_signals(
                 scored.gross_r,
                 scored.net_r,
                 scored.hit_bars,
+                f" [{scored.note}]" if scored.note else "",
             )
 
     return results
@@ -357,6 +533,7 @@ def build_weekly_results(scored: list[ScoredSignal]) -> list[dict]:
                 "losses": 0,
                 "open": 0,
                 "no_data": 0,
+                "insufficient": 0,
                 "gross_r_sum": 0.0,
                 "net_r_sum": 0.0,
                 "resolved": 0,
@@ -375,6 +552,9 @@ def build_weekly_results(scored: list[ScoredSignal]) -> list[dict]:
             sd["net_r_sum"] += s.net_r
         elif s.outcome == "OPEN":
             sd["open"] += 1
+        elif s.outcome == "INSUFFICIENT":
+            # Not scored. Must never be counted as a loss or a win.
+            sd["insufficient"] += 1
         elif s.outcome == "NO_DATA":
             sd["no_data"] += 1
 
@@ -405,6 +585,7 @@ def build_summary(scored: list[ScoredSignal]) -> dict:
     losses = [s for s in resolved if s.outcome == "SL"]
     open_signals = [s for s in scored if s.outcome == "OPEN"]
     no_data = [s for s in scored if s.outcome == "NO_DATA"]
+    insufficient = [s for s in scored if s.outcome == "INSUFFICIENT"]
 
     gross_rs = [s.gross_r for s in resolved]
     net_rs = [s.net_r for s in resolved]
@@ -417,6 +598,9 @@ def build_summary(scored: list[ScoredSignal]) -> dict:
         "losses": len(losses),
         "open": len(open_signals),
         "no_data": len(no_data),
+        # Unscored because the bar source could not be consulted. Excluded
+        # from `resolved` so the review gate counts resolved signals only.
+        "insufficient": len(insufficient),
     }
 
     if resolved:
@@ -491,6 +675,11 @@ def format_report(scored: list[ScoredSignal], weekly: list[dict], summary: dict)
     lines.append(f"  Resolved:       {summary['resolved']} (W:{summary['wins']} / L:{summary['losses']})")
     lines.append(f"  Still open:     {summary['open']}")
     lines.append(f"  No bar data:    {summary['no_data']}")
+    if summary.get("insufficient"):
+        lines.append(
+            f"  Insufficient:   {summary['insufficient']}"
+            "  (bar source unavailable; not scored, not counted as a loss)"
+        )
     if summary["resolved"] > 0:
         lines.append("")
         lines.append(f"  Win rate:       {summary['win_rate_%']}%")
@@ -512,6 +701,7 @@ def format_report(scored: list[ScoredSignal], weekly: list[dict], summary: dict)
                 lines.append(
                     f"    {sd['symbol']}: W={sd['wins']} L={sd['losses']} "
                     f"open={sd['open']} nodata={sd['no_data']} "
+                    f"insufficient={sd.get('insufficient', 0)} "
                     f"WR={sd['win_rate_%']}% avgR={sd['avg_net_r']} "
                     f"cost={sd['cost_bps']}bps"
                 )
@@ -521,13 +711,14 @@ def format_report(scored: list[ScoredSignal], weekly: list[dict], summary: dict)
     lines.append("")
     lines.append(
         f"  {'ID':>5}  {'SYMBOL':<10} {'DIR':<5} {'ENTRY':>9} {'SL':>9} {'TP':>9} "
-        f"{'OUT':<7} {'grossR':>7} {'netR':>7} {'bars':>5}"
+        f"{'OUT':<13} {'grossR':>7} {'netR':>7} {'bars':>5}  NOTE"
     )
     for s in scored:
         lines.append(
             f"  {s.signal_id:>5}  {s.symbol:<10} {s.direction:<5} "
             f"{s.entry_price:>9.5f} {s.stop_loss:>9.5f} {s.take_profit:>9.5f} "
-            f"{s.outcome:<7} {s.gross_r:>7.2f} {s.net_r:>7.2f} {s.hit_bars:>5}"
+            f"{s.outcome:<13} {s.gross_r:>7.2f} {s.net_r:>7.2f} {s.hit_bars:>5}"
+            f"  {s.note}"
         )
 
     return "\n".join(lines)
@@ -544,6 +735,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--json", action="store_true", help="Output as JSON")
     parser.add_argument("--verbose", action="store_true", help="Verbose logging")
+    parser.add_argument(
+        "--bar-source", choices=(BAR_SOURCE_MT5, BAR_SOURCE_TABLE),
+        default=BAR_SOURCE_MT5,
+        help=("Where bars come from. 'mt5' reads the live terminal read-only "
+              "(default); 'table' reads a bars/bars_{SYMBOL} SQLite table "
+              "(tests and fixtures)."),
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -556,9 +754,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: Database not found: {db_path}", file=sys.stderr)
         return 1
 
-    conn = sqlite3.connect(str(db_path))
+    # Read-only at the SQLite level, not merely by convention. `mode=ro` plus
+    # `PRAGMA query_only` means this script cannot write to the journal even if
+    # a future edit tried to: the engine owns that file and a scorer must never
+    # checkpoint its WAL or advance its schema.
+    conn = sqlite3.connect(db_path.as_uri() + "?mode=ro", uri=True)
+    conn.execute("PRAGMA query_only = ON")
     try:
-        scored = score_signals(conn, weeks=args.weeks, verbose=args.verbose)
+        scored = score_signals(conn, weeks=args.weeks, verbose=args.verbose,
+                               bar_source=args.bar_source)
         weekly = build_weekly_results(scored)
         summary = build_summary(scored)
 
@@ -582,6 +786,7 @@ def main(argv: list[str] | None = None) -> int:
                         "spread_r": s.spread_r,
                         "net_r": s.net_r,
                         "hit_bars": s.hit_bars,
+                        "note": s.note,
                     }
                     for s in scored
                 ],
