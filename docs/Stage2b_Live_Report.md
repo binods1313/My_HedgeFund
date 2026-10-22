@@ -281,3 +281,14 @@ The old report's "450" used `datetime('now','-60 minutes')` which returns `'YYYY
 ## Review gate
 
 The forward-test scorer result must be reviewed after **100 resolved real signals or 4 weeks of live scanning, whichever is later**. If the cost-adjusted average R is negative and the 95% confidence interval of net R falls below zero, the result must be pulled from the live path and the strategy must not proceed to sizing or approval. This is not a profitability claim — it is a stop-loss on forward-test evaluation. If any gate fails, the scorer output is marked `INSUFFICIENT` and must not be used for live sizing or approval decisions.
+
+Forward-test data is intermittent when the host sleeps; the review gate counts resolved signals only.
+
+## Bar source
+
+The scorer reads bars from the live MT5 terminal by default (`--bar-source mt5`), read-only: `mt5.initialize()` once, a closed-bar M15 history read (`copy_rates_range` for the window after the signal bar, falling back to `copy_rates_from_pos` with `start_pos=1` so the forming bar is skipped), then `mt5.shutdown()` in a `finally` so the terminal is always released. No order function is referenced. `--bar-source table` keeps the `bars`/`bars_{SYMBOL}` SQLite path for tests and fixtures.
+
+Bar epochs are compared on the broker server clock, which is what MT5 stores: the signal's `bar_ts` and the returned bar times are the same clock, so no conversion happens in the comparison. The detected broker offset is used only to render broker epochs as UTC for humans; cutoffs, weekly grouping, and display all use the signal's UTC `ts` column, which the engine already writes.
+
+When the terminal is unavailable, every signal scores **`INSUFFICIENT`**, not `NO_DATA` and never a loss. The distinction matters: `NO_DATA` means the source was read and the window holds no bars, while `INSUFFICIENT` means the source could not be consulted, so the outcome is unknown. Only `TP` and `SL` count as resolved; `INSUFFICIENT` is excluded from the win rate, the R averages, and the review-gate count, so an absent feed can never move the gate.
+
