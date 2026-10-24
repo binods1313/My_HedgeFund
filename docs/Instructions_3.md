@@ -1,12 +1,58 @@
-Linux-sandbox report accepted for: uptime reconciliation (~41%), AUDUSD id=4 facts, scorer design. Nothing from the sandbox is verified on Windows. You are the Windows coder with the venv, MT5 and browser. PAPER only, no --live, approve-first, auto-execute off, brain parked, do not touch magic-234000, DEMO blocked, no push, no merge to main. No strategy/stop/TP changes without my approval. No engine restart without backup_journal() and verified PID. No new documents (update docs/Stage2b_Live_Report.md only). Raw output; "not run" otherwise.
+Project path:
+E:\HedgeFund_Binod_v2
 
-1. TREE AND VERIFY FIRST:
- a. git status, git diff --stat, and git diff --ignore-cr-at-eol --stat. Classify every modified file as real content or line-ending noise. Show the real diffs of .secrets.baseline, .env.example, .gitignore, .pre-commit-config.yaml, .streamlit/config.toml. Check core.autocrlf and .gitattributes. Do not commit noise; do not discard content.
- b. The sandbox changed six files (scripts/forward_test_scorer.py, tests/test_scripts/test_forward_test_scorer.py, ui/data_access.py, ui/components/header.py, tests/test_ui/test_status_card_honesty.py, docs/Stage2b_Live_Report.md). Run the FULL suite on Windows with the project venv and paste the last 15 lines. Review those diffs; fix anything failing; then commit them in logical commits (not the noise).
-2. AUDUSD id=4 (first real 5/5 signal, rejected "stop_quality"): paste the verbatim row (decision_id, blocks_json, ts, bar_ts), the matching evaluate and signal_rejected events with context_json. Reproduce the stop calculation for that bar: entry, sweep level and extreme, wick stop, tick buffer, ATR(14), broker stops level, spread, min distance, resulting stop distance, and which stop_quality rule failed. Say whether the rejection is correct or a bug. Then query ALL stop_quality rejections in the journal (count, by symbol, and the failing rule) and the count of 5/5 evaluations that passed vs failed. Do not change the rule; report only.
- Also confirm it shows under Rejected on the Signals page with reason stop_quality (drive the dashboard).
-3. UPTIME (blocker for the forward test): the engine ran only ~41% of the last 26 hours because the host sleeps. Run on this machine and paste output: powercfg /a, powercfg /requests, powercfg /query SCHEME_CURRENT SUB_SLEEP, and Get-WinEvent -FilterHashtable @{LogName='System'; ProviderName='Microsoft-Windows-Kernel-Power'; StartTime=(Get-Date).AddDays(-2)} | Where-Object { $_.Id -in 506,507,42,107,105 } | Select TimeCreated,Id,Message. Match each gap to a sleep/wake pair. Give me exact steps to keep the PC awake on AC (Sleep and Hibernate Never when plugged in; check "Austerity Battery Drain Budget Exceeded" as the logged reason, so confirm AC vs battery). Do not edit registry or Modern Standby settings. Tell me when the settings are applied and verify a heartbeat gap-free hour afterwards.
-4. STAGE 4 (Research Desk Analysis) only after 1-3, tests first, full suite green on Windows: agents 01-05, 07, 08 run advisory-only on the SAME 300-bar M15 frame after evaluate() on a newly closed bar, per-agent try/except, inside the cycle budget, no extra MT5 reads, never altering a signal, risk gate, approval or executor; import-guard test extended. Agents without inputs show "Waiting for input: X"; agent 06 shows "Needs FINANCIAL_DATASETS_API_KEY (not set)". Forward-only schema v5 with agent_results (symbol, agent_id, bar_open_epoch, status, label, summary, detail_json; unique per symbol/agent/bar; 7-day retention), same procedure as v4 (backup_journal(), test on a COPY with row counts and integrity_check, UI read-only with schema notice, engine refuses newer schema). Cards: "Running - last run HH:MM UTC - N symbols", "Idle - waiting for next M15 bar", "Waiting for input: X", "Needs key: X (not set)", "Failed last run: reason" plus a one-line summary; card 09 last risk decision or "No decision yet"; card 10 last execution decision or "No decision yet"; remove "Deterministic" as a status; add "Advisory only. Not validated. Does not affect signals." Add research.enabled (default on in PAPER); show git diff of config.yaml first. Tests: signals identical with agents on/off, one agent raising is isolated, budget respected, MT5 read count unchanged, every card state renders, vendor-name guard passes, migration test on a copy. Then backup, verified PID, restart, and paste startup events, v5 schema_version row and the first agent_results rows after the next closed M15 bar.
-5. Dashboards: tell me the PID and command line on 8501 and 8502; I will stop 8501 as administrator.
-6. git log --oneline -8, git status, last 15 lines of the full suite.
-REPORT: one-page table (PROVEN / PROBABLE / TESTED-ONLY / UNPROVEN), raw output. Stop after step 3 if the uptime problem is not fixed and tell me what you need from me.
+Task:
+Push the entire project to GitHub properly and verify that everything is committed successfully.
+
+Requirements:
+
+1. Inspect the repository at:
+   E:\HedgeFund_Binod_v2
+
+2. Check whether it is already a Git repository:
+   git status
+   git remote -v
+
+3. If Git is not initialized:
+   git init
+
+4. Create a proper .gitignore and exclude:
+   - .env
+   - .env.*
+   - node_modules
+   - __pycache__
+   - *.pyc
+   - venv
+   - .venv
+   - dist
+   - build
+   - logs
+   - *.log
+   - any API keys, secrets, credentials, PATs, tokens, broker credentials, MT5 credentials, and private configuration files
+
+5. Scan the repository for secrets before pushing and report any findings.
+
+6. Commit all project files:
+   git add .
+   git commit -m "Initial commit"
+
+7. Connect the GitHub remote repository that I will provide.
+
+8. Push all branches and verify the push succeeded:
+   git push -u origin main
+
+9. After completion provide:
+   - active branch
+   - remote URL
+   - latest commit hash
+   - GitHub repository URL
+   - confirmation that push succeeded
+
+10. If the push fails for any reason:
+    - diagnose the issue
+    - fix it
+    - retry
+    - provide complete details of what was changed
+
+Do not delete or modify project code unless absolutely necessary.
+Show all commands executed and explain any fixes made.

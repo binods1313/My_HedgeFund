@@ -51,11 +51,17 @@ gitlog*.txt
 .DS_Store
 Thumbs.db
 
+# Personal push prompts
+push_prompt.txt
+
 # Docker
 .dockerignore
 
 # Supabase
 /.supabase
+
+# Playwright test artifacts
+.playwright-mcp/
 
 # Vite/React build
 dist/
@@ -72,6 +78,7 @@ coverage/
 # Temporary
 tmp/
 temp/
+*.lock
 
 # Python
 __pycache__/
@@ -80,6 +87,9 @@ __pycache__/
 venv/
 *.pyd
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.streamlit/
 # Engine data: transient artifacts that must never enter version history
 data/news_cache.json
 data/ui_prefs.json

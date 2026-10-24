@@ -23,6 +23,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from engine.journal import Journal, utc_now_iso
+from engine.risk import RiskConfigError
 from engine.state import STATE_IDLE, STATE_SCANNING
 from quote_clock import detect_broker_offset_seconds
 
@@ -46,6 +47,7 @@ _RISK_PRECHECK_FAILED = "RISK_PRECHECK_FAILED"
 _DRIFT_BLOCKED = "DRIFT_BLOCKED"
 _STRATEGY_NO_SIGNAL = "STRATEGY_NO_SIGNAL"
 _STOP_QUALITY = "stop_quality"
+_MISSING_TICK_SPEC = "MISSING_TICK_SPEC"
 
 # Deterministic UUID5 namespace for signal decision IDs.
 _SIGNAL_NAMESPACE = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
@@ -147,8 +149,58 @@ class ScanOutcome:
     scanned: int = 0
     errors: int = 0
     deferred: int = 0
-    skipped: int = 0
-    signals: int = 0
+     skipped: int = 0
+     signals: int = 0
+
+
+def _preload_specs(journal: Journal, risk_engine: Any,
+                    gateway: Any, symbols: list[str]) -> None:
+     """Load tick specs for all symbols from the broker and cache them.
+
+     Each symbol is probed individually via ``gateway.symbol_info``. A symbol
+     whose spec cannot be loaded (broker returns None, attribute missing, or an
+     exception) gets a visible WARNING logged and is skipped — the cycle
+     continues with the remaining symbols rather than aborting.
+     """
+     existing = dict(getattr(risk_engine, "_specs", {}) or {})
+     for symbol in symbols:
+         name = str(symbol).upper()
+         if name in existing:
+             continue
+         try:
+             info = gateway.symbol_info(symbol)
+         except Exception:
+             journal.log_event(
+                 "signal",
+                 f"{symbol}: tick spec load failed (gateway error)",
+                 severity="WARNING", source="engine",
+                 context={"kind": _MISSING_TICK_SPEC, "symbol": name},
+             )
+             continue
+         if info is None:
+             journal.log_event(
+                 "signal",
+                 f"{symbol}: tick spec unavailable from broker (symbol_info None)",
+                 severity="WARNING", source="engine",
+                 context={"kind": _MISSING_TICK_SPEC, "symbol": name},
+             )
+             continue
+         tick_value = float(getattr(info, "trade_tick_value", 0.0) or 0.0)
+         tick_size = float(getattr(info, "trade_tick_size", 0.0) or 0.0)
+         if tick_value and tick_size:
+             existing[name] = {
+                 "trade_tick_value": tick_value,
+                 "trade_tick_size": tick_size,
+             }
+         else:
+             journal.log_event(
+                 "signal",
+                 f"{symbol}: tick spec missing trade_tick_value/trade_tick_size",
+                 severity="WARNING", source="engine",
+                 context={"kind": _MISSING_TICK_SPEC, "symbol": name},
+             )
+             continue
+     risk_engine.set_symbol_specs(existing)
 
 
 @dataclass
@@ -192,10 +244,10 @@ class ScanCycle:
             may = getattr(guard, "may_write_telemetry", None)
             return True if may is None else bool(may())
 
-         # Signal-writing callables — only wired when the engine exposes
-         # a strategy evaluator and a risk pre-checker. Stage 1 (no signal
-         # generation) leaves both as None so the cycle behaves exactly
-         # as before.
+        # Signal-writing callables — only wired when the engine exposes
+        # a strategy evaluator and a risk pre-checker. Stage 1 (no signal
+        # generation) leaves both as None so the cycle behaves exactly
+        # as before.
         read_history = getattr(engine, "read_history", None)
         evaluate_strategy = getattr(engine, "evaluate_strategy", None)
         build_order_intent = None
@@ -221,13 +273,33 @@ class ScanCycle:
                     return volume_min * mult
                 return None
 
-            def build_order_intent(symbol: str, direction: str, entry_price: float,
-                                   stop_loss: float, view: dict) -> tuple[float, str, list[str]]:
+        # Preload tick specs for all scan symbols from the gateway so the
+        # risk pre-check does not raise RiskConfigError for a missing spec.
+        # Specs are cached on the risk engine; each symbol that cannot be
+        # loaded gets a visible per-symbol error (not a swallowed cycle
+        # failure) and the remaining symbols continue.
+        if risk_engine is not None and _gateway is not None:
+            _preload_specs(journal, risk_engine, _gateway, list(self.symbols))
+
+        def build_order_intent(symbol: str, direction: str, entry_price: float,
+                               stop_loss: float, view: dict) -> tuple[float, str, list[str]]:
+            try:
                 intent = risk_engine.build_order_intent(
                     symbol=symbol, side=direction, volume=1.0,
                     entry_price=entry_price, stop_loss=stop_loss,
                     spread_points=None, max_spread_points=None,
                 )
+            except RiskConfigError as exc:
+                # A missing spec must not abort the whole scan cycle.
+                # It degrades to a per-symbol risk rejection so the
+                # REJECTED row is written with a visible reason.
+                journal.log_event(
+                    "signal",
+                    f"{symbol}: {exc}",
+                    severity="WARNING", source="engine",
+                    context={"kind": _MISSING_TICK_SPEC, "symbol": symbol},
+                )
+                return 0.0, _RISK_PRECHECK_FAILED, [str(exc)]
                 decision = risk_engine.evaluate(intent, engine.account)
                 if not decision.approved:
                     return 0.0, _RISK_PRECHECK_FAILED, decision.reasons
