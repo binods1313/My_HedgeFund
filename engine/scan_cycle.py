@@ -200,7 +200,15 @@ def _preload_specs(journal: Journal, risk_engine: Any,
                  context={"kind": _MISSING_TICK_SPEC, "symbol": name},
              )
              continue
-     risk_engine.set_symbol_specs(existing)
+     if hasattr(risk_engine, "set_symbol_specs"):
+          risk_engine.set_symbol_specs(existing)
+     else:
+          journal.log_event(
+               "scan",
+               "risk engine lacks set_symbol_specs; skipping tick-spec cache",
+               severity="DEBUG", source="engine",
+               context={"kind": "spec_cache_skipped"},
+          )
 
 
 @dataclass
@@ -305,43 +313,45 @@ class ScanCycle:
                     context={"kind": _MISSING_TICK_SPEC, "symbol": symbol},
                 )
                 return 0.0, _RISK_PRECHECK_FAILED, [str(exc)]
-                decision = risk_engine.evaluate(intent, engine.account)
-                if not decision.approved:
-                    return 0.0, _RISK_PRECHECK_FAILED, decision.reasons
 
-                # Build a proper SymbolSpec for LotSizer from the broker spec.
-                from ui.risk_calc import SymbolSpec
-                info = _gateway.symbol_info(symbol) if _gateway else None
-                if info is None:
-                    return 0.0, _RISK_PRECHECK_FAILED, ["spec_unavailable"]
+            decision = risk_engine.evaluate(intent, engine.account)
+            if not decision.approved:
+                return 0.0, _RISK_PRECHECK_FAILED, \
+                    list(getattr(decision, "reasons", ()) or ())
 
-                tick_value_loss = (getattr(info, "trade_tick_value_loss", None)
-                                   or getattr(info, "trade_tick_value", None))
-                volume_min = getattr(info, "volume_min", None)
-                volume_cap = _resolve_volume_cap(symbol, volume_min)
+            # Build a proper SymbolSpec for LotSizer from the broker spec.
+            from ui.risk_calc import SymbolSpec
+            info = _gateway.symbol_info(symbol) if _gateway else None
+            if info is None:
+                return 0.0, _RISK_PRECHECK_FAILED, ["spec_unavailable"]
 
-                spec = SymbolSpec(
-                    symbol=symbol,
-                    category="forex",
-                    digits=int(getattr(info, "digits", 5) or 5),
-                    point=float(getattr(info, "point", 1e-5) or 1e-5),
-                    tick_size=float(intent.tick_size),
-                    tick_value_loss=float(tick_value_loss or 0.0),
-                    contract_size=float(getattr(info, "trade_contract_size", 1.0) or 1.0),
-                    volume_min=float(volume_min or 0.0),
-                    volume_max=float(getattr(info, "volume_max", 0.0) or 0.0),
-                    volume_step=float(getattr(info, "volume_step", 0.0) or 0.0),
-                )
+            tick_value_loss = (getattr(info, "trade_tick_value_loss", None)
+                               or getattr(info, "trade_tick_value", None))
+            volume_min = getattr(info, "volume_min", None)
+            volume_cap = _resolve_volume_cap(symbol, volume_min)
 
-                from engine.sizing import LotSizer
-                lot_sizer = LotSizer(spec, volume_cap=volume_cap)
-                result = lot_sizer.size(entry_price, stop_loss, intent.risk_amount)
-                if not result.ok:
-                    reason = result.reason or "UNSIZABLE"
-                    if reason.startswith("LOTS_BELOW_MINIMUM") or "below" in reason.lower():
-                        reason = "Too small to size within the risk limit"
-                    return 0.0, _RISK_PRECHECK_FAILED, [reason]
-                return result.lots, "", []
+            spec = SymbolSpec(
+                symbol=symbol,
+                category="forex",
+                digits=int(getattr(info, "digits", 5) or 5),
+                point=float(getattr(info, "point", 1e-5) or 1e-5),
+                tick_size=float(intent.tick_size),
+                tick_value_loss=float(tick_value_loss or 0.0),
+                contract_size=float(getattr(info, "trade_contract_size", 1.0) or 1.0),
+                volume_min=float(volume_min or 0.0),
+                volume_max=float(getattr(info, "volume_max", 0.0) or 0.0),
+                volume_step=float(getattr(info, "volume_step", 0.0) or 0.0),
+            )
+
+            from engine.sizing import LotSizer
+            lot_sizer = LotSizer(spec, volume_cap=volume_cap)
+            result = lot_sizer.size(entry_price, stop_loss, intent.risk_amount)
+            if not result.ok:
+                reason = result.reason or "UNSIZABLE"
+                if reason.startswith("LOTS_BELOW_MINIMUM") or "below" in reason.lower():
+                    reason = "Too small to size within the risk limit"
+                return 0.0, _RISK_PRECHECK_FAILED, [reason]
+            return result.lots, "", []
 
         return self.run(
             state=engine.state,
