@@ -117,6 +117,8 @@ class Engine:
     scanner: object | None = None
     #: Stage 1b signal wiring. None unless a strategy module is configured.
     strategy: object | None = None
+    #: Observational Kronos hook (callable or None). Never gates.
+    kronos_hook: object | None = None
     #: A repeating telemetry gap is journalled at most this often, in seconds.
     _telemetry_warn_every: float = 300.0
     #: reason -> monotonic time the reason was last journalled.
@@ -1013,12 +1015,23 @@ def build_engine(*, config_path: Path | str | None = None,
         from engine.strategy import evaluate as _strategy_evaluate
         strategy = _strategy_evaluate
 
+    kronos_hook = None
+    try:
+        from engine.research.kronos_hook import build_kronos_hook
+        kronos_hook = build_kronos_hook(config, journal)
+    except Exception as exc:  # noqa: BLE001 - hook is optional
+        journal.log_event(
+            "kronos", f"hook build failed, continuing without it: {exc}",
+            severity="WARNING", source="engine",
+            context={"kind": "kronos_error"})
+
     engine = Engine(config=config, journal=journal, state=state_machine,
                   gateway=gateway, executor=executor, commands=commands,
                   risk=risk, equity_tracker=equity_tracker,
                   guard=guard, _account_verified=startup_verified,
                   _telegram_initialized=telegram_initialized,
-                  scanner=scanner, strategy=strategy)
+                  scanner=scanner, strategy=strategy,
+                  kronos_hook=kronos_hook)
     from engine.signal_approval import ApprovalContext
     engine.commands.approval_ctx = lambda: ApprovalContext.from_engine(engine)
     return engine

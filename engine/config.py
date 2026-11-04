@@ -130,6 +130,8 @@ class EngineConfig:
     volume_caps: dict[str, float] = field(default_factory=dict)
     #: Multiplier used when a symbol has no explicit ``volume_cap``.
     volume_cap_default_multiplier: int = 10
+    #: Observatory Kronos settings (None = disabled). Never a trade gate.
+    kronos: Any = None
 
     @property
     def db_path(self) -> Path:
@@ -222,6 +224,12 @@ def load_engine_config(root: Path | str | None = None,
 
     execution_mode = _parse_execution_mode(raw.get("execution_mode"))
 
+    kronos = None
+    kronos_raw = raw.get("kronos")
+    if isinstance(kronos_raw, dict):
+        from config_loader import KronosSettings
+        kronos = KronosSettings.model_validate(kronos_raw)
+
     return EngineConfig(
         mode=mode,
         live_confirmation_required=bool(raw.get("live_confirmation_required", True)),
@@ -239,6 +247,7 @@ def load_engine_config(root: Path | str | None = None,
         volume_cap_default_multiplier=int(
             symbols_section.get("volume_cap_default_multiplier", 10)
         ),
+        kronos=kronos,
     )
 
 

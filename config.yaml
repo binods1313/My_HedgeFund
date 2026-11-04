@@ -162,6 +162,21 @@ scanner:
   scan_cadence: on_new_bar          # Only compute on a newly closed bar
   ai_signals_enabled: true          # Enable Stage 1b signal generation
 
+# ── Kronos ML Forecast (advisory) ─────────────────────────────────────────────
+# Standalone inference service: D:/skills/Kronos/kronos_server.py
+# (separate venv — torch/pandas-2.x conflict with this project's deps).
+# Disabled until the paper scorecard (scripts/kronos_paper_eval.py) shows
+# directional edge. When enabled, forecasts are journaled alongside signals;
+# they never gate an order by default.
+kronos:
+  enabled: false
+  endpoint: http://127.0.0.1:8610
+  timeout_seconds: 60
+  horizon_bars: 8
+  sample_count: 8
+  min_agreement: 0.60
+  max_age_seconds: 600
+
 # ── Trading Sessions ─────────────────────────────────────────────────────────
 sessions:
   # New entries blocked outside these UTC hour ranges (per asset class)

@@ -146,7 +146,7 @@ class VerificationSettings(StrictModel):
 
 
 class SymbolSettings(StrictModel):
-    """symbols section.
+    """``symbols`` section.
 
     whitelist is a mapping of asset class -> list of symbols, matching
     config.yaml. Explicit legacy-to-broker aliases and per-symbol spread
@@ -165,6 +165,23 @@ class SymbolSettings(StrictModel):
     volume_cap_default_multiplier: int = Field(default=10, ge=1, le=100)
 
 
+class KronosSettings(StrictModel):
+    """Advisory Kronos ML forecast settings (research block, never a gate).
+
+    `enabled` is off until the paper scorecard
+    (scripts/kronos_paper_eval.py) shows directional edge. When on, forecasts
+    are journaled alongside signals; they never block an order by default.
+    """
+
+    enabled: bool = False
+    endpoint: str = Field(default="http://127.0.0.1:8610")
+    timeout_seconds: float = Field(default=60, gt=0, le=600)
+    horizon_bars: int = Field(default=8, ge=1, le=120)
+    sample_count: int = Field(default=8, ge=1, le=128)
+    min_agreement: float = Field(default=0.6, ge=0, le=1)
+    max_age_seconds: int = Field(default=600, ge=0)
+
+
 class AppConfig(StrictModel):
     llm: LlmSettings
     trading: TradingSettings
@@ -172,6 +189,7 @@ class AppConfig(StrictModel):
     display: DisplaySettings = Field(default_factory=DisplaySettings)
     verification: VerificationSettings = Field(
         default_factory=VerificationSettings)
+    kronos: KronosSettings = Field(default_factory=KronosSettings)
 
     @model_validator(mode="after")
     def _whitelists_agree(self) -> "AppConfig":
@@ -256,9 +274,9 @@ def load_config(path: Path | str | None = None) -> AppConfig:
         "trading": _required(raw, "trading", cfg_path),
         "symbols": symbols,
     }
-    # display and verification are optional in the YAML; the models supply
-    # documented defaults so a minimal config still validates.
-    for optional in ("display", "verification"):
+    # display, verification and kronos are optional in the YAML; the models
+    # supply documented defaults so a minimal config still validates.
+    for optional in ("display", "verification", "kronos"):
         if isinstance(raw.get(optional), dict):
             payload[optional] = raw[optional]
     return AppConfig.model_validate(payload)

@@ -149,8 +149,8 @@ class ScanOutcome:
     scanned: int = 0
     errors: int = 0
     deferred: int = 0
-     skipped: int = 0
-     signals: int = 0
+    skipped: int = 0
+    signals: int = 0
 
 
 def _preload_specs(journal: Journal, risk_engine: Any,
@@ -220,10 +220,14 @@ class ScanCycle:
     #: Last offset this process accepted. A later jump other than ±3600s
     #: (DST) is refused until the process restarts.
     _accepted_offset: int | None = None
+    #: Observational Kronos hook (callable or None). Called after a PENDING
+    #: signal row is written; never gates or modifies anything.
+    kronos_hook: Callable | None = None
 
     def run_with_engine(self, engine) -> ScanOutcome:
         """Adapt the live engine. Reads the gateway once per started cycle."""
         mode = getattr(getattr(engine, "config", None), "mode", "PAPER")
+        journal = getattr(engine, "journal", None)
 
         def read_market(symbols: list[str]) -> dict:
             return engine.gateway.snapshot(symbols)
@@ -251,6 +255,7 @@ class ScanCycle:
         read_history = getattr(engine, "read_history", None)
         evaluate_strategy = getattr(engine, "evaluate_strategy", None)
         build_order_intent = None
+        kronos_hook = getattr(engine, "kronos_hook", None)
         risk_engine = getattr(engine, "risk", None)
         _engine_config = getattr(engine, "config", None)
         _gateway = getattr(engine, "gateway", None)
@@ -348,6 +353,7 @@ class ScanCycle:
             read_history=read_history,
             evaluate_strategy=evaluate_strategy,
             build_order_intent=build_order_intent,
+            kronos_hook=kronos_hook,
         )
 
     def run(
@@ -366,6 +372,7 @@ class ScanCycle:
         evaluate_strategy: Callable[[str, Any], Any] | None = None,
         build_order_intent: Callable[[str, str, float, float, dict],
                                      tuple[float, str, list[str]]] | None = None,
+        kronos_hook: Callable | None = None,
         utc_now_epoch: float | None = None,
     ) -> ScanOutcome:
         """Attempt one cycle. Returns to IDLE if it entered SCANNING."""
@@ -375,6 +382,8 @@ class ScanCycle:
         stamp = now_iso or utc_now_iso()
         now_m = clock()
         ticked = False
+        if kronos_hook is not None:
+            self.kronos_hook = kronos_hook
 
         def _finish(outcome: ScanOutcome) -> ScanOutcome:
             if ticked and getattr(state, "state", None) == STATE_SCANNING:
@@ -840,6 +849,7 @@ class ScanCycle:
                 f"{symbol}: PENDING signal written (decision={decision_id})",
                 decision_id=decision_id, context={"kind": "signal_pending"},
             )
+            self._maybe_kronos(journal, symbol, signal, decision_id, bar_ts, stamp, df)
             return 1
 
         # No risk pre-check callable — write PENDING without sizing.
@@ -861,7 +871,39 @@ class ScanCycle:
             f"{symbol}: PENDING signal written (decision={decision_id})",
             decision_id=decision_id, context={"kind": "signal_pending"},
         )
+        self._maybe_kronos(journal, symbol, signal, decision_id, bar_ts, stamp, df)
         return 1
+
+    def _maybe_kronos(self, journal, symbol, signal, decision_id, bar_ts,
+                      stamp, df) -> None:
+        """Run the observational Kronos hook after a PENDING write.
+
+        Strictly fail-open: any hook error is journaled as `kronos_error`
+        and never propagates to the scan cycle. Returns None always.
+        """
+        hook = self.kronos_hook
+        if hook is None:
+            return
+        try:
+            hook(
+                symbol=symbol,
+                direction=getattr(signal, "direction", None),
+                df=df,
+                decision_id=decision_id,
+                bar_ts=bar_ts,
+                stamp=stamp,
+            )
+        except Exception as exc:  # noqa: BLE001 - fail-open
+            try:
+                journal.log_event(
+                    "kronos",
+                    f"{symbol}: hook raised: {exc}",
+                    severity="WARNING", source="engine",
+                    context={"kind": "kronos_error", "symbol": symbol,
+                             "ts": stamp},
+                )
+            except Exception:  # noqa: BLE001
+                pass
 
     def _log_evaluation(self, journal, symbol, signal, bar_open_epoch,
                         decision_id, decision_inputs, cycle_id, stamp) -> None:
