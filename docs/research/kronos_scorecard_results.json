@@ -1,0 +1,53 @@
+{
+  "mode": "local",
+  "timeframe": "M15",
+  "context": 256,
+  "pred_len": 8,
+  "samples": 8,
+  "step": 48,
+  "max_windows": 130,
+  "symbols": {
+    "EURUSD": {
+      "n_windows": 77,
+      "attempted": 78,
+      "n_forecast_none": 0,
+      "n_flat_moves": 1,
+      "accuracy": 0.5584,
+      "base_rate_up": 0.4935,
+      "edge_over_base": 0.0519,
+      "agreement_mean": 0.6656,
+      "mean_abs_expected_move_pct": 0.0361,
+      "hit_misses": "43/77",
+      "date_from": "2026-09-07T20:15:00+00:00",
+      "date_to": "2026-11-04T02:45:00+00:00"
+    },
+    "GBPUSD": {
+      "n_windows": 77,
+      "attempted": 78,
+      "n_forecast_none": 0,
+      "n_flat_moves": 1,
+      "accuracy": 0.6104,
+      "base_rate_up": 0.5974,
+      "edge_over_base": 0.013,
+      "agreement_mean": 0.6834,
+      "mean_abs_expected_move_pct": 0.0388,
+      "hit_misses": "47/77",
+      "date_from": "2026-09-07T20:15:00+00:00",
+      "date_to": "2026-11-04T02:45:00+00:00"
+    },
+    "XAUUSD": {
+      "n_windows": 78,
+      "attempted": 78,
+      "n_forecast_none": 0,
+      "n_flat_moves": 0,
+      "accuracy": 0.4872,
+      "base_rate_up": 0.4872,
+      "edge_over_base": -0.0256,
+      "agreement_mean": 0.7388,
+      "mean_abs_expected_move_pct": 0.1393,
+      "hit_misses": "38/78",
+      "date_from": "2026-08-24T01:30:00+00:00",
+      "date_to": "2026-11-04T02:45:00+00:00"
+    }
+  }
+}
