@@ -61,6 +61,8 @@ class PendingTrade:
     confidence: float
     rationale: str
     created_at: datetime = field(default_factory=datetime.now)
+    #: Optional Time Machine summary (advisory; appended to the approval message).
+    timemachine: dict | None = field(default=None)
 
     # internal tracking
     _processed: bool = field(default=False, init=False, repr=False)
@@ -146,6 +148,22 @@ def _build_approval_message(trade: PendingTrade) -> str:
            f"Trade ID: {trade.trade_id}\n\n"
            f"Reply:\nYES {trade.trade_id}\nto execute.\n\n"
            f"Reply:\nNO {trade.trade_id}\nto cancel.")
+
+    tm = trade.timemachine
+    if isinstance(tm, dict) and tm.get("verdict"):
+        p_target = tm.get("p_target")
+        p_stop = tm.get("p_stop")
+        avg_r = tm.get("avg_R")
+        tm_block = "⏱ Time Machine (Monte Carlo, advisory)\n"
+        if p_target is not None:
+            tm_block += f"Target first: {p_target}% | Stop first: {p_stop}%\n"
+        if avg_r is not None:
+            tm_block += f"Average R: {avg_r}\n"
+        tm_block += f"Verdict: {tm['verdict']}\n"
+        warnings = tm.get("warnings") or []
+        if warnings:
+            tm_block += "Note: " + "; ".join(str(w) for w in warnings[:2]) + "\n"
+        msg += "\n\n" + tm_block
 
     return _markdown_v2_escape(msg)
 

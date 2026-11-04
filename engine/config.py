@@ -132,6 +132,8 @@ class EngineConfig:
     volume_cap_default_multiplier: int = 10
     #: Observatory Kronos settings (None = disabled). Never a trade gate.
     kronos: Any = None
+    #: Time Machine settings (None = disabled). Advisory pre-approval check.
+    timemachine: Any = None
 
     @property
     def db_path(self) -> Path:
@@ -230,6 +232,12 @@ def load_engine_config(root: Path | str | None = None,
         from config_loader import KronosSettings
         kronos = KronosSettings.model_validate(kronos_raw)
 
+    timemachine = None
+    tm_raw = raw.get("timemachine")
+    if isinstance(tm_raw, dict):
+        from config_loader import TimemachineSettings
+        timemachine = TimemachineSettings.model_validate(tm_raw)
+
     return EngineConfig(
         mode=mode,
         live_confirmation_required=bool(raw.get("live_confirmation_required", True)),
@@ -248,6 +256,7 @@ def load_engine_config(root: Path | str | None = None,
             symbols_section.get("volume_cap_default_multiplier", 10)
         ),
         kronos=kronos,
+        timemachine=timemachine,
     )
 
 

@@ -201,6 +201,17 @@ class ApprovalFlow:
 
         from engine.notifications import PendingTrade
 
+        # Time Machine advisory pre-approval check (fail-open).
+        tm_summary = None
+        tm_cfg = getattr(self.config, "timemachine", None)
+        if tm_cfg is not None and getattr(tm_cfg, "enabled", False):
+            from engine.research.timemachine_hook import run_timemachine
+            tm_summary = await run_timemachine(
+                tm_cfg,
+                symbol=symbol, direction=side, entry=entry, stop=stop_loss,
+                target=take_profit, journal=self.journal,
+            )
+
         trade = PendingTrade(
             trade_id=trade_id,
             symbol=symbol,
@@ -211,6 +222,7 @@ class ApprovalFlow:
             lot_size=lot_size,
             confidence=confidence,
             rationale=llm_rationale,
+            timemachine=tm_summary,
         )
 
         ok = store_pending_trade(trade, self.journal)

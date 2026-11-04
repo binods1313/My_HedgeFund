@@ -177,6 +177,20 @@ kronos:
   min_agreement: 0.60
   max_age_seconds: 600
 
+# ── Time Machine (advisory pre-approval check) ───────────────────────────────
+# Port of trader-timemachine to MT5 M15 bars. When enabled and in PAPER mode,
+# it runs before the Telegram approval message is sent and its verdict is
+# appended to the approval message + journaled. Fail-open: any error/timeout
+# is journaled and the pipeline continues unchanged.
+timemachine:
+  enabled: true
+  replays: 2000
+  seed: 19
+  window: 2
+  until: "23:45"
+  timeout_seconds: 60
+  show_in_telegram: true
+
 # ── Trading Sessions ─────────────────────────────────────────────────────────
 sessions:
   # New entries blocked outside these UTC hour ranges (per asset class)

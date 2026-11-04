@@ -182,6 +182,23 @@ class KronosSettings(StrictModel):
     max_age_seconds: int = Field(default=600, ge=0)
 
 
+class TimemachineSettings(StrictModel):
+    """Time Machine (trader-timemachine port) settings.
+
+    Advisory pre-approval reality check. Runs in PAPER mode before the
+    Telegram approval message is sent. Fail-open: any error or timeout is
+    journaled and the pipeline continues unchanged.
+    """
+
+    enabled: bool = False
+    replays: int = Field(default=2000, ge=100, le=100000)
+    seed: int = Field(default=19, ge=0)
+    window: int = Field(default=2, ge=0, le=48)
+    until: str = Field(default="23:45")
+    timeout_seconds: float = Field(default=60, gt=0, le=600)
+    show_in_telegram: bool = True
+
+
 class AppConfig(StrictModel):
     llm: LlmSettings
     trading: TradingSettings
@@ -190,6 +207,8 @@ class AppConfig(StrictModel):
     verification: VerificationSettings = Field(
         default_factory=VerificationSettings)
     kronos: KronosSettings = Field(default_factory=KronosSettings)
+    timemachine: TimemachineSettings = Field(
+        default_factory=TimemachineSettings)
 
     @model_validator(mode="after")
     def _whitelists_agree(self) -> "AppConfig":
@@ -276,7 +295,7 @@ def load_config(path: Path | str | None = None) -> AppConfig:
     }
     # display, verification and kronos are optional in the YAML; the models
     # supply documented defaults so a minimal config still validates.
-    for optional in ("display", "verification", "kronos"):
+    for optional in ("display", "verification", "kronos", "timemachine"):
         if isinstance(raw.get(optional), dict):
             payload[optional] = raw[optional]
     return AppConfig.model_validate(payload)
