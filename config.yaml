@@ -169,7 +169,7 @@ scanner:
 # directional edge. When enabled, forecasts are journaled alongside signals;
 # they never gate an order by default.
 kronos:
-  enabled: false
+  enabled: true
   endpoint: http://127.0.0.1:8610
   timeout_seconds: 60
   horizon_bars: 8
